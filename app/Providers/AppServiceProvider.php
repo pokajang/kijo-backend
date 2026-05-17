@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Services\Translation\GoogleTranslationService;
 use App\Services\Translation\TranslationService;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -21,6 +22,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        Schema::defaultStringLength(191);
     }
 }
