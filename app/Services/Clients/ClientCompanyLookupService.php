@@ -39,6 +39,8 @@ class ClientCompanyLookupService extends ClientBaseService
                 'cc.city',
                 'cc.state',
                 'cc.zip',
+                'cc.created_at',
+                'cc.updated_at',
                 DB::raw('COALESCE(cb.branch_count, 0) AS branch_count'),
                 'cb.branch_summary',
             ])
@@ -115,6 +117,8 @@ class ClientCompanyLookupService extends ClientBaseService
                 'city' => $company->city,
                 'state' => $company->state,
                 'zip' => $company->zip,
+                'created_at' => $company->created_at,
+                'updated_at' => $company->updated_at,
                 'branch_count' => (int) ($company->branch_count ?? 0),
                 'branch_summary' => $company->branch_summary,
                 'pic_count' => $picCountMap[$companyId] ?? 0,
