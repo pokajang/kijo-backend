@@ -2,12 +2,6 @@
 
 namespace App\Services\QuoteRecords;
 
-use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
-use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
-use App\Http\Requests\QuoteRecord\FailQuoteRequest;
-use App\Http\Requests\QuoteRecord\SpecialLineItemsByServiceRequest;
-use App\Http\Requests\QuoteRecord\SyncClientRequest;
-use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -113,12 +107,12 @@ class TrainingQuoteRecordListingService
                 created_at DESC
         ");
 
-        $followups    = [];
+        $followups = [];
         $awardHistory = [];
 
-        if (!empty($quotes)) {
+        if (! empty($quotes)) {
             $ids = array_values(array_unique(array_map(fn ($q) => (int) $q->id, $quotes)));
-            $ph  = implode(',', array_fill(0, count($ids), '?'));
+            $ph = implode(',', array_fill(0, count($ids), '?'));
 
             $followups = DB::select("
                 SELECT id, quote_id, quote_type, remarks, follow_up_date, created_by, created_at
@@ -129,7 +123,7 @@ class TrainingQuoteRecordListingService
             ", $ids);
 
             $awardHistory = DB::select("
-                SELECT id, quote_id, award_date, created_at
+                SELECT id, quote_id, award_date, status, quote_value, created_at
                 FROM projects_main
                 WHERE quote_id IN ({$ph})
                   AND LOWER(project_type) LIKE '%training%'
@@ -137,10 +131,12 @@ class TrainingQuoteRecordListingService
             ", $ids);
         }
 
+        ProjectOutcomeSummary::attach($quotes, $awardHistory);
+
         return response()->json([
-            'status'        => 'success',
-            'data'          => $quotes,
-            'followups'     => $followups,
+            'status' => 'success',
+            'data' => $quotes,
+            'followups' => $followups,
             'award_history' => $awardHistory,
         ]);
     }
@@ -153,7 +149,7 @@ class TrainingQuoteRecordListingService
         }
 
         $quote = DB::table('quotes_training')->where('id', $quoteId)->first(['quote_ref_no', 'status']);
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
@@ -201,10 +197,10 @@ class TrainingQuoteRecordListingService
         $projectIds = array_values(array_filter(array_map(fn ($r) => (int) $r->id, $projects)));
 
         $deliveryOrders = [];
-        $jd14Forms      = [];
-        $invoices       = [];
+        $jd14Forms = [];
+        $invoices = [];
 
-        if (!empty($projectIds)) {
+        if (! empty($projectIds)) {
             $ph = implode(',', array_fill(0, count($projectIds), '?'));
 
             $deliveryOrders = DB::select("
@@ -220,16 +216,16 @@ class TrainingQuoteRecordListingService
             ", $projectIds);
         }
 
-        $receipts = array_values(array_filter($invoices, fn ($inv) => !empty($inv->receipt_no)));
+        $receipts = array_values(array_filter($invoices, fn ($inv) => ! empty($inv->receipt_no)));
 
         return response()->json([
             'status' => 'success',
-            'data'   => [
-                'projects'       => $projects,
-                'delivery_orders'=> $deliveryOrders,
-                'invoices'       => $invoices,
-                'receipts'       => $receipts,
-                'jd14'           => $jd14Forms,
+            'data' => [
+                'projects' => $projects,
+                'delivery_orders' => $deliveryOrders,
+                'invoices' => $invoices,
+                'receipts' => $receipts,
+                'jd14' => $jd14Forms,
             ],
         ]);
     }

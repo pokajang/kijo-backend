@@ -2,12 +2,7 @@
 
 namespace App\Services\QuoteRecords;
 
-use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
-use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
-use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SpecialLineItemsByServiceRequest;
-use App\Http\Requests\QuoteRecord\SyncClientRequest;
-use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -91,12 +86,12 @@ class SpecialQuoteRecordListingService
                 qs.created_at DESC
         ");
 
-        $followups    = [];
+        $followups = [];
         $awardHistory = [];
 
-        if (!empty($quotes)) {
+        if (! empty($quotes)) {
             $ids = array_values(array_unique(array_map(fn ($q) => (int) $q->id, $quotes)));
-            $ph  = implode(',', array_fill(0, count($ids), '?'));
+            $ph = implode(',', array_fill(0, count($ids), '?'));
 
             $allItems = DB::select("
                 SELECT id, service_id, line_item_title, description, unit, unit_price,
@@ -125,7 +120,7 @@ class SpecialQuoteRecordListingService
             ", $ids);
 
             $awardHistory = DB::select("
-                SELECT id, quote_id, award_date, created_at
+                SELECT id, quote_id, award_date, status, quote_value, created_at
                 FROM projects_main
                 WHERE quote_id IN ({$ph})
                   AND LOWER(project_type) LIKE '%special%'
@@ -133,10 +128,12 @@ class SpecialQuoteRecordListingService
             ", $ids);
         }
 
+        ProjectOutcomeSummary::attach($quotes, $awardHistory);
+
         return response()->json([
-            'status'        => 'success',
-            'data'          => $quotes,
-            'followups'     => $followups,
+            'status' => 'success',
+            'data' => $quotes,
+            'followups' => $followups,
             'award_history' => $awardHistory,
         ]);
     }
@@ -149,7 +146,7 @@ class SpecialQuoteRecordListingService
         }
 
         $quote = DB::table('quotes_special')->where('id', $quoteId)->first(['status', 'quote_ref_no']);
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
@@ -165,6 +162,7 @@ class SpecialQuoteRecordListingService
 
             if ($deleted === 0) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Quotation record not found or already deleted.'], 404);
             }
 
@@ -173,11 +171,12 @@ class SpecialQuoteRecordListingService
             DB::commit();
 
             return response()->json([
-                'status'  => 'success',
+                'status' => 'success',
                 'message' => "Special quotation {$quote->quote_ref_no} deleted successfully.",
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }
@@ -196,7 +195,7 @@ class SpecialQuoteRecordListingService
     {
         $serviceId = (int) $request->input('service_id');
 
-        $items = DB::select("
+        $items = DB::select('
             SELECT
                 qi.id,
                 qi.line_item_title AS title,
@@ -215,7 +214,7 @@ class SpecialQuoteRecordListingService
                AND qi.created_at      = latest.max_created
             WHERE qi.service_id = ?
             ORDER BY qi.id ASC
-        ", [$serviceId, $serviceId]);
+        ', [$serviceId, $serviceId]);
 
         return response()->json(['status' => 'success', 'data' => $items]);
     }
@@ -238,10 +237,10 @@ class SpecialQuoteRecordListingService
         $projectIds = array_values(array_filter(array_map(fn ($r) => (int) $r->id, $projects)));
 
         $deliveryOrders = [];
-        $jd14Forms      = [];
-        $invoices       = [];
+        $jd14Forms = [];
+        $invoices = [];
 
-        if (!empty($projectIds)) {
+        if (! empty($projectIds)) {
             $ph = implode(',', array_fill(0, count($projectIds), '?'));
 
             $deliveryOrders = DB::select("
@@ -257,16 +256,16 @@ class SpecialQuoteRecordListingService
             ", $projectIds);
         }
 
-        $receipts = array_values(array_filter($invoices, fn ($inv) => !empty($inv->receipt_no)));
+        $receipts = array_values(array_filter($invoices, fn ($inv) => ! empty($inv->receipt_no)));
 
         return response()->json([
             'status' => 'success',
-            'data'   => [
-                'projects'       => $projects,
-                'delivery_orders'=> $deliveryOrders,
-                'invoices'       => $invoices,
-                'receipts'       => $receipts,
-                'jd14'           => $jd14Forms,
+            'data' => [
+                'projects' => $projects,
+                'delivery_orders' => $deliveryOrders,
+                'invoices' => $invoices,
+                'receipts' => $receipts,
+                'jd14' => $jd14Forms,
             ],
         ]);
     }

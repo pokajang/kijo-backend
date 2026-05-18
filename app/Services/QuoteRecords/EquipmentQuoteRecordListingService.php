@@ -2,11 +2,6 @@
 
 namespace App\Services\QuoteRecords;
 
-use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
-use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
-use App\Http\Requests\QuoteRecord\FailQuoteRequest;
-use App\Http\Requests\QuoteRecord\SyncClientRequest;
-use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,7 +9,6 @@ use Illuminate\Support\Facades\DB;
 
 class EquipmentQuoteRecordListingService
 {
-
     public function __construct(private AuditLogService $auditLog) {}
 
     public function listEquipment(Request $request): JsonResponse
@@ -89,19 +83,19 @@ class EquipmentQuoteRecordListingService
             ORDER BY FIELD(qe.status, 'Open', 'Failed', 'Awarded'), qe.created_at DESC
         ");
 
-        $quotes = array_map(fn($q) => (array) $q, $quotes);
+        $quotes = array_map(fn ($q) => (array) $q, $quotes);
 
         if (empty($quotes)) {
             return response()->json([
-                'status'        => 'success',
-                'data'          => [],
-                'followups'     => [],
+                'status' => 'success',
+                'data' => [],
+                'followups' => [],
                 'award_history' => [],
             ]);
         }
 
         $ids = array_values(array_unique(array_map('intval', array_column($quotes, 'id'))));
-        $ph  = implode(',', array_fill(0, count($ids), '?'));
+        $ph = implode(',', array_fill(0, count($ids), '?'));
 
         $allItems = DB::select("
             SELECT
@@ -143,18 +137,20 @@ class EquipmentQuoteRecordListingService
         ", $ids);
 
         $awardHistory = DB::select("
-            SELECT pm.id, pm.quote_id, pm.award_date, pm.created_at
+            SELECT pm.id, pm.quote_id, pm.award_date, pm.status, pm.quote_value, pm.created_at
             FROM projects_main pm
             WHERE pm.quote_id IN ({$ph})
               AND LOWER(pm.project_type) LIKE '%equipment%'
             ORDER BY pm.quote_id ASC, pm.award_date ASC, pm.id ASC
         ", $ids);
 
+        ProjectOutcomeSummary::attach($quotes, $awardHistory);
+
         return response()->json([
-            'status'        => 'success',
-            'data'          => $quotes,
-            'followups'     => array_map(fn($r) => (array) $r, $followups),
-            'award_history' => array_map(fn($r) => (array) $r, $awardHistory),
+            'status' => 'success',
+            'data' => $quotes,
+            'followups' => array_map(fn ($r) => (array) $r, $followups),
+            'award_history' => array_map(fn ($r) => (array) $r, $awardHistory),
         ]);
     }
 
@@ -166,7 +162,7 @@ class EquipmentQuoteRecordListingService
         }
 
         $row = DB::table('quotes_equipment')->where('id', $quoteId)->first();
-        if (!$row) {
+        if (! $row) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
         if (strtolower($row->status) === 'awarded') {
@@ -183,6 +179,7 @@ class EquipmentQuoteRecordListingService
 
             if ($deleted === 0) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Quotation record not found or already deleted.'], 404);
             }
 
@@ -190,7 +187,8 @@ class EquipmentQuoteRecordListingService
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
-            return response()->json(['status' => 'error', 'message' => 'Database error: ' . $e->getMessage()], 500);
+
+            return response()->json(['status' => 'error', 'message' => 'Database error: '.$e->getMessage()], 500);
         }
 
         return response()->json(['status' => 'success', 'message' => "Equipment quotation {$quoteRefNo} deleted successfully."]);
@@ -205,7 +203,7 @@ class EquipmentQuoteRecordListingService
 
         return response()->json([
             'status' => 'success',
-            'data'   => $this->fetchRelatedDocs($quoteId, 'equipment', '%equipment%'),
+            'data' => $this->fetchRelatedDocs($quoteId, 'equipment', '%equipment%'),
         ]);
     }
 
@@ -215,52 +213,52 @@ class EquipmentQuoteRecordListingService
             ->where('quote_id', $quoteId)
             ->where(function ($q) use ($quoteType, $projectTypePatterns) {
                 $q->where('quote_type', $quoteType)
-                  ->orWhere(function ($inner) use ($quoteType, $projectTypePatterns) {
-                      $inner->where(function ($nn) {
-                          $nn->whereNull('quote_type')->orWhereRaw("TRIM(quote_type) = ''");
-                      });
-                      foreach ($projectTypePatterns as $pattern) {
-                          $inner->orWhereRaw('LOWER(project_type) LIKE ?', [$pattern]);
-                      }
-                  });
+                    ->orWhere(function ($inner) use ($projectTypePatterns) {
+                        $inner->where(function ($nn) {
+                            $nn->whereNull('quote_type')->orWhereRaw("TRIM(quote_type) = ''");
+                        });
+                        foreach ($projectTypePatterns as $pattern) {
+                            $inner->orWhereRaw('LOWER(project_type) LIKE ?', [$pattern]);
+                        }
+                    });
             })
             ->select(['id', 'project_type']);
 
-        $projects   = $projectQuery->get()->map(fn($r) => (array) $r)->toArray();
-        $projectIds = array_values(array_filter(array_map(fn($r) => (int) $r['id'], $projects)));
+        $projects = $projectQuery->get()->map(fn ($r) => (array) $r)->toArray();
+        $projectIds = array_values(array_filter(array_map(fn ($r) => (int) $r['id'], $projects)));
 
         $deliveryOrders = [];
-        $invoices       = [];
-        $jd14Forms      = [];
+        $invoices = [];
+        $jd14Forms = [];
 
-        if (!empty($projectIds)) {
+        if (! empty($projectIds)) {
             $deliveryOrders = DB::table('do_details')
                 ->whereIn('project_id', $projectIds)
                 ->orderBy('id')
                 ->select(['id', 'do_number'])
-                ->get()->map(fn($r) => (array) $r)->toArray();
+                ->get()->map(fn ($r) => (array) $r)->toArray();
 
             $invoices = DB::table('invoices')
                 ->whereIn('project_id', $projectIds)
                 ->orderBy('id')
                 ->select(['id', 'invoice_ref_no', 'receipt_no'])
-                ->get()->map(fn($r) => (array) $r)->toArray();
+                ->get()->map(fn ($r) => (array) $r)->toArray();
 
             $jd14Forms = DB::table('invoices_jd14form')
                 ->whereIn('project_id', $projectIds)
                 ->orderBy('id')
                 ->select(['id', 'approval_no'])
-                ->get()->map(fn($r) => (array) $r)->toArray();
+                ->get()->map(fn ($r) => (array) $r)->toArray();
         }
 
-        $receipts = array_values(array_filter($invoices, fn($inv) => !empty($inv['receipt_no'])));
+        $receipts = array_values(array_filter($invoices, fn ($inv) => ! empty($inv['receipt_no'])));
 
         return [
-            'projects'       => $projects,
-            'delivery_orders'=> $deliveryOrders,
-            'invoices'       => $invoices,
-            'receipts'       => $receipts,
-            'jd14'           => $jd14Forms,
+            'projects' => $projects,
+            'delivery_orders' => $deliveryOrders,
+            'invoices' => $invoices,
+            'receipts' => $receipts,
+            'jd14' => $jd14Forms,
         ];
     }
 }

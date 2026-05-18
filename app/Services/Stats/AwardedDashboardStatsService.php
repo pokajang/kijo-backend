@@ -2,11 +2,9 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -20,7 +18,9 @@ class AwardedDashboardStatsService
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -52,13 +52,19 @@ class AwardedDashboardStatsService
         'infrastructure' => 'INFRASTRUCTURE',
     ];
 
+    private function realizedSalesProjectQuery(): RealizedSalesProjectQuery
+    {
+        return app(RealizedSalesProjectQuery::class);
+    }
+
     public function awardedValueByPerson(Request $request): JsonResponse
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $systemRows = $this->baseQuoteFactsQuery()
+            $realizedQuery = $this->realizedSalesProjectQuery();
+            $systemRows = $realizedQuery->projectFacts()
                 ->selectRaw('staff_code, staff_name, SUM(value) AS total_awarded')
-                ->whereIn(DB::raw('UPPER(quote_status)'), ['AWARDED', 'WON'])
+                ->whereRaw($realizedQuery->realizedStatusPredicate())
                 ->whereNotNull('award_date')
                 ->groupBy('staff_code', 'staff_name')
                 ->orderByDesc('total_awarded');
@@ -77,7 +83,7 @@ class AwardedDashboardStatsService
             }
             foreach ($this->manualClosedSalesByPerson($start, $end) as $r) {
                 $key = strtoupper((string) ($r->staff_code ?: 'UNASSIGNED'));
-                if (!isset($rows[$key])) {
+                if (! isset($rows[$key])) {
                     $rows[$key] = [
                         'staffCode' => $r->staff_code ?: 'UNASSIGNED',
                         'staffName' => $r->staff_name ?: 'Unassigned',
@@ -88,14 +94,16 @@ class AwardedDashboardStatsService
                 $rows[$key]['manualAwarded'] += (float) $r->manual_awarded;
             }
             $rows = collect(array_values($rows))
-                ->map(fn($row) => array_merge($row, [
+                ->map(fn ($row) => array_merge($row, [
                     'totalAwarded' => (float) $row['systemAwarded'] + (float) $row['manualAwarded'],
                 ]))
                 ->sortByDesc('totalAwarded')
                 ->values();
+
             return response()->json(['status' => 'success', 'awardValueByPerson' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -104,9 +112,10 @@ class AwardedDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $systemRows = $this->baseQuoteFactsQuery()
+            $realizedQuery = $this->realizedSalesProjectQuery();
+            $systemRows = $realizedQuery->projectFacts()
                 ->selectRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed') AS inquiry_source, SUM(value) AS total_awarded")
-                ->whereIn(DB::raw('UPPER(quote_status)'), ['AWARDED', 'WON'])
+                ->whereRaw($realizedQuery->realizedStatusPredicate())
                 ->whereNotNull('award_date')
                 ->groupByRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed')")
                 ->orderByDesc('total_awarded');
@@ -124,7 +133,7 @@ class AwardedDashboardStatsService
             }
             foreach ($this->manualClosedSalesBySource($start, $end) as $r) {
                 $key = (string) ($r->source ?: 'Unattributed');
-                if (!isset($rows[$key])) {
+                if (! isset($rows[$key])) {
                     $rows[$key] = [
                         'sourceName' => $key,
                         'systemAwarded' => 0.0,
@@ -134,14 +143,16 @@ class AwardedDashboardStatsService
                 $rows[$key]['manualAwarded'] += (float) $r->manual_awarded;
             }
             $rows = collect(array_values($rows))
-                ->map(fn($row) => array_merge($row, [
+                ->map(fn ($row) => array_merge($row, [
                     'awardedValue' => (float) $row['systemAwarded'] + (float) $row['manualAwarded'],
                 ]))
                 ->sortByDesc('awardedValue')
                 ->values();
+
             return response()->json(['status' => 'success', 'awardValueBySource' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -150,9 +161,10 @@ class AwardedDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $systemRows = $this->baseQuoteFactsQuery()
+            $realizedQuery = $this->realizedSalesProjectQuery();
+            $systemRows = $realizedQuery->projectFacts()
                 ->selectRaw('service_group, SUM(value) AS total_awarded')
-                ->whereIn(DB::raw('UPPER(quote_status)'), ['AWARDED', 'WON'])
+                ->whereRaw($realizedQuery->realizedStatusPredicate())
                 ->whereNotNull('award_date')
                 ->groupBy('service_group')
                 ->orderByDesc('total_awarded');
@@ -170,7 +182,7 @@ class AwardedDashboardStatsService
             }
             foreach ($this->manualClosedSalesByService($start, $end) as $r) {
                 $key = (string) ($r->service_group ?: 'Unclassified');
-                if (!isset($rows[$key])) {
+                if (! isset($rows[$key])) {
                     $rows[$key] = [
                         'serviceGroup' => $key,
                         'systemAwarded' => 0.0,
@@ -180,14 +192,16 @@ class AwardedDashboardStatsService
                 $rows[$key]['manualAwarded'] += (float) $r->manual_awarded;
             }
             $rows = collect(array_values($rows))
-                ->map(fn($row) => array_merge($row, [
+                ->map(fn ($row) => array_merge($row, [
                     'awardedValue' => (float) $row['systemAwarded'] + (float) $row['manualAwarded'],
                 ]))
                 ->sortByDesc('awardedValue')
                 ->values();
+
             return response()->json(['status' => 'success', 'awardValueByService' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -196,9 +210,16 @@ class AwardedDashboardStatsService
     {
         [$start, $end] = $this->periodDates($request);
         try {
-            $systemRows = $this->baseQuoteFactsQuery()
-                ->selectRaw("DATE_FORMAT(award_date, '%Y-%m') AS month, SUM(value) AS amount, COUNT(*) AS awarded_quotes")
-                ->whereIn(DB::raw('UPPER(quote_status)'), ['AWARDED', 'WON'])
+            $realizedQuery = $this->realizedSalesProjectQuery();
+            $realizedPredicate = $realizedQuery->realizedStatusPredicate();
+            $systemRows = $realizedQuery->projectFacts()
+                ->selectRaw("
+                    DATE_FORMAT(award_date, '%Y-%m') AS month,
+                    SUM(CASE WHEN {$realizedPredicate} THEN value ELSE 0 END) AS amount,
+                    SUM(CASE WHEN {$realizedPredicate} THEN 1 ELSE 0 END) AS realized_jobs,
+                    SUM(CASE WHEN LOWER(project_status) = 'terminated' THEN value ELSE 0 END) AS terminated_amount,
+                    SUM(CASE WHEN LOWER(project_status) = 'terminated' THEN 1 ELSE 0 END) AS terminated_jobs
+                ")
                 ->whereNotNull('award_date')
                 ->groupByRaw("DATE_FORMAT(award_date, '%Y-%m')")
                 ->orderByRaw("DATE_FORMAT(award_date, '%Y-%m') ASC");
@@ -212,34 +233,42 @@ class AwardedDashboardStatsService
                     'month' => $month,
                     'systemAmount' => (float) $r->amount,
                     'manualAmount' => 0.0,
-                    'systemCount' => (int) $r->awarded_quotes,
+                    'systemCount' => (int) $r->realized_jobs,
                     'manualCount' => 0,
+                    'terminatedAmount' => (float) $r->terminated_amount,
+                    'terminatedCount' => (int) $r->terminated_jobs,
                 ];
             }
             foreach ($this->manualClosedSalesByMonth($start, $end) as $r) {
                 $month = (string) $r->month;
-                if (!isset($rows[$month])) {
+                if (! isset($rows[$month])) {
                     $rows[$month] = [
                         'month' => $month,
                         'systemAmount' => 0.0,
                         'manualAmount' => 0.0,
                         'systemCount' => 0,
                         'manualCount' => 0,
+                        'terminatedAmount' => 0.0,
+                        'terminatedCount' => 0,
                     ];
                 }
                 $rows[$month]['manualAmount'] += (float) $r->manual_amount;
                 $rows[$month]['manualCount'] += (int) $r->manual_count;
             }
             $rows = collect(array_values($rows))
-                ->map(fn($row) => array_merge($row, [
+                ->map(fn ($row) => array_merge($row, [
                     'amount' => (float) $row['systemAmount'] + (float) $row['manualAmount'],
                     'count' => (int) $row['systemCount'] + (int) $row['manualCount'],
+                    'terminatedAmount' => (float) $row['terminatedAmount'],
+                    'terminatedCount' => (int) $row['terminatedCount'],
                 ]))
                 ->sortBy('month')
                 ->values();
+
             return response()->json(['status' => 'success', 'monthlySales' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -250,7 +279,7 @@ class AwardedDashboardStatsService
         // source rows exist. Normalize first so every downstream KPI aggregates on
         // one quote fact instead of raw joined rows.
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -263,7 +292,7 @@ class AwardedDashboardStatsService
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');
@@ -318,10 +347,10 @@ class AwardedDashboardStatsService
         }
 
         return $query
-            ->selectRaw("service_category, SUM(COALESCE(estimated_rm, 0)) AS manual_awarded")
+            ->selectRaw('service_category, SUM(COALESCE(estimated_rm, 0)) AS manual_awarded')
             ->groupBy('service_category')
             ->get()
-            ->map(fn($row) => (object) [
+            ->map(fn ($row) => (object) [
                 'service_group' => $this->monitoringManualServiceCategoryToStatusLabel($row->service_category) ?: 'Unclassified',
                 'manual_awarded' => (float) $row->manual_awarded,
             ]);
@@ -344,7 +373,9 @@ class AwardedDashboardStatsService
     private function periodDates(Request $request): array
     {
         [$start, $end] = $this->parseDates($request);
-        if ($start && $end) return [$start, $end];
+        if ($start && $end) {
+            return [$start, $end];
+        }
 
         $period = (string) $request->input('period', 'currentYear');
 
@@ -353,18 +384,18 @@ class AwardedDashboardStatsService
                 now()->subMonthNoOverflow()->startOfMonth()->format('Y-m-d'),
                 now()->subMonthNoOverflow()->endOfMonth()->format('Y-m-d'),
             ],
-            'currentMonth'  => [now()->format('Y-m-01'), now()->format('Y-m-d')],
-            '3months'       => [now()->subMonths(2)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
-            '6months'       => [now()->subMonths(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
-            '5years'        => [now()->subYears(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
-            'allTime'       => [null, null],
-            default         => [now()->format('Y-01-01'), now()->format('Y-m-d')], // currentYear
+            'currentMonth' => [now()->format('Y-m-01'), now()->format('Y-m-d')],
+            '3months' => [now()->subMonths(2)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
+            '6months' => [now()->subMonths(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
+            '5years' => [now()->subYears(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
+            'allTime' => [null, null],
+            default => [now()->format('Y-01-01'), now()->format('Y-m-d')], // currentYear
         };
     }
 
     private function manualClosedSalesBaseQuery(?string $start, ?string $end): ?Builder
     {
-        if (!$this->monitoringManualPipelineEntriesReady()) {
+        if (! $this->monitoringManualPipelineEntriesReady()) {
             return null;
         }
 
@@ -408,7 +439,7 @@ class AwardedDashboardStatsService
 
     private function monitoringManualPipelineEntriesReady(): bool
     {
-        if (!Schema::hasTable('monitoring_manual_pipeline_entries')) {
+        if (! Schema::hasTable('monitoring_manual_pipeline_entries')) {
             return false;
         }
 
@@ -432,7 +463,7 @@ class AwardedDashboardStatsService
         ];
 
         foreach ($requiredColumns as $column) {
-            if (!Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
+            if (! Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
                 return false;
             }
         }

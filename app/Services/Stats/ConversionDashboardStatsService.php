@@ -2,11 +2,9 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -20,7 +18,9 @@ class ConversionDashboardStatsService
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -52,17 +52,23 @@ class ConversionDashboardStatsService
         'infrastructure' => 'INFRASTRUCTURE',
     ];
 
+    private function realizedSalesProjectQuery(): RealizedSalesProjectQuery
+    {
+        return app(RealizedSalesProjectQuery::class);
+    }
+
     public function conversionRateBySource(Request $request): JsonResponse
     {
         [$start, $end] = $this->parseDates($request);
         try {
+            $convertedPredicate = $this->realizedSalesProjectQuery()->quoteHasRealizedProjectPredicate();
             $query = $this->baseQuoteFactsQuery()
                 ->selectRaw("
                     COALESCE(NULLIF(inquiry_source, ''), 'Unattributed') AS inquiry_source,
                     COUNT(*) AS total_quotes,
-                    SUM(CASE WHEN UPPER(quote_status) IN ('AWARDED', 'WON') THEN 1 ELSE 0 END) AS awarded_count,
+                    SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END) AS awarded_count,
                     ROUND(
-                        SUM(CASE WHEN UPPER(quote_status) IN ('AWARDED', 'WON') THEN 1 ELSE 0 END)
+                        SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END)
                         * 100.0 / NULLIF(COUNT(*), 0), 1
                     ) AS conversion_rate
                 ")
@@ -71,15 +77,17 @@ class ConversionDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'sourceName'     => $r->inquiry_source,
+            $rows = $query->get()->map(fn ($r) => [
+                'sourceName' => $r->inquiry_source,
                 'convertedCount' => (int) $r->awarded_count,
-                'totalQuotes'    => (int) $r->total_quotes,
+                'totalQuotes' => (int) $r->total_quotes,
                 'conversionRate' => (float) $r->conversion_rate,
             ]);
+
             return response()->json(['status' => 'success', 'conversionRateBySource' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -88,13 +96,14 @@ class ConversionDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
+            $convertedPredicate = $this->realizedSalesProjectQuery()->quoteHasRealizedProjectPredicate();
             $query = $this->baseQuoteFactsQuery()
                 ->selectRaw("
                     service_group,
                     COUNT(*) AS total_quotes,
-                    SUM(CASE WHEN UPPER(quote_status) IN ('AWARDED', 'WON') THEN 1 ELSE 0 END) AS awarded_count,
+                    SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END) AS awarded_count,
                     ROUND(
-                        SUM(CASE WHEN UPPER(quote_status) IN ('AWARDED', 'WON') THEN 1 ELSE 0 END)
+                        SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END)
                         * 100.0 / NULLIF(COUNT(*), 0), 1
                     ) AS conversion_rate
                 ")
@@ -103,15 +112,17 @@ class ConversionDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'serviceGroup'   => $r->service_group,
+            $rows = $query->get()->map(fn ($r) => [
+                'serviceGroup' => $r->service_group,
                 'convertedCount' => (int) $r->awarded_count,
-                'totalQuotes'    => (int) $r->total_quotes,
+                'totalQuotes' => (int) $r->total_quotes,
                 'conversionRate' => (float) $r->conversion_rate,
             ]);
+
             return response()->json(['status' => 'success', 'conversionRateByService' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -121,14 +132,15 @@ class ConversionDashboardStatsService
         [$start, $end] = $this->parseDates($request);
         try {
             $activeStaffCount = $this->activeStaffCount();
+            $convertedPredicate = $this->realizedSalesProjectQuery()->quoteHasRealizedProjectPredicate();
             $query = $this->baseQuoteFactsQuery()
                 ->selectRaw("
                     COALESCE(NULLIF(staff_code, ''), 'UNASSIGNED') AS staff_code,
                     COALESCE(NULLIF(staff_name, ''), 'Unassigned') AS staff_name,
                     COUNT(*) AS total_quotes,
-                    SUM(CASE WHEN UPPER(quote_status) IN ('AWARDED', 'WON') THEN 1 ELSE 0 END) AS awarded_count,
+                    SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END) AS awarded_count,
                     ROUND(
-                        SUM(CASE WHEN UPPER(quote_status) IN ('AWARDED', 'WON') THEN 1 ELSE 0 END)
+                        SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END)
                         * 100.0 / NULLIF(COUNT(*), 0), 1
                     ) AS conversion_rate
                 ")
@@ -138,13 +150,14 @@ class ConversionDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'staffCode'      => $r->staff_code,
-                'staffName'      => $r->staff_name,
+            $rows = $query->get()->map(fn ($r) => [
+                'staffCode' => $r->staff_code,
+                'staffName' => $r->staff_name,
                 'convertedCount' => (int) $r->awarded_count,
-                'totalQuotes'    => (int) $r->total_quotes,
+                'totalQuotes' => (int) $r->total_quotes,
                 'conversionRate' => (float) $r->conversion_rate,
             ]);
+
             return response()->json([
                 'status' => 'success',
                 'conversionRateByStaff' => $rows,
@@ -152,6 +165,7 @@ class ConversionDashboardStatsService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -162,7 +176,7 @@ class ConversionDashboardStatsService
         // source rows exist. Normalize first so every downstream KPI aggregates on
         // one quote fact instead of raw joined rows.
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -175,7 +189,7 @@ class ConversionDashboardStatsService
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');
@@ -183,7 +197,7 @@ class ConversionDashboardStatsService
 
     private function activeStaffCount(): int
     {
-        if (!Schema::hasTable('staff_general') || !Schema::hasColumn('staff_general', 'status')) {
+        if (! Schema::hasTable('staff_general') || ! Schema::hasColumn('staff_general', 'status')) {
             return 0;
         }
 
