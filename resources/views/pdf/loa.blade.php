@@ -60,15 +60,48 @@
 {{-- Ref and date --}}
 <p>Our Ref: <strong>{{ $refNo }}</strong> &nbsp;&nbsp;&nbsp; Date: {{ $printDate }}</p>
 
+@php
+    $vendorAddress = trim((string) ($data->address ?? ''));
+    $vendorCity = trim((string) ($data->city ?? ''));
+    $vendorState = trim((string) ($data->state ?? ''));
+    $vendorZip = trim((string) ($data->zip ?? ''));
+    $vendorEmail = trim((string) ($data->email ?? ''));
+    $vendorPhone = trim((string) ($data->mobile_number ?? ''));
+
+    $vendorAddressLines = [];
+    if ($vendorAddress !== '') {
+        $vendorAddressLines[] = $vendorAddress;
+    }
+
+    $vendorLocationLine = implode(', ', array_filter([
+        $vendorCity,
+        $vendorState,
+        $vendorZip,
+    ], static fn ($part) => $part !== ''));
+
+    if ($vendorLocationLine !== '') {
+        $vendorAddressLines[] = $vendorLocationLine;
+    }
+@endphp
+
 {{-- Vendor address block --}}
 <p>
     <strong>Attention To:</strong><br>
     {{ $data->vendor_name }}<br>
-    {{ $data->address }},<br>
-    {{ $data->city }}, {{ $data->state }} {{ $data->zip }}<br>
-    Email: {{ $data->email }}
-    &nbsp;&nbsp;&nbsp;
-    Phone: {{ $data->mobile_number }}
+    @foreach ($vendorAddressLines as $vendorAddressLine)
+        {{ $vendorAddressLine }}<br>
+    @endforeach
+    @if ($vendorEmail !== '' || $vendorPhone !== '')
+        @if ($vendorEmail !== '')
+            Email: {{ $vendorEmail }}
+        @endif
+        @if ($vendorEmail !== '' && $vendorPhone !== '')
+            &nbsp;&nbsp;&nbsp;
+        @endif
+        @if ($vendorPhone !== '')
+            Phone: {{ $vendorPhone }}
+        @endif
+    @endif
 </p>
 
 <br>

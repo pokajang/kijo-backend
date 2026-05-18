@@ -139,8 +139,9 @@
         $supplierContactNumber = trim((string) ($po->supplier_contact_number ?? '')) !== '' ? $po->supplier_contact_number : '-';
         $supplierEmail = trim((string) ($po->supplier_email ?? '')) !== '' ? $po->supplier_email : '-';
         $issuerName = trim((string) ($po->full_name ?? '')) !== '' ? $po->full_name : '-';
-        $issuerPosition = trim((string) ($po->position ?? '')) !== '' ? $po->position : '-';
-        $issuerDept = trim((string) ($po->department ?? '')) !== '' ? $po->department : '-';
+        $issuerPosition = trim((string) ($po->position ?? ''));
+        $issuerDept = trim((string) ($po->department ?? ''));
+        $issuerRoleLine = implode(', ', array_filter([$issuerPosition, $issuerDept], static fn (string $part): bool => $part !== ''));
         $discount = (float) ($po->discount ?? 0);
         $delivery = (float) ($po->delivery_charge ?? 0);
         $sstPercent = (float) ($po->sst_percent ?? 0);
@@ -238,7 +239,7 @@
     <p>
         Authorized by,<br>
         <strong>{{ $issuerName }}</strong><br>
-        {{ $issuerPosition }}, {{ $issuerDept }}<br>
+        @if($issuerRoleLine !== ''){{ $issuerRoleLine }}<br>@endif
         AMIOSH RESOURCES SDN BHD
     </p>
 

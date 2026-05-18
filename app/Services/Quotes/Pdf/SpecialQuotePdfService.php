@@ -132,7 +132,12 @@ class SpecialQuotePdfService
             'updatedDateIso' => !empty($quote->updated_at) ? substr((string) $quote->updated_at, 0, 10) : '',
             'picName' => (string) ($quote->pic_name ?? '-'),
             'clientName' => (string) ($quote->client_name ?? '-'),
-            'clientAddressBlock' => trim((string) ($quote->client_address ?? '-') . ",\n" . (string) ($quote->client_city ?? '-') . ', ' . (string) ($quote->client_state ?? '-') . ' ' . (string) ($quote->client_zip ?? '-')),
+            'clientAddressBlock' => $this->renderer->formatAddressBlock(
+                $quote->client_address ?? null,
+                $quote->client_city ?? null,
+                $quote->client_state ?? null,
+                $quote->client_zip ?? null
+            ),
             'picEmail' => (string) ($quote->pic_email ?? '-'),
             'picPhone' => (string) ($quote->pic_phone ?? '-'),
             'serviceTitle' => (string) ($quote->service_title ?? ''),

@@ -45,4 +45,8 @@ return [
         'key' => env('GOOGLE_TRANSLATE_API_KEY'),
     ],
 
+    'google_places' => [
+        'key' => env('GOOGLE_PLACES_API_KEY'),
+    ],
+
 ];

@@ -17,11 +17,16 @@ class GooglePlacesService extends GoogleBaseService
             return response()->json(['error' => 'Missing place_id'], 400);
         }
 
+        $apiKey = $this->placesKey();
+        if ($apiKey === '') {
+            return $this->googlePlacesKeyMissingResponse();
+        }
+
         try {
             $resp = Http::timeout(10)->get(self::DETAILS_URL, [
                 'place_id' => $placeId,
                 'fields'   => 'name,formatted_address,formatted_phone_number,international_phone_number,website,types',
-                'key'      => $this->placesKey(),
+                'key'      => $apiKey,
             ]);
         } catch (\Throwable $e) {
             report($e);
@@ -90,12 +95,16 @@ class GooglePlacesService extends GoogleBaseService
         $inserted = 0;
         $seen     = [];
         $nextPage = null;
+        $apiKey = $this->placesKey();
+        if ($apiKey === '') {
+            return $this->googlePlacesKeyMissingResponse();
+        }
 
         try {
             do {
                 $params = $nextPage
-                    ? ['pagetoken' => $nextPage, 'key' => $this->placesKey()]
-                    : ['query' => $searchQuery, 'region' => 'my', 'key' => $this->placesKey()];
+                    ? ['pagetoken' => $nextPage, 'key' => $apiKey]
+                    : ['query' => $searchQuery, 'region' => 'my', 'key' => $apiKey];
 
                 $resp = Http::timeout(15)->get(self::TEXTSEARCH_URL, $params);
                 $data = $resp->json() ?? [];

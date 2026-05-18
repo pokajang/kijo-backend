@@ -59,16 +59,24 @@
 @php
     $paymentMethod = (string) ($inv->payment_method ?? '');
     $isHrdGrant    = strcasecmp($paymentMethod, 'HRD Grant') === 0;
-    $clientName    = $inv->invoice_client_name ?? '';
-    $clientSsm     = $inv->invoice_client_ssm  ?? '';
-    $clientTin     = $inv->invoice_client_tin  ?? '';
-    $clientAddress = $inv->invoice_client_address ?? '';
-    $clientCity    = $inv->invoice_client_city  ?? '';
-    $clientState   = $inv->invoice_client_state ?? '';
-    $clientZip     = $inv->invoice_client_zip   ?? '';
-    $picName       = $inv->invoice_pic_name  ?? '';
-    $picEmail      = $inv->invoice_pic_email ?? '';
-    $picPhone      = $inv->invoice_pic_phone ?? '';
+    $clientName    = trim((string) ($inv->invoice_client_name ?? ''));
+    $clientSsm     = trim((string) ($inv->invoice_client_ssm  ?? ''));
+    $clientTin     = trim((string) ($inv->invoice_client_tin  ?? ''));
+    $clientAddress = trim((string) ($inv->invoice_client_address ?? ''));
+    $clientCity    = trim((string) ($inv->invoice_client_city  ?? ''));
+    $clientState   = trim((string) ($inv->invoice_client_state ?? ''));
+    $clientZip     = trim((string) ($inv->invoice_client_zip   ?? ''));
+    $picName       = trim((string) ($inv->invoice_pic_name  ?? ''));
+    $picEmail      = trim((string) ($inv->invoice_pic_email ?? ''));
+    $picPhone      = trim((string) ($inv->invoice_pic_phone ?? ''));
+    $clientAddressLines = [];
+    if ($clientAddress !== '') {
+        $clientAddressLines[] = $clientAddress;
+    }
+    $clientLocationLine = implode(', ', array_filter([$clientCity, $clientState, $clientZip], static fn (string $part): bool => $part !== ''));
+    if ($clientLocationLine !== '') {
+        $clientAddressLines[] = $clientLocationLine;
+    }
 @endphp
 
 @if($isHrdGrant)
@@ -84,12 +92,14 @@
 @else
 <p class="to-block">
     <strong>{{ $L('attention_to', 'Attention To') }}:</strong><br>
-    {{ $picName }}<br>
-    {{ $clientName }}<br>
+    @if($picName !== ''){{ $picName }}<br>@endif
+    @if($clientName !== ''){{ $clientName }}<br>@endif
     SSM No. : {{ $clientSsm !== '' ? $clientSsm : 'N/A' }}<br>
     Tax Identification Number (TIN) : {{ $clientTin !== '' ? $clientTin : 'N/A' }}<br>
-    {{ $clientAddress }}, {{ $clientCity }}, {{ $clientState }} {{ $clientZip }}<br>
-    {{ $L('email', 'Email') }}: {{ $picEmail }} &nbsp;&nbsp;&nbsp; {{ $L('phone', 'Phone') }}: {{ $picPhone }}
+    @foreach($clientAddressLines as $addressLine){{ $addressLine }}<br>@endforeach
+    @if($picEmail !== '' || $picPhone !== '')
+        {{ $L('email', 'Email') }}: {{ $picEmail !== '' ? $picEmail : 'N/A' }} &nbsp;&nbsp;&nbsp; {{ $L('phone', 'Phone') }}: {{ $picPhone !== '' ? $picPhone : 'N/A' }}
+    @endif
 </p>
 @endif
 

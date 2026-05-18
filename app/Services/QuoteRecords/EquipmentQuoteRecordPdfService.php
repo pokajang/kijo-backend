@@ -69,11 +69,11 @@ class EquipmentQuoteRecordPdfService extends PdfRenderer
             }
         }
 
-        $clientAddressBlock = trim(
-            (string) ($quote->client_address ?? '-') . ",\n" .
-            (string) ($quote->client_city ?? '-') . ', ' .
-            (string) ($quote->client_state ?? '-') . ' ' .
-            (string) ($quote->client_zip ?? '-')
+        $clientAddressBlock = $this->formatAddressBlock(
+            $quote->client_address ?? null,
+            $quote->client_city ?? null,
+            $quote->client_state ?? null,
+            $quote->client_zip ?? null
         );
 
         $generatedAt   = now();

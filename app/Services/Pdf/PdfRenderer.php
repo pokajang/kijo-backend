@@ -93,6 +93,25 @@ class PdfRenderer
         };
     }
 
+    public function formatAddressBlock(mixed $address, mixed $city, mixed $state, mixed $zip, string $fallback = '-'): string
+    {
+        $clean = static function (mixed $value): string {
+            $text = trim((string) $value);
+            return $text === '-' || strcasecmp($text, 'N/A') === 0 ? '' : $text;
+        };
+
+        $addressLine = $clean($address);
+        $locationLine = implode(', ', array_filter([
+            $clean($city),
+            $clean($state),
+            $clean($zip),
+        ], static fn (string $part): bool => $part !== ''));
+
+        $lines = array_filter([$addressLine, $locationLine], static fn (string $line): bool => $line !== '');
+
+        return !empty($lines) ? implode("\n", $lines) : $fallback;
+    }
+
     public function normalizeProposalLanguage(mixed $language): string
     {
         $value = strtolower(trim((string) $language));

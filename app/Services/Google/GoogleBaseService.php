@@ -14,7 +14,16 @@ abstract class GoogleBaseService
 
     protected function placesKey(): string
     {
-        return (string) env('GOOGLE_PLACES_API_KEY', '');
+        return trim((string) config('services.google_places.key', ''));
+    }
+
+    protected function googlePlacesKeyMissingResponse(): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Google Places API key is not configured on this server.',
+            'google_status' => 'LOCAL_CONFIGURATION_ERROR',
+        ], 500);
     }
 
     protected function googlePlacesErrorMessage(?string $status, mixed $errorMessage = null): string

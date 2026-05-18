@@ -101,11 +101,11 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
         $generatorCode = (string) $request->session()->get('name_code', '');
         $logoDataUri   = $this->companyLogoDataUri();
 
-        $clientAddressBlock = trim(
-            (string) ($quote->client_address ?? '-') . ",\n" .
-            (string) ($quote->client_city ?? '-') . ', ' .
-            (string) ($quote->client_state ?? '-') . ' ' .
-            (string) ($quote->client_zip ?? '-')
+        $clientAddressBlock = $this->formatAddressBlock(
+            $quote->client_address ?? null,
+            $quote->client_city ?? null,
+            $quote->client_state ?? null,
+            $quote->client_zip ?? null
         );
 
         $html = view($this->pdfView('pdf.manpower-quote', $quote->proposal_language ?? 'en'), [

@@ -53,27 +53,37 @@
 
 {{-- Billed-to --}}
 @php
-    $companyName = (string) ($inv->invoice_client_name ?? '-');
-    $companySsm  = (string) ($inv->invoice_client_ssm  ?? '');
-    $companyTin  = (string) ($inv->invoice_client_tin  ?? '');
-    $address     = (string) ($inv->invoice_client_address ?? '-');
-    $city        = (string) ($inv->invoice_client_city  ?? '-');
-    $state       = (string) ($inv->invoice_client_state ?? '-');
-    $zip         = (string) ($inv->invoice_client_zip   ?? '-');
-    $email       = (string) ($inv->invoice_pic_email ?? '-');
-    $phone       = (string) ($inv->invoice_pic_phone ?? '-');
+    $companyName = trim((string) ($inv->invoice_client_name ?? '')) !== '' ? trim((string) $inv->invoice_client_name) : '-';
+    $companySsm  = trim((string) ($inv->invoice_client_ssm  ?? ''));
+    $companyTin  = trim((string) ($inv->invoice_client_tin  ?? ''));
+    $address     = trim((string) ($inv->invoice_client_address ?? ''));
+    $city        = trim((string) ($inv->invoice_client_city  ?? ''));
+    $state       = trim((string) ($inv->invoice_client_state ?? ''));
+    $zip         = trim((string) ($inv->invoice_client_zip   ?? ''));
+    $email       = trim((string) ($inv->invoice_pic_email ?? ''));
+    $phone       = trim((string) ($inv->invoice_pic_phone ?? ''));
     $serviceType = (string) ($inv->service_type ?? '-');
     $purpose     = (string) ($inv->invoice_purpose ?? '-');
     $invoiceRef  = (string) ($inv->invoice_ref_no ?? '-');
     $remarksVal  = trim((string) ($inv->remarks ?? ''));
+    $clientAddressLines = [];
+    if ($address !== '') {
+        $clientAddressLines[] = $address;
+    }
+    $clientLocationLine = implode(', ', array_filter([$city, $state, $zip], static fn (string $part): bool => $part !== ''));
+    if ($clientLocationLine !== '') {
+        $clientAddressLines[] = $clientLocationLine;
+    }
 @endphp
 <p class="to-block">
     <strong>{{ $L('billed_to', 'Billed To') }}:</strong><br>
     {{ $companyName }}<br>
     SSM No.: {{ $companySsm !== '' ? $companySsm : 'N/A' }}<br>
     Tax Identification Number (TIN): {{ $companyTin !== '' ? $companyTin : 'N/A' }}<br>
-    {{ $address }}, {{ $city }}, {{ $state }} {{ $zip }}<br>
-    {{ $L('email', 'Email') }}: {{ $email }} &nbsp;&nbsp;&nbsp; {{ $L('phone', 'Phone') }}: {{ $phone }}
+    @foreach($clientAddressLines as $addressLine){{ $addressLine }}<br>@endforeach
+    @if($email !== '' || $phone !== '')
+        {{ $L('email', 'Email') }}: {{ $email !== '' ? $email : 'N/A' }} &nbsp;&nbsp;&nbsp; {{ $L('phone', 'Phone') }}: {{ $phone !== '' ? $phone : 'N/A' }}
+    @endif
 </p>
 
 {{-- Breakdown table --}}
