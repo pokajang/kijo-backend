@@ -140,13 +140,26 @@ class ProjectCommercialDocsService
             $query->addSelect(DB::raw('NULL as vendor_name'));
         }
 
-        if (Schema::hasTable('project_vendors')) {
+        if (
+            Schema::hasTable('project_vendors')
+            && Schema::hasColumn('vendor_payments', 'vendor_id')
+            && Schema::hasColumn('project_vendors', 'project_id')
+            && Schema::hasColumn('project_vendors', 'vendor_id')
+        ) {
+            $vendorLoaSubquery = DB::table('project_vendors')
+                ->select([
+                    'project_id',
+                    'vendor_id',
+                    DB::raw('MIN(id) as vendor_loa_id'),
+                ])
+                ->groupBy('project_id', 'vendor_id');
+
             $query
-                ->leftJoin('project_vendors as pv', function ($join): void {
-                    $join->on('pv.project_id', '=', 'vp.project_id')
-                        ->on('pv.vendor_id', '=', 'vp.vendor_id');
+                ->leftJoinSub($vendorLoaSubquery, 'pv_first', function ($join): void {
+                    $join->on('pv_first.project_id', '=', 'vp.project_id')
+                        ->on('pv_first.vendor_id', '=', 'vp.vendor_id');
                 })
-                ->addSelect('pv.id as vendor_loa_id');
+                ->addSelect('pv_first.vendor_loa_id');
         } else {
             $query->addSelect(DB::raw('NULL as vendor_loa_id'));
         }

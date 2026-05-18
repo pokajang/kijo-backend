@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\QuoteRecordTrainingSpecialController;
 use App\Http\Controllers\Api\CatalogController;
 use App\Http\Controllers\Api\ClientController;
 use App\Http\Controllers\Api\DeliveryOrderController;
+use App\Http\Controllers\Api\DebtorController;
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\MeetingController;
 use App\Http\Controllers\Api\PrivateFileController;
@@ -88,6 +89,17 @@ Route::middleware('auth.session')->group(function () {
     Route::post('delivery-orders',         [DeliveryOrderController::class, 'store']);
     Route::put('delivery-orders/{id}',     [DeliveryOrderController::class, 'update']);
     Route::delete('delivery-orders/{id}',  [DeliveryOrderController::class, 'destroy']);
+
+    // Commercial debtors
+    Route::get('debtors',                              [DebtorController::class, 'index']);
+    Route::post('debtors/manual',                      [DebtorController::class, 'storeManual']);
+    Route::get('debtors/manual/{id}',                  [DebtorController::class, 'showManual'])->whereNumber('id');
+    Route::post('debtors/manual/{id}',                 [DebtorController::class, 'updateManual'])->whereNumber('id');
+    Route::put('debtors/manual/{id}',                  [DebtorController::class, 'updateManual'])->whereNumber('id');
+    Route::patch('debtors/manual/{id}/mark-paid',      [DebtorController::class, 'markManualPaid'])->whereNumber('id');
+    Route::patch('debtors/manual/{id}/mark-open',      [DebtorController::class, 'markManualOpen'])->whereNumber('id');
+    Route::delete('debtors/manual/{id}',               [DebtorController::class, 'destroyManual'])->whereNumber('id');
+    Route::get('debtors/manual/{id}/attachment',       [DebtorController::class, 'manualAttachment'])->whereNumber('id');
     Route::get('delivery-orders/{id}/pdf', [DeliveryOrderController::class, 'pdf']);
 
     // Batch 2 — Staff (legacy-compatible paths)

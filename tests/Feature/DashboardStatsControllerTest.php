@@ -208,6 +208,12 @@ class DashboardStatsControllerTest extends TestCase
             'all_quotes',
             'invoices',
             'client_company',
+            'quote_inquiry_sources',
+            'quotes_training',
+            'quotes_ih',
+            'quotes_manpower',
+            'quotes_equipment',
+            'quotes_special',
             'projects_main',
             'staff_general',
             'system_users',
@@ -281,7 +287,27 @@ class DashboardStatsControllerTest extends TestCase
         Schema::create('projects_main', function (Blueprint $table) {
             $table->integer('id')->primary();
             $table->string('project_name')->nullable();
+            $table->integer('quote_id')->nullable();
+            $table->string('project_type')->nullable();
+            $table->decimal('quote_value', 15, 2)->nullable();
+            $table->date('award_date')->nullable();
+            $table->string('status')->nullable();
             $table->integer('created_by')->nullable();
+        });
+
+        foreach (['quotes_training', 'quotes_ih', 'quotes_manpower', 'quotes_equipment', 'quotes_special'] as $quoteTable) {
+            Schema::create($quoteTable, function (Blueprint $table) {
+                $table->integer('id')->primary();
+                $table->string('created_by_code')->nullable();
+                $table->string('created_by_name')->nullable();
+            });
+        }
+
+        Schema::create('quote_inquiry_sources', function (Blueprint $table) {
+            $table->increments('id');
+            $table->integer('quote_id');
+            $table->string('service_type');
+            $table->string('source')->nullable();
         });
 
         Schema::create('invoices', function (Blueprint $table) {
@@ -408,6 +434,91 @@ class DashboardStatsControllerTest extends TestCase
                 'quote_status' => 'Awarded',
                 'value' => 300,
                 'inquiry_source' => 'Website',
+            ],
+        ]);
+
+        DB::table('quotes_training')->insert([
+            ['id' => 1, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+            ['id' => 3, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+            ['id' => 4, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+            ['id' => 5, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+            ['id' => 6, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+            ['id' => 7, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+        ]);
+        DB::table('quotes_ih')->insert([
+            ['id' => 2, 'created_by_code' => 'AZA', 'created_by_name' => 'Azam Bin Husain'],
+        ]);
+
+        DB::table('quote_inquiry_sources')->insert([
+            ['quote_id' => 1, 'service_type' => 'Training', 'source' => 'WhatsApp'],
+            ['quote_id' => 2, 'service_type' => 'Industrial Hygiene', 'source' => 'Email'],
+            ['quote_id' => 3, 'service_type' => 'Training', 'source' => 'WhatsApp'],
+            ['quote_id' => 4, 'service_type' => 'Training', 'source' => 'Referral'],
+            ['quote_id' => 5, 'service_type' => 'Training', 'source' => 'Referral'],
+            ['quote_id' => 6, 'service_type' => 'Training', 'source' => 'Referral'],
+            ['quote_id' => 7, 'service_type' => 'Training', 'source' => 'Website'],
+        ]);
+
+        DB::table('projects_main')->insert([
+            [
+                'id' => 101,
+                'project_name' => 'Training Project A',
+                'quote_id' => 1,
+                'project_type' => 'Training',
+                'quote_value' => 3000,
+                'award_date' => '2026-05-05',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 102,
+                'project_name' => 'IH Project B',
+                'quote_id' => 2,
+                'project_type' => 'Industrial Hygiene',
+                'quote_value' => 2000,
+                'award_date' => '2026-05-06',
+                'status' => 'completed',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 103,
+                'project_name' => 'Training Project D',
+                'quote_id' => 4,
+                'project_type' => 'Training',
+                'quote_value' => 400,
+                'award_date' => '2026-04-20',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 104,
+                'project_name' => 'Training Project E',
+                'quote_id' => 5,
+                'project_type' => 'Training',
+                'quote_value' => 500,
+                'award_date' => '2025-12-20',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 105,
+                'project_name' => 'Training Project F',
+                'quote_id' => 6,
+                'project_type' => 'Training',
+                'quote_value' => 600,
+                'award_date' => '2026-01-15',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 106,
+                'project_name' => 'Training Project G',
+                'quote_id' => 7,
+                'project_type' => 'Training',
+                'quote_value' => 300,
+                'award_date' => '2026-03-25',
+                'status' => 'active',
+                'created_by' => 1,
             ],
         ]);
 

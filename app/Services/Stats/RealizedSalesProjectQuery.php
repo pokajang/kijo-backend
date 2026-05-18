@@ -105,11 +105,11 @@ class RealizedSalesProjectQuery
                 WHERE pm.quote_id = {$quoteAlias}.quote_id
                   AND LOWER(pm.status) IN ('active', 'completed')
                   AND (
-                    ({$quoteAlias}.service_group = 'Training' AND LOWER(pm.project_type) LIKE '%training%')
-                    OR ({$quoteAlias}.service_group = 'Industrial Hygiene' AND (LOWER(pm.project_type) LIKE '%industrial%' OR LOWER(pm.project_type) LIKE '%ih%'))
-                    OR ({$quoteAlias}.service_group = 'Manpower Supply' AND LOWER(pm.project_type) LIKE '%manpower%')
-                    OR ({$quoteAlias}.service_group = 'Equipment Supply' AND LOWER(pm.project_type) LIKE '%equipment%')
-                    OR ({$quoteAlias}.service_group = 'Special Service' AND LOWER(pm.project_type) LIKE '%special%')
+                    (LOWER({$quoteAlias}.service_group) LIKE '%training%' AND LOWER(pm.project_type) LIKE '%training%')
+                    OR ((LOWER({$quoteAlias}.service_group) LIKE '%industrial%' OR LOWER({$quoteAlias}.service_group) = 'ih') AND (LOWER(pm.project_type) LIKE '%industrial%' OR LOWER(pm.project_type) LIKE '%ih%'))
+                    OR (LOWER({$quoteAlias}.service_group) LIKE '%manpower%' AND LOWER(pm.project_type) LIKE '%manpower%')
+                    OR (LOWER({$quoteAlias}.service_group) LIKE '%equipment%' AND LOWER(pm.project_type) LIKE '%equipment%')
+                    OR (LOWER({$quoteAlias}.service_group) LIKE '%special%' AND LOWER(pm.project_type) LIKE '%special%')
                   )
             )
         ";
