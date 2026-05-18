@@ -132,8 +132,8 @@ class SportEventController extends Controller
         $staffName = $request->session()->get('full_name', '');
         $staffCode = $request->session()->get('name_code', '');
 
-        $file                    = $request->file('image');
-        [$storedPath, $publicUrl] = $this->storeImage($file);
+        $file       = $request->file('image');
+        $storedPath = $this->storeImage($file);
 
         DB::beginTransaction();
         try {
@@ -147,7 +147,7 @@ class SportEventController extends Controller
             $eventId = DB::table('sport_events')->insertGetId([
                 'event_name'     => $request->input('event_name'),
                 'event_datetime' => $normalizedDt,
-                'image_path'     => $publicUrl,
+                'image_path'     => $storedPath,
                 'image_name'     => preg_replace('/[^A-Za-z0-9._-]+/', '_', $file->getClientOriginalName()),
                 'image_size'     => $file->getSize(),
                 'image_mime'     => $file->getMimeType(),
@@ -187,10 +187,9 @@ class SportEventController extends Controller
 
         $hasNewImage              = $request->hasFile('image');
         $storedPath               = null;
-        $publicUrl                = null;
 
         if ($hasNewImage) {
-            [$storedPath, $publicUrl] = $this->storeImage($request->file('image'));
+            $storedPath = $this->storeImage($request->file('image'));
         }
 
         DB::beginTransaction();
@@ -224,7 +223,7 @@ class SportEventController extends Controller
             ];
             if ($hasNewImage) {
                 $file                  = $request->file('image');
-                $updates['image_path'] = $publicUrl;
+                $updates['image_path'] = $storedPath;
                 $updates['image_name'] = preg_replace('/[^A-Za-z0-9._-]+/', '_', $file->getClientOriginalName());
                 $updates['image_size'] = $file->getSize();
                 $updates['image_mime'] = $file->getMimeType();
@@ -302,7 +301,7 @@ class SportEventController extends Controller
         return array_values(array_unique($ids));
     }
 
-    private function storeImage(\Illuminate\Http\UploadedFile $file): array
+    private function storeImage(\Illuminate\Http\UploadedFile $file): string
     {
         $year       = date('Y');
         $ext        = self::MIME_EXT[$file->getMimeType()] ?? 'jpg';
@@ -310,7 +309,7 @@ class SportEventController extends Controller
         $dir        = "sport-time/{$year}";
         $storedPath = "{$dir}/{$storedName}";
         Storage::disk('public')->putFileAs($dir, $file, $storedName);
-        return [$storedPath, Storage::disk('public')->url($storedPath)];
+        return $storedPath;
     }
 
     private function resolveAttendees(array $ids): array
