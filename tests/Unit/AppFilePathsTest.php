@@ -63,6 +63,7 @@ class AppFilePathsTest extends TestCase
         $this->assertSame('/storage/catalog/file.pdf', AppFilePaths::publicUrlForStoredPath('catalog/file.pdf'));
         $this->assertSame('/storage/whats-new/notice.pdf', AppFilePaths::publicUrlForStoredPath('whats-new/notice.pdf'));
         $this->assertSame('/storage/sport-time/banner.jpg', AppFilePaths::publicUrlForStoredPath('sport-time/banner.jpg'));
+        $this->assertSame('/storage/sport-time/banner.jpg', AppFilePaths::publicUrlForStoredPath('/backend/uploads/sport-time/banner.jpg'));
     }
 
     public function test_public_storage_relative_paths_are_normalized_for_disk_reads(): void
@@ -80,6 +81,11 @@ class AppFilePathsTest extends TestCase
         $this->assertSame(
             'legacy-uploads/procedures/2026/file.pdf',
             AppFilePaths::publicStorageRelativePath('uploads/procedures/2026/file.pdf')
+        );
+
+        $this->assertSame(
+            'sport-time/2026/banner.jpg',
+            AppFilePaths::publicStorageRelativePath('/backend/uploads/sport-time/2026/banner.jpg')
         );
 
         $this->assertSame(

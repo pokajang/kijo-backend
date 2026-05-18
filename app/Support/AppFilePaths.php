@@ -294,6 +294,10 @@ class AppFilePaths
 
         $legacyRelativePath = self::legacyUploadRelativePath($publicPath);
         if ($legacyRelativePath !== null) {
+            if (self::isPublicRelativePath($legacyRelativePath)) {
+                return $legacyRelativePath;
+            }
+
             return 'legacy-uploads/'.$legacyRelativePath;
         }
 
