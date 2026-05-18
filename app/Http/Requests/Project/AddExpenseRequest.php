@@ -8,6 +8,15 @@ class AddExpenseRequest extends FormRequest
 {
     public function authorize(): bool { return true; }
 
+    protected function prepareForValidation(): void
+    {
+        $routeProjectId = $this->route('id');
+
+        if ($routeProjectId !== null) {
+            $this->merge(['project_id' => $routeProjectId]);
+        }
+    }
+
     public function rules(): array
     {
         return [

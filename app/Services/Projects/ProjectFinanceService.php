@@ -64,15 +64,28 @@ class ProjectFinanceService
     public function deleteExpense(Request $request): JsonResponse
     {
         $expenseId = (int) $request->input('expense_id', 0);
-        if (!$expenseId) {
-            return response()->json(['status' => 'error', 'message' => 'Missing or invalid expense_id.']);
+        $projectId = (int) $request->input('project_id', 0);
+        if (!$expenseId || !$projectId) {
+            return response()->json(['status' => 'error', 'message' => 'Missing or invalid project_id/expense_id.']);
         }
 
-        $filePath = DB::table('project_expenses')->where('id', $expenseId)->value('file_path');
-        DB::table('project_expenses')->where('id', $expenseId)->delete();
+        $filePath = DB::table('project_expenses')
+            ->where('id', $expenseId)
+            ->where('project_id', $projectId)
+            ->value('file_path');
+
+        $deleted = DB::table('project_expenses')
+            ->where('id', $expenseId)
+            ->where('project_id', $projectId)
+            ->delete();
+
+        if ($deleted < 1) {
+            return response()->json(['status' => 'error', 'message' => 'Expense not found.']);
+        }
+
         AppFilePaths::deleteStoredPath((string) $filePath);
 
-        $this->auditLog->log($request, "Deleted project expense ID #{$expenseId}");
+        $this->auditLog->log($request, "Deleted project expense ID #{$expenseId} for project ID #{$projectId}");
 
         return response()->json(['status' => 'success', 'message' => 'Expense deleted successfully.']);
     }

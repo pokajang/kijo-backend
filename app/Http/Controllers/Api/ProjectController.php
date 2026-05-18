@@ -66,8 +66,10 @@ class ProjectController extends Controller
         return $this->projectService()->close($request);
     }
 
-    public function reloadPoNumber(Request $request): JsonResponse
+    public function reloadPoNumber(Request $request, int $id): JsonResponse
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->reloadPoNumber($request);
     }
 

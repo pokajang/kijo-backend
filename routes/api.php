@@ -419,18 +419,15 @@ Route::middleware('auth.session')->group(function () {
     Route::get('projects/{id}/loa',                             [ProjectController::class, 'generateLoa']);
     Route::get('projects/{id}/finance',                         [ProjectController::class, 'financeData']);
     Route::post('projects/{id}/expenses',                       [ProjectController::class, 'addExpense']);
-    Route::delete('projects/{id}/expenses/{expenseId}',         function (\Illuminate\Http\Request $request, ProjectController $c, int $_id, int $expenseId) {
-        $request->merge(['expense_id' => $expenseId]);
+    Route::delete('projects/{id}/expenses/{expenseId}',         function (\Illuminate\Http\Request $request, ProjectController $c, int $id, int $expenseId) {
+        $request->merge(['project_id' => $id, 'expense_id' => $expenseId]);
         return $c->deleteExpense($request);
     });
     Route::get('projects/{id}/progress',                        [ProjectController::class, 'listProgress']);
     Route::post('projects/{id}/progress',                       [ProjectController::class, 'addProgress']);
-    Route::put('projects/{id}/progress/{progressId}',           function (\Illuminate\Http\Request $request, ProjectController $c, int $_id, int $progressId) {
-        $request->merge(['progress_id' => $progressId]);
-        return $c->updateProgress($request);
-    });
-    Route::delete('projects/{id}/progress/{progressId}',        function (\Illuminate\Http\Request $request, ProjectController $c, int $_id, int $progressId) {
-        $request->merge(['progress_id' => $progressId]);
+    Route::put('projects/{id}/progress/{progressId}',           [ProjectController::class, 'updateProgress']);
+    Route::delete('projects/{id}/progress/{progressId}',        function (\Illuminate\Http\Request $request, ProjectController $c, int $id, int $progressId) {
+        $request->merge(['project_id' => $id, 'progress_id' => $progressId]);
         return $c->deleteProgress($request);
     });
     Route::get('projects/vendors/all',                          [ProjectController::class, 'allVendors']);

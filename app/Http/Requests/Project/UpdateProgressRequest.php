@@ -8,6 +8,25 @@ class UpdateProgressRequest extends FormRequest
 {
     public function authorize(): bool { return true; }
 
+    protected function prepareForValidation(): void
+    {
+        $routeProjectId = $this->route('id');
+        $routeProgressId = $this->route('progressId');
+        $merge = [];
+
+        if ($routeProjectId !== null) {
+            $merge['project_id'] = $routeProjectId;
+        }
+
+        if ($routeProgressId !== null) {
+            $merge['progress_id'] = $routeProgressId;
+        }
+
+        if ($merge !== []) {
+            $this->merge($merge);
+        }
+    }
+
     public function rules(): array
     {
         return [
