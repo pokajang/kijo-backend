@@ -1,0 +1,72 @@
+{
+  "rateTypes": {
+    "CLIENT_SITE_NORMAL": "client_site_normal",
+    "CLIENT_SITE_SPECIAL_TRAINER": "client_site_special_trainer",
+    "CLIENT_SITE_SPECIAL_APPROVAL": "client_site_special_approval",
+    "SAFEX_INDIVIDUAL_AESP": "safex_individual_aesp",
+    "SAFEX_INDIVIDUAL_AESPR": "safex_individual_aespr",
+    "SAFEX_FACILITY_RENTAL": "safex_facility_rental"
+  },
+  "rates": {
+    "client_site_normal": {
+      "label": "Client Site - Normal Training",
+      "pricingBasis": "per_session",
+      "unitCost": 4500,
+      "rateLabel": "RM 4,500.00 / day"
+    },
+    "client_site_special_trainer": {
+      "label": "Client Site - Special Trainer",
+      "pricingBasis": "per_session",
+      "unitCost": 5000,
+      "rateLabel": "RM 5,000.00 / day"
+    },
+    "client_site_special_approval": {
+      "label": "Special Training / Special Client",
+      "pricingBasis": "per_session",
+      "unitCost": 5000,
+      "rateLabel": "RM 5,000.00 minimum; management approval required",
+      "requiresManagementApproval": true
+    },
+    "safex_individual_aesp": {
+      "label": "SAFEX Individual - AESP",
+      "pricingBasis": "per_pax",
+      "unitCost": 870,
+      "rateLabel": "RM 870.00 / pax"
+    },
+    "safex_individual_aespr": {
+      "label": "SAFEX Individual - AESPR",
+      "pricingBasis": "per_pax",
+      "unitCost": 545,
+      "rateLabel": "RM 545.00 / pax"
+    },
+    "safex_facility_rental": {
+      "label": "SAFEX Facility Rental",
+      "pricingBasis": "per_session",
+      "unitCost": 1000,
+      "mealUnitCost": 50,
+      "rateLabel": "RM 1,000.00 / day; meals RM 50.00 / pax / day"
+    }
+  },
+  "travelRegions": {
+    "none": {
+      "label": "No Transportation / Accommodation",
+      "amount": 0
+    },
+    "northern": {
+      "label": "Northern - Perlis, Kedah, Penang & Perak",
+      "amount": 1500
+    },
+    "east_coast": {
+      "label": "East Coast - Kelantan, Terengganu & Pahang",
+      "amount": 1500
+    },
+    "southern": {
+      "label": "Southern - Johor",
+      "amount": 1500
+    },
+    "central_border": {
+      "label": "N9, Malacca, Border Selangor-Perak, Border Selangor-Pahang",
+      "amount": 800
+    }
+  }
+}

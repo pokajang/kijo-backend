@@ -116,7 +116,7 @@ trait ValidatesTrainingRateFloor
             return $config;
         }
 
-        $path = dirname(__DIR__, 5) . '/shared/config/trainingRates.json';
+        $path = config_path('quote_rates/trainingRates.json');
         $raw = file_get_contents($path);
         $config = json_decode($raw ?: '{}', true);
 

@@ -104,7 +104,7 @@ trait ValidatesManpowerRateFloor
             return $config;
         }
 
-        $path = dirname(__DIR__, 5) . '/shared/config/manpowerRates.json';
+        $path = config_path('quote_rates/manpowerRates.json');
         $raw = file_get_contents($path);
         $config = json_decode($raw ?: '{}', true);
 
