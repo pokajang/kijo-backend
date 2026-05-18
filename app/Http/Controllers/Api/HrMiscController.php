@@ -13,7 +13,7 @@ class HrMiscController extends Controller
 {
     public function __construct(private AuditLogService $auditLog) {}
 
-    private function denyUnlessHrAdmin(Request $request)
+    private function denyUnlessStaffManager(Request $request)
     {
         $roles = $request->session()->get('roles', []);
         if (!is_array($roles)) {
@@ -22,7 +22,7 @@ class HrMiscController extends Controller
 
         $authorized = collect($roles)
             ->map(static fn ($role): string => strtolower(trim((string) $role)))
-            ->intersect(['hr', 'system admin'])
+            ->intersect(['hr', 'manager', 'system admin'])
             ->isNotEmpty();
 
         if ($authorized) {
@@ -66,7 +66,7 @@ class HrMiscController extends Controller
      */
     public function viewStaffDetail(Request $request, ?int $id = null)
     {
-        if ($unauthorized = $this->denyUnlessHrAdmin($request)) {
+        if ($unauthorized = $this->denyUnlessStaffManager($request)) {
             return $unauthorized;
         }
 

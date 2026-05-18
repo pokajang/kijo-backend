@@ -145,13 +145,19 @@ class SpecialQuoteRecordListingService
             return response()->json(['status' => 'error', 'message' => "Missing or invalid 'id'."], 400);
         }
 
-        $quote = DB::table('quotes_special')->where('id', $quoteId)->first(['status', 'quote_ref_no']);
+        $quote = DB::table('quotes_special')
+            ->where('id', $quoteId)
+            ->first(['status', 'quote_ref_no', 'created_by_id', 'created_by_code']);
         if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
         if (strtolower($quote->status) === 'awarded') {
             return response()->json(['status' => 'error', 'message' => 'Cannot delete a quotation that has already been awarded.'], 403);
+        }
+
+        if ($denial = QuoteRecordDeletePermission::denial($request, $quote)) {
+            return $denial;
         }
 
         DB::beginTransaction();
@@ -188,7 +194,7 @@ class SpecialQuoteRecordListingService
             return response()->json(['status' => 'error', 'message' => 'Missing or invalid quote_id.'], 400);
         }
 
-        return $this->fetchRelatedDocs($quoteId, 'special', '%special%');
+        return $this->fetchRelatedDocs($quoteId);
     }
 
     public function specialLineItemsByService(SpecialLineItemsByServiceRequest $request): JsonResponse
@@ -219,54 +225,11 @@ class SpecialQuoteRecordListingService
         return response()->json(['status' => 'success', 'data' => $items]);
     }
 
-    private function fetchRelatedDocs(int $quoteId, string $quoteType, string $projectTypePattern): JsonResponse
+    private function fetchRelatedDocs(int $quoteId): JsonResponse
     {
-        $projects = DB::select("
-            SELECT id, project_type
-            FROM projects_main
-            WHERE quote_id = ?
-              AND (
-                quote_type = ?
-                OR (
-                    (quote_type IS NULL OR TRIM(quote_type) = '')
-                    AND LOWER(project_type) LIKE ?
-                )
-              )
-        ", [$quoteId, $quoteType, $projectTypePattern]);
-
-        $projectIds = array_values(array_filter(array_map(fn ($r) => (int) $r->id, $projects)));
-
-        $deliveryOrders = [];
-        $jd14Forms = [];
-        $invoices = [];
-
-        if (! empty($projectIds)) {
-            $ph = implode(',', array_fill(0, count($projectIds), '?'));
-
-            $deliveryOrders = DB::select("
-                SELECT id, do_number FROM do_details WHERE project_id IN ({$ph}) ORDER BY id ASC
-            ", $projectIds);
-
-            $jd14Forms = DB::select("
-                SELECT id, approval_no FROM invoices_jd14form WHERE project_id IN ({$ph}) ORDER BY id ASC
-            ", $projectIds);
-
-            $invoices = DB::select("
-                SELECT id, invoice_ref_no, receipt_no FROM invoices WHERE project_id IN ({$ph}) ORDER BY id ASC
-            ", $projectIds);
-        }
-
-        $receipts = array_values(array_filter($invoices, fn ($inv) => ! empty($inv->receipt_no)));
-
         return response()->json([
             'status' => 'success',
-            'data' => [
-                'projects' => $projects,
-                'delivery_orders' => $deliveryOrders,
-                'invoices' => $invoices,
-                'receipts' => $receipts,
-                'jd14' => $jd14Forms,
-            ],
+            'data' => QuoteRelatedDocsPayload::forQuote($quoteId, 'special', '%special%'),
         ]);
     }
 }

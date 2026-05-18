@@ -28,6 +28,14 @@ class ProjectController extends Controller
         return app(ProjectService::class);
     }
 
+    private function withRouteProjectId(Request $request, int $id): Request
+    {
+        $request->query->set('project_id', $id);
+        $request->merge(['project_id' => $id]);
+
+        return $request;
+    }
+
     public function index(Request $request): JsonResponse
     {
         return $this->projectService()->index($request);
@@ -63,9 +71,18 @@ class ProjectController extends Controller
         return $this->projectService()->reloadPoNumber($request);
     }
 
-    public function crmDetails(Request $request): JsonResponse
+    public function crmDetails(Request $request, int $id): JsonResponse
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->crmDetails($request);
+    }
+
+    public function commercialDocs(Request $request, int $id): JsonResponse
+    {
+        $request = $this->withRouteProjectId($request, $id);
+
+        return $this->projectService()->commercialDocs($request);
     }
 
     public function addCollaborator(AddCollaboratorRequest $request): JsonResponse
@@ -73,8 +90,10 @@ class ProjectController extends Controller
         return $this->projectService()->addCollaborator($request);
     }
 
-    public function listCollaborators(Request $request): JsonResponse
+    public function listCollaborators(Request $request, int $id): JsonResponse
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->listCollaborators($request);
     }
 
@@ -88,8 +107,10 @@ class ProjectController extends Controller
         return $this->projectService()->assignVendor($request);
     }
 
-    public function listVendors(Request $request): JsonResponse
+    public function listVendors(Request $request, int $id): JsonResponse
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->listVendors($request);
     }
 
@@ -108,8 +129,10 @@ class ProjectController extends Controller
         return $this->projectService()->allVendors($request);
     }
 
-    public function generateLoa(Request $request): mixed
+    public function generateLoa(Request $request, int $id): mixed
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->generateLoa($request);
     }
 
@@ -123,8 +146,10 @@ class ProjectController extends Controller
         return $this->projectService()->deleteExpense($request);
     }
 
-    public function financeData(Request $request): JsonResponse
+    public function financeData(Request $request, int $id): JsonResponse
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->financeData($request);
     }
 
@@ -133,8 +158,10 @@ class ProjectController extends Controller
         return $this->projectService()->addProgress($request);
     }
 
-    public function listProgress(Request $request): JsonResponse
+    public function listProgress(Request $request, int $id): JsonResponse
     {
+        $request = $this->withRouteProjectId($request, $id);
+
         return $this->projectService()->listProgress($request);
     }
 

@@ -272,7 +272,7 @@ class BatchTwoSmokeSeeder extends Seeder
                 'venue_details' => 'Kajang',
                 'fee_breakdown' => 'RM2500 flat',
                 'payment_terms' => '30 days',
-                'loa_running_no' => 1,
+                'loa_running_no' => 0,
                 'loa_ref_no' => 'LOA-B2-SEED-0001',
                 'updated_at' => $now,
                 'created_at' => $now,
@@ -320,7 +320,7 @@ class BatchTwoSmokeSeeder extends Seeder
             'supplier_contact_name' => 'Seed Vendor PIC',
             'supplier_contact_number' => '60115556677',
             'project_id' => $projectId,
-            'po_running_no' => 1,
+            'po_running_no' => 0,
             'po_ref_no' => $poRefNo,
             'discount' => 10.00,
             'delivery_charge' => 20.00,
@@ -367,4 +367,3 @@ class BatchTwoSmokeSeeder extends Seeder
         );
     }
 }
-

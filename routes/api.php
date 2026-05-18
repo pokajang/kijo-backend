@@ -342,7 +342,7 @@ Route::middleware('auth.session')->group(function () {
     // Misc (legacy)
     // Misc (clean paths)
     Route::get('hr/staff',                                [HrMiscController::class, 'listStaff']);
-    Route::get('hr/staff/{id}',                           [HrMiscController::class, 'viewStaffDetail'])->middleware('role:HR,System Admin');
+    Route::get('hr/staff/{id}',                           [HrMiscController::class, 'viewStaffDetail'])->middleware('role:HR,Manager,System Admin');
     Route::post('hr/staff/{id}/terminate',                [HrMiscController::class, 'handleTerminate']);
     Route::get('hr/handbook/current',                     [HandbookController::class, 'current']);
     Route::post('hr/handbook/publish',                    [HandbookController::class, 'publish']);
@@ -399,6 +399,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('projects/{id}/close',                          [ProjectController::class, 'close']);
     Route::post('projects/{id}/reload-po',                      [ProjectController::class, 'reloadPoNumber']);
     Route::get('projects/{id}/crm',                             [ProjectController::class, 'crmDetails']);
+    Route::get('projects/{id}/commercial-docs',                 [ProjectController::class, 'commercialDocs']);
     Route::get('projects/{id}/collaborators',                   [ProjectController::class, 'listCollaborators']);
     Route::post('projects/{id}/collaborators',                  [ProjectController::class, 'addCollaborator']);
     Route::delete('projects/{id}/collaborators/{staffId}',      function (\Illuminate\Http\Request $request, ProjectController $c, int $id, int $staffId) {

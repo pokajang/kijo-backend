@@ -59,8 +59,11 @@ class QuoteRecordController extends Controller
         return $this->quoteRecordService()->destroyEquipment($request, $id);
     }
 
-    public function relatedDocsEquipment(Request $request): JsonResponse
+    public function relatedDocsEquipment(Request $request, int $id = 0): JsonResponse
     {
+        if ($id > 0) {
+            $request->merge(['quote_id' => $id, 'id' => $id]);
+        }
         return $this->quoteRecordService()->relatedDocsEquipment($request);
     }
 
@@ -109,8 +112,11 @@ class QuoteRecordController extends Controller
         return $this->quoteRecordService()->destroyIh($request, $id);
     }
 
-    public function relatedDocsIh(Request $request): JsonResponse
+    public function relatedDocsIh(Request $request, int $id = 0): JsonResponse
     {
+        if ($id > 0) {
+            $request->merge(['quote_id' => $id, 'id' => $id]);
+        }
         return $this->quoteRecordService()->relatedDocsIh($request);
     }
 
@@ -159,8 +165,11 @@ class QuoteRecordController extends Controller
         return $this->quoteRecordService()->destroyManpower($request, $id);
     }
 
-    public function relatedDocsManpower(Request $request): JsonResponse
+    public function relatedDocsManpower(Request $request, int $id = 0): JsonResponse
     {
+        if ($id > 0) {
+            $request->merge(['quote_id' => $id, 'id' => $id]);
+        }
         return $this->quoteRecordService()->relatedDocsManpower($request);
     }
 

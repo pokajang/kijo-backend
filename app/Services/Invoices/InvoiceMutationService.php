@@ -97,7 +97,11 @@ class InvoiceMutationService extends InvoiceBaseService
             $clientId = $projectRow->client_id ?? null;
             $documentLanguage = $this->normalizeDocumentLanguage($projectRow->proposal_language ?? 'en');
 
-            $maxRun    = (int) DB::table('invoices')->whereYear('created_at', $yearFull)->max('invoice_running_no');
+            $maxRun    = (int) DB::table('invoices')
+                ->whereYear('created_at', $yearFull)
+                ->where('invoice_ref_no', 'like', "INV{$yearTwo}-%")
+                ->whereBetween('invoice_running_no', [1, 9999])
+                ->max('invoice_running_no');
             $runningNo = $maxRun + 1;
             $padded    = str_pad((string) $runningNo, 4, '0', STR_PAD_LEFT);
             $refNo     = "INV{$yearTwo}-{$padded}{$creatorCode}";

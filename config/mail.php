@@ -49,6 +49,18 @@ return [
             'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
         ],
 
+        'quote_smtp' => [
+            'transport' => 'smtp',
+            'scheme' => env('QUOTE_MAIL_SCHEME', env('MAIL_SCHEME')),
+            'url' => env('QUOTE_MAIL_URL'),
+            'host' => env('QUOTE_MAIL_HOST', env('MAIL_HOST', '127.0.0.1')),
+            'port' => env('QUOTE_MAIL_PORT', env('MAIL_PORT', 2525)),
+            'username' => env('QUOTE_MAIL_USERNAME'),
+            'password' => env('QUOTE_MAIL_PASSWORD'),
+            'timeout' => null,
+            'local_domain' => env('QUOTE_MAIL_EHLO_DOMAIN', env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST))),
+        ],
+
         'ses' => [
             'transport' => 'ses',
         ],
@@ -113,6 +125,14 @@ return [
     'from' => [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
         'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
+    ],
+
+    'quote' => [
+        'mailer' => env('QUOTE_MAIL_MAILER', 'quote_smtp'),
+        'from' => [
+            'address' => env('QUOTE_MAIL_FROM_ADDRESS'),
+            'name' => env('QUOTE_MAIL_FROM_NAME', 'AMIOSH Admin'),
+        ],
     ],
 
 ];

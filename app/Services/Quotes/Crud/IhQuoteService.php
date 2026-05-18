@@ -59,7 +59,7 @@ class IhQuoteService
                 [$nameCode, $prefix]
             );
             $next  = (($row->max_run ?? 0) ?: 0) + 1;
-            $refNo = 'QIH' . date('y') . '-' . str_pad((string) $next, 3, '0', STR_PAD_LEFT) . $nameCode;
+            $refNo = 'QIH' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
 
             $quoteId = DB::table($table)->insertGetId([
                 'service_group'      => 'ih',

@@ -62,7 +62,7 @@ class TrainingQuoteService
                 [$nameCode, $prefix]
             );
             $next = (($row->max_run ?? 0) ?: 0) + 1;
-            $refNo = 'QTR' . date('y') . '-' . str_pad((string) $next, 3, '0', STR_PAD_LEFT) . $nameCode;
+            $refNo = 'QTR' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
 
             $quoteId = DB::table($table)->insertGetId([
                 'client_id' => $data['client_id'],

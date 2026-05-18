@@ -161,6 +161,7 @@ class ProjectVendorService
 
             $lastNo  = (int) DB::table('project_vendors')
                 ->whereYear('award_date', $awardYear)
+                ->where('loa_ref_no', 'like', "LOA{$awardYearTwo}-%")
                 ->lockForUpdate()
                 ->max('loa_running_no');
             $nextNo  = $lastNo + 1;

@@ -57,8 +57,11 @@ class QuoteRecordTrainingSpecialController extends Controller
         return $this->quoteRecordTrainingSpecialService()->destroyTraining($request, $id);
     }
 
-    public function relatedDocsTraining(Request $request): JsonResponse
+    public function relatedDocsTraining(Request $request, int $id = 0): JsonResponse
     {
+        if ($id > 0) {
+            $request->merge(['quote_id' => $id, 'id' => $id]);
+        }
         return $this->quoteRecordTrainingSpecialService()->relatedDocsTraining($request);
     }
 
@@ -107,8 +110,11 @@ class QuoteRecordTrainingSpecialController extends Controller
         return $this->quoteRecordTrainingSpecialService()->destroySpecial($request, $id);
     }
 
-    public function relatedDocsSpecial(Request $request): JsonResponse
+    public function relatedDocsSpecial(Request $request, int $id = 0): JsonResponse
     {
+        if ($id > 0) {
+            $request->merge(['quote_id' => $id, 'id' => $id]);
+        }
         return $this->quoteRecordTrainingSpecialService()->relatedDocsSpecial($request);
     }
 

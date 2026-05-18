@@ -143,8 +143,8 @@ class InvoiceController extends Controller
         return $this->jd14Service()->jd14ByProject($request);
     }
 
-    public function jd14Pdf(Request $request)
+    public function jd14Pdf(Request $request, int $id = 0)
     {
-        return $this->jd14Service()->jd14Pdf($request);
+        return $this->jd14Service()->jd14Pdf($request, $id);
     }
 }

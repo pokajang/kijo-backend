@@ -204,9 +204,11 @@ class Jd14Service
         return response()->json(['approval_no' => $approvalNo]);
     }
 
-    public function jd14Pdf(Request $request)
+    public function jd14Pdf(Request $request, int $id = 0)
     {
-        $id = (int) $request->query('id', 0);
+        if ($id <= 0) {
+            $id = (int) $request->query('id', 0);
+        }
         if ($id < 1) {
             return response()->json(['status' => 'error', 'message' => 'Invalid or missing ID'], 422);
         }
@@ -294,12 +296,12 @@ EOD;
 
             $signaturePath = AppFilePaths::tcpdfTemplatePath('assets/sign.png');
             if (is_file($signaturePath)) {
-                $pdf->Image($signaturePath, 43, 184, 35, 0, 'PNG');
+                $pdf->Image($signaturePath, 46.5, 184, 28, 0, 'PNG');
             }
 
             $stampPath = AppFilePaths::tcpdfTemplatePath('assets/stamp.png');
             if (is_file($stampPath)) {
-                $pdf->Image($stampPath, 144, 190, 50, 0, 'PNG');
+                $pdf->Image($stampPath, 149, 190, 40, 0, 'PNG');
             }
 
             $pdf->SetFont('helvetica', 'B', 11);

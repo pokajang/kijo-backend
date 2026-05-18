@@ -46,6 +46,11 @@ class ProjectService
         return app(ProjectProgressService::class);
     }
 
+    private function projectCommercialDocsService(): ProjectCommercialDocsService
+    {
+        return app(ProjectCommercialDocsService::class);
+    }
+
     public function index(Request $request): JsonResponse
     {
         return $this->projectCoreService()->index($request);
@@ -84,6 +89,11 @@ class ProjectService
     public function crmDetails(Request $request): JsonResponse
     {
         return $this->projectCoreService()->crmDetails($request);
+    }
+
+    public function commercialDocs(Request $request): JsonResponse
+    {
+        return $this->projectCommercialDocsService()->commercialDocs($request);
     }
 
     public function addCollaborator(AddCollaboratorRequest $request): JsonResponse

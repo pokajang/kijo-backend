@@ -36,7 +36,7 @@
         .sign-table td { vertical-align: top; padding: 0; }
         .sign-left { width: 50%; font-size: 11pt; }
         .sign-right { width: 50%; text-align: right; }
-        .sign-right img { max-width: 22mm; height: auto; margin-right: 2mm; }
+        .sign-img { max-width: 22mm; height: auto; margin-right: 2mm; }
         .stamp-img { max-width: 40mm; height: auto; }
         .terms-block { font-size: 9pt; margin: 2mm 0; }
         .terms-block h4 { margin: 2mm 0 1mm 0; font-size: 10pt; }
@@ -235,7 +235,7 @@
         </td>
         <td class="sign-right">
             @if($signDataUri)
-                <img src="{{ $signDataUri }}" style="max-width:22mm;height:auto;margin-right:2mm;" alt="Signature">
+                <img src="{{ $signDataUri }}" class="sign-img" alt="Signature">
             @endif
             @if($stampDataUri)
                 <img src="{{ $stampDataUri }}" class="stamp-img" alt="Stamp">

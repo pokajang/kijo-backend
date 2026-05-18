@@ -383,7 +383,7 @@ class MeetingService
                 DB::rollBack();
                 return response()->json(['success' => false, 'message' => 'Meeting record not found.'], 404);
             }
-            if ((int) $meeting->created_by !== $staffId) {
+            if ((int) $meeting->created_by !== $staffId && ! $this->isSystemAdmin($request)) {
                 DB::rollBack();
                 return response()->json(['success' => false, 'message' => 'You are not allowed to delete this meeting record.'], 403);
             }
@@ -435,6 +435,18 @@ class MeetingService
 
         $this->attachments->deletePublicPath((string) ($meeting->attachment_path ?? ''));
         return response()->json(['success' => true, 'message' => 'Meeting minutes deleted successfully.']);
+    }
+
+    private function isSystemAdmin(Request $request): bool
+    {
+        $roles = $request->session()->get('roles', []);
+        if (! is_array($roles)) {
+            $roles = $roles ? [$roles] : [];
+        }
+
+        return collect($roles)
+            ->map(static fn ($role): string => strtolower(trim((string) $role)))
+            ->contains('system admin');
     }
 
     private function validatePayload(Request $request): array

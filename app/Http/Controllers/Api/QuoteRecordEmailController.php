@@ -24,18 +24,19 @@ class QuoteRecordEmailController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Unsupported quote service.'], 404);
         }
 
-        $mailer = (string) config('mail.default', '');
-        $fromAddress = trim((string) config('mail.from.address', ''));
-        $fromName = trim((string) config('mail.from.name', 'AMIOSH Admin'));
+        $mailer = (string) config('mail.quote.mailer', 'quote_smtp');
+        $fromAddress = trim((string) config('mail.quote.from.address', ''));
+        $fromName = trim((string) config('mail.quote.from.name', 'AMIOSH Admin'));
         if (
             $mailer === '' ||
             in_array($mailer, ['array', 'log'], true) ||
             $fromAddress === '' ||
-            str_contains(strtolower($fromAddress), 'example.com')
+            str_contains(strtolower($fromAddress), 'example.com') ||
+            !is_array(config("mail.mailers.{$mailer}"))
         ) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'System email sender is not configured yet. Set the SMTP mailer and sender address first.',
+                'message' => 'Quotation email sender is not configured yet. Set the quote SMTP mailer and sender address first.',
             ], 503);
         }
 
@@ -101,7 +102,7 @@ class QuoteRecordEmailController extends Controller
         ])->render();
 
         try {
-            Mail::html($htmlBody, function ($message) use (
+            Mail::mailer($mailer)->html($htmlBody, function ($message) use (
                 $attachmentName,
                 $fromAddress,
                 $fromName,

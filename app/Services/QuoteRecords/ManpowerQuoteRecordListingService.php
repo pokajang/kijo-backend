@@ -105,6 +105,10 @@ class ManpowerQuoteRecordListingService
             return response()->json(['status' => 'error', 'message' => 'Cannot delete a quotation that has already been awarded.'], 403);
         }
 
+        if ($denial = QuoteRecordDeletePermission::denial($request, $row)) {
+            return $denial;
+        }
+
         $quoteRefNo = $row->quote_ref_no;
 
         DB::beginTransaction();
@@ -138,62 +142,7 @@ class ManpowerQuoteRecordListingService
 
         return response()->json([
             'status' => 'success',
-            'data' => $this->fetchRelatedDocs($quoteId, 'manpower', '%manpower%'),
+            'data' => QuoteRelatedDocsPayload::forQuote($quoteId, 'manpower', '%manpower%'),
         ]);
-    }
-
-    private function fetchRelatedDocs(int $quoteId, string $quoteType, string ...$projectTypePatterns): array
-    {
-        $projectQuery = DB::table('projects_main')
-            ->where('quote_id', $quoteId)
-            ->where(function ($q) use ($quoteType, $projectTypePatterns) {
-                $q->where('quote_type', $quoteType)
-                    ->orWhere(function ($inner) use ($projectTypePatterns) {
-                        $inner->where(function ($nn) {
-                            $nn->whereNull('quote_type')->orWhereRaw("TRIM(quote_type) = ''");
-                        });
-                        foreach ($projectTypePatterns as $pattern) {
-                            $inner->orWhereRaw('LOWER(project_type) LIKE ?', [$pattern]);
-                        }
-                    });
-            })
-            ->select(['id', 'project_type']);
-
-        $projects = $projectQuery->get()->map(fn ($r) => (array) $r)->toArray();
-        $projectIds = array_values(array_filter(array_map(fn ($r) => (int) $r['id'], $projects)));
-
-        $deliveryOrders = [];
-        $invoices = [];
-        $jd14Forms = [];
-
-        if (! empty($projectIds)) {
-            $deliveryOrders = DB::table('do_details')
-                ->whereIn('project_id', $projectIds)
-                ->orderBy('id')
-                ->select(['id', 'do_number'])
-                ->get()->map(fn ($r) => (array) $r)->toArray();
-
-            $invoices = DB::table('invoices')
-                ->whereIn('project_id', $projectIds)
-                ->orderBy('id')
-                ->select(['id', 'invoice_ref_no', 'receipt_no'])
-                ->get()->map(fn ($r) => (array) $r)->toArray();
-
-            $jd14Forms = DB::table('invoices_jd14form')
-                ->whereIn('project_id', $projectIds)
-                ->orderBy('id')
-                ->select(['id', 'approval_no'])
-                ->get()->map(fn ($r) => (array) $r)->toArray();
-        }
-
-        $receipts = array_values(array_filter($invoices, fn ($inv) => ! empty($inv['receipt_no'])));
-
-        return [
-            'projects' => $projects,
-            'delivery_orders' => $deliveryOrders,
-            'invoices' => $invoices,
-            'receipts' => $receipts,
-            'jd14' => $jd14Forms,
-        ];
     }
 }

@@ -136,6 +136,7 @@ class SupplierPurchaseOrderService extends CatalogBaseService
 
             $maxNo = DB::table('supplier_po_main')
                 ->whereYear('created_at', $yearFull)
+                ->where('po_ref_no', 'like', "POES{$yearTwo}-%")
                 ->lockForUpdate()
                 ->max('po_running_no');
 

@@ -5,6 +5,7 @@ namespace App\Services\Google;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 
 class GooglePlacesService extends GoogleBaseService
 {
@@ -32,13 +33,17 @@ class GooglePlacesService extends GoogleBaseService
 
         $data = $resp->json() ?? [];
         $status = $data['status'] ?? null;
+        $googleErrorMessage = is_string($data['error_message'] ?? null)
+            ? trim($data['error_message'])
+            : null;
         if (!$resp->ok() || ($status !== null && $status !== 'OK')) {
-            $message = $this->googlePlacesErrorMessage($status, $data['error_message'] ?? null);
+            $message = $this->googlePlacesErrorMessage($status, $googleErrorMessage);
 
             return response()->json([
                 'success' => false,
                 'message' => $message,
                 'google_status' => $status,
+                'google_error_message' => $googleErrorMessage,
             ]);
         }
 
