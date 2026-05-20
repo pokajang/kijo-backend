@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AppraisalController;
 use App\Http\Controllers\Api\AppNotificationController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\AdminMailDiagnosticsController;
 use App\Http\Controllers\Api\HrMiscController;
 use App\Http\Controllers\Api\KpiController;
 use App\Http\Controllers\Api\LeaveController;
@@ -242,6 +243,9 @@ Route::middleware('auth.session')->group(function () {
     Route::middleware('role:System Admin')->group(function () {
         Route::get('admin/migration-status',              [AdminController::class, 'migrationStatus']);
         Route::post('admin/run-migrations',               [AdminController::class, 'runMigrations']);
+        Route::get('admin/mail-diagnostics',              [AdminMailDiagnosticsController::class, 'show']);
+        Route::post('admin/mail-diagnostics/default',      [AdminMailDiagnosticsController::class, 'sendDefault']);
+        Route::post('admin/mail-diagnostics/quote-pdf',    [AdminMailDiagnosticsController::class, 'sendQuotePdf']);
     });
 
     // ─── Batch 4 — Proposal Templates ───────────────────────────────────────────

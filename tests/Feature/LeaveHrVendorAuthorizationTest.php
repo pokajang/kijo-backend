@@ -501,7 +501,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             ->assertOk()
             ->json('data');
         $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
-        $this->assertSame(1, $summary['by_route_group']['/staff/manage'] ?? 0);
+        $this->assertSame(1, $summary['by_route_group']['/staff/leaves'] ?? 0);
         $this->assertSame(1, $summary['by_tab']['staff.leaves'] ?? 0);
 
         $this->actingSession($this->hrSession())

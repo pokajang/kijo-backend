@@ -13,7 +13,7 @@ class AppNotificationService
 
     private const MODULE_UI = [
         'staff.leaves' => [
-            'route_group' => '/staff/manage',
+            'route_group' => '/staff/leaves',
             'tab_key' => 'staff.leaves',
             'severity' => 'warning',
         ],

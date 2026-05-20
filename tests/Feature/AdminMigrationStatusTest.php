@@ -194,6 +194,115 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('status', 'error');
     }
 
+    public function test_system_admin_can_view_mail_diagnostics(): void
+    {
+        $this->configureLiveMailers();
+
+        $this->withSession($this->authenticatedSession(['System Admin']))
+            ->getJson('/admin/mail-diagnostics')
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.default.from_address', 'kijo@work.amiosh.com')
+            ->assertJsonPath('data.quote.from_address', 'info.admin@amiosh.com')
+            ->assertJsonPath('data.default.live_ready', true)
+            ->assertJsonPath('data.quote.live_ready', true)
+            ->assertJsonMissingPath('data.default.password')
+            ->assertJsonMissingPath('data.quote.password');
+    }
+
+    public function test_system_admin_can_send_default_diagnostic_email(): void
+    {
+        $this->configureLiveMailers();
+
+        $this->withSession($this->authenticatedSession(['System Admin']))
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/admin/mail-diagnostics/default', [
+                'recipient_email' => 'recipient@example.test',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.type', 'default')
+            ->assertJsonPath('data.status', 'sent')
+            ->assertJsonPath('data.from', 'kijo@work.amiosh.com')
+            ->assertJsonPath('data.expected_from', 'kijo@work.amiosh.com')
+            ->assertJsonPath('data.to', 'recipient@example.test')
+            ->assertJsonStructure(['data' => ['completed_at']]);
+    }
+
+    public function test_system_admin_can_send_quote_pdf_diagnostic_email(): void
+    {
+        $this->configureLiveMailers();
+
+        $this->withSession($this->authenticatedSession(['System Admin']) + [
+            'email' => 'sysadmin@example.test',
+            'full_name' => 'System Admin',
+        ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/admin/mail-diagnostics/quote-pdf', [
+                'recipient_email' => 'recipient@example.test',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.type', 'quote_pdf')
+            ->assertJsonPath('data.status', 'sent')
+            ->assertJsonPath('data.from', 'info.admin@amiosh.com')
+            ->assertJsonPath('data.expected_from', 'info.admin@amiosh.com')
+            ->assertJsonPath('data.to', 'recipient@example.test')
+            ->assertJsonPath('data.attachment', 'quote-mail-diagnostic.pdf')
+            ->assertJsonStructure(['data' => ['completed_at']]);
+    }
+
+    public function test_mail_diagnostics_reject_non_admin_role(): void
+    {
+        DB::table('system_users')->where('id', 1)->update([
+            'role' => json_encode(['Manager']),
+        ]);
+
+        $this->withSession($this->authenticatedSession(['Manager']))
+            ->getJson('/admin/mail-diagnostics')
+            ->assertStatus(403)
+            ->assertJsonPath('status', 'error');
+    }
+
+    public function test_default_mail_diagnostic_reports_unconfigured_live_sender(): void
+    {
+        config([
+            'mail.default' => 'log',
+            'mail.from.address' => 'hello@example.com',
+        ]);
+
+        $this->withSession($this->authenticatedSession(['System Admin']))
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/admin/mail-diagnostics/default', [
+                'recipient_email' => 'recipient@example.test',
+            ])
+            ->assertStatus(503)
+            ->assertJsonPath('status', 'error')
+            ->assertJsonPath('data.status', 'blocked')
+            ->assertJsonPath('data.expected_from', 'kijo@work.amiosh.com');
+    }
+
+    public function test_quote_pdf_diagnostic_reports_wrong_sender_as_blocked(): void
+    {
+        $this->configureLiveMailers();
+        config([
+            'mail.quote.from.address' => 'wrong@example.test',
+        ]);
+
+        $this->withSession($this->authenticatedSession(['System Admin']))
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/admin/mail-diagnostics/quote-pdf', [
+                'recipient_email' => 'recipient@example.test',
+            ])
+            ->assertStatus(503)
+            ->assertJsonPath('status', 'error')
+            ->assertJsonPath('data.type', 'quote_pdf')
+            ->assertJsonPath('data.status', 'blocked')
+            ->assertJsonPath('data.from', 'wrong@example.test')
+            ->assertJsonPath('data.expected_from', 'info.admin@amiosh.com')
+            ->assertJsonPath('data.attachment', 'quote-mail-diagnostic.pdf');
+    }
+
     private function authenticatedSession(array $roles): array
     {
         return [
@@ -202,5 +311,23 @@ class AdminMigrationStatusTest extends TestCase
             'staff_id' => 10,
             'roles' => $roles,
         ];
+    }
+
+    private function configureLiveMailers(): void
+    {
+        config([
+            'mail.default' => 'array',
+            'mail.mailers.array' => [
+                'transport' => 'array',
+            ],
+            'mail.mailers.quote_smtp' => [
+                'transport' => 'array',
+            ],
+            'mail.from.address' => 'kijo@work.amiosh.com',
+            'mail.from.name' => 'Kijo Alert',
+            'mail.quote.mailer' => 'quote_smtp',
+            'mail.quote.from.address' => 'info.admin@amiosh.com',
+            'mail.quote.from.name' => 'AMIOSH Admin',
+        ]);
     }
 }
