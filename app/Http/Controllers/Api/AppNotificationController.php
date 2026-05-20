@@ -20,8 +20,8 @@ class AppNotificationController extends Controller
     public function consumeEntity(Request $request, AppNotificationService $notifications): JsonResponse
     {
         $data = $request->validate([
-            'module_key' => ['required', 'string', 'max:120'],
-            'entity_type' => ['required', 'string', 'max:120'],
+            'module_key' => ['required', 'string', 'max:80'],
+            'entity_type' => ['required', 'string', 'max:80'],
             'entity_id' => ['required', 'integer', 'min:1'],
         ]);
 
