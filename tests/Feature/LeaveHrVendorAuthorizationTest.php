@@ -258,6 +258,105 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
     }
 
+    public function test_approve_leave_updates_integer_year_allocation_usage(): void
+    {
+        DB::table('hr_leaves_allocation')->insert([
+            'staff_id' => 10,
+            'leave_type' => 'Annual',
+            'year' => 2026,
+            'total_days' => 14,
+            'used_days' => 2,
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Approved leave',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 20,
+            'reviewed_status' => 'Recommended',
+            'reviewed_at' => '2026-05-20 09:30:00',
+        ]);
+
+        $this->actingSession($this->managerSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'approve',
+                'remarks' => 'Approved',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Approved',
+            'approved_by' => 30,
+        ]);
+        $this->assertEquals(
+            '3',
+            (string) DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Annual')
+                ->where('year', 2026)
+                ->value('used_days'),
+        );
+    }
+
+    public function test_cancel_approved_leave_reverses_integer_year_allocation_usage(): void
+    {
+        DB::table('hr_leaves_allocation')->insert([
+            'staff_id' => 10,
+            'leave_type' => 'Annual',
+            'year' => 2026,
+            'total_days' => 14,
+            'used_days' => 3,
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Cancel approved leave',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Approved',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 20,
+            'reviewed_status' => 'Recommended',
+            'reviewed_at' => '2026-05-20 09:30:00',
+            'approved_by' => 30,
+            'approved_status' => 'Approved',
+            'approved_at' => '2026-05-20 10:00:00',
+        ]);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson("/hr/leaves/{$leaveId}/cancel", ['id' => $leaveId])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Cancelled',
+            'cancelled_by' => 10,
+        ]);
+        $this->assertEquals(
+            '2',
+            (string) DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Annual')
+                ->where('year', 2026)
+                ->value('used_days'),
+        );
+    }
+
     public function test_vendor_payment_approve_and_delete_require_manager_role(): void
     {
         $paymentId = DB::table('vendor_payments')->insertGetId([

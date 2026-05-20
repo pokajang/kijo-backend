@@ -205,14 +205,7 @@ class LeaveRequestService extends LeaveBaseService
                     'status'           => 'Approved',
                 ]);
 
-                // Deduct from leave allocation
-                DB::table('hr_leaves_allocation')
-                    ->where('staff_id', $leave->staff_id)
-                    ->where('leave_type', $leave->type)
-                    ->whereYear('year', date('Y', strtotime($leave->start_date)))
-                    ->update([
-                        'used_days' => DB::raw('used_days + ' . (float) $leave->duration_days),
-                    ]);
+                $this->adjustAllocationUsedDays($leave, (float) $leave->duration_days);
 
             } elseif ($action === 'reject') {
                 if (in_array($status, ['cancelled', 'rejected', 'approved'], true)) {
@@ -353,13 +346,7 @@ class LeaveRequestService extends LeaveBaseService
 
             // If previously Approved, reverse allocation usage
             if (strtolower($previousStatus) === 'approved') {
-                DB::table('hr_leaves_allocation')
-                    ->where('staff_id', $leave->staff_id)
-                    ->where('leave_type', $leave->type)
-                    ->whereYear('year', date('Y', strtotime($leave->start_date)))
-                    ->update([
-                        'used_days' => DB::raw('GREATEST(used_days - ' . (float) $leave->duration_days . ', 0)'),
-                    ]);
+                $this->adjustAllocationUsedDays($leave, -1 * (float) $leave->duration_days);
             }
 
             DB::commit();
@@ -413,6 +400,28 @@ class LeaveRequestService extends LeaveBaseService
             report($e);
             return false;
         }
+    }
+
+    private function adjustAllocationUsedDays(object $leave, float $delta): void
+    {
+        $allocationYear = (int) date('Y', strtotime((string) $leave->start_date));
+
+        $allocation = DB::table('hr_leaves_allocation')
+            ->where('staff_id', $leave->staff_id)
+            ->where('leave_type', $leave->type)
+            ->where('year', $allocationYear)
+            ->lockForUpdate()
+            ->first(['id', 'used_days']);
+
+        if (!$allocation) {
+            return;
+        }
+
+        $nextUsedDays = max(0, (float) $allocation->used_days + $delta);
+
+        DB::table('hr_leaves_allocation')
+            ->where('id', $allocation->id)
+            ->update(['used_days' => $nextUsedDays]);
     }
 
     private function leaveApplicationMailRecipients(): array
