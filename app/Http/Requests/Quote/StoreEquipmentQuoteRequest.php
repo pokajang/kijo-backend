@@ -39,6 +39,7 @@ class StoreEquipmentQuoteRequest extends FormRequest
             'misc_charge'            => ['nullable', 'numeric', 'min:0'],
             'discount'               => ['nullable', 'numeric', 'min:0'],
             'sst_percent'            => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'attach_proposal'         => ['nullable', 'boolean'],
         ];
     }
 

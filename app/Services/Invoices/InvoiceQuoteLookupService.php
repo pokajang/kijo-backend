@@ -5,6 +5,7 @@ namespace App\Services\Invoices;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class InvoiceQuoteLookupService
 {
@@ -94,17 +95,48 @@ class InvoiceQuoteLookupService
             return response()->json(['status' => 'error', 'message' => 'Invalid or missing quote id'], 422);
         }
 
+        $select = [
+            'id',
+            'client_name',
+            'client_ssm',
+            'client_address',
+            'client_city',
+            'client_state',
+            'client_zip',
+            'pic_name',
+            'pic_email',
+            'pic_phone',
+            'pic_position',
+            'client_award_ref_no',
+            'sp_id as service_id',
+            'service_title',
+            'service_code',
+            'general_remarks',
+            'inquiry_remarks',
+            'unit_cost',
+            'sst_percent',
+            'sst_amount',
+            'sub_total',
+            'grand_total',
+        ];
+        if (Schema::hasColumn('quotes_special', 'discount')) {
+            $select[] = 'discount';
+        }
+        if (Schema::hasColumn('quotes_special', 'proposal_language')) {
+            $select[] = 'proposal_language';
+        }
+
         $quote = DB::table('quotes_special')
             ->where('id', $id)
-            ->selectRaw('id, client_name, client_ssm, client_address, client_city, client_state, client_zip,
-                pic_name, pic_email, pic_phone, pic_position, client_award_ref_no,
-                sp_id AS service_id, service_title, service_code, general_remarks, inquiry_remarks,
-                unit_cost, discount, sst_percent, sst_amount, sub_total, grand_total, proposal_language')
+            ->select($select)
             ->first();
 
         if (!$quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found'], 404);
         }
+
+        $quote->discount = (float) ($quote->discount ?? 0);
+        $quote->proposal_language = $quote->proposal_language ?? 'en';
 
         $items = DB::table('quotes_special_items')
             ->where('quote_id', $id)

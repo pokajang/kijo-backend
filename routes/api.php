@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AppraisalController;
+use App\Http\Controllers\Api\AppNotificationController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\HrMiscController;
@@ -49,6 +50,9 @@ Route::post('auth/password', [AuthController::class, 'updatePassword'])->middlew
 Route::middleware('auth.session')->group(function () {
     Route::get('files/private/{token}', [PrivateFileController::class, 'show'])
         ->where('token', '[A-Za-z0-9_-]+');
+
+    Route::get('notifications/summary', [AppNotificationController::class, 'summary']);
+    Route::post('notifications/consume-entity', [AppNotificationController::class, 'consumeEntity']);
 
     // What's New notices
     Route::get('whats-new/latest',                    [WhatsNewController::class, 'latestUnread']);
@@ -402,6 +406,8 @@ Route::middleware('auth.session')->group(function () {
     Route::post('hr/leaves',                              [LeaveController::class, 'createLeave']);
     Route::post('hr/leaves/{id}/action',                  [LeaveController::class, 'leaveAction']);
     Route::post('hr/leaves/{id}/cancel',                  [LeaveController::class, 'cancelLeave']);
+    Route::get('hr/leaves/workflow-recipients',           [LeaveController::class, 'getWorkflowRecipients'])->middleware('role:HR,System Admin');
+    Route::put('hr/leaves/workflow-recipients',           [LeaveController::class, 'updateWorkflowRecipients'])->middleware('role:HR,System Admin');
     Route::get('hr/leaves/entitlements',                  [LeaveController::class, 'getAllEntitlements'])->middleware('role:HR,System Admin');
     Route::get('hr/leaves/entitlements/mine',             [LeaveController::class, 'getMyEntitlements']);
     Route::post('hr/leaves/entitlements',                 [LeaveController::class, 'assignLeavesEntitlement'])->middleware('role:HR,System Admin');

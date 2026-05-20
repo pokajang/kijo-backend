@@ -12,6 +12,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class TrainingQuoteRecordAwardWorkflowService
 {
@@ -52,7 +53,7 @@ class TrainingQuoteRecordAwardWorkflowService
 
             [$serviceStartDate, $serviceEndDate] = $this->trainingServiceDates($quote);
 
-            DB::table('projects_main')->insert([
+            DB::table('projects_main')->insert($this->withProjectProposalLanguage([
                 'client_id'          => $quote->client_id,
                 'quote_id'           => $quoteId,
                 'project_name'       => $quote->training_title,
@@ -62,12 +63,11 @@ class TrainingQuoteRecordAwardWorkflowService
                 'description'        => $description,
                 'status'             => 'Active',
                 'quote_value'        => $quote->grand_total,
-                'proposal_language'  => $quote->proposal_language ?? 'en',
                 'award_date'         => $awardDate,
                 'service_start_date' => $serviceStartDate,
                 'service_end_date'   => $serviceEndDate,
                 'created_at'         => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $newProjectId = (int) DB::getPdo()->lastInsertId();
             if (!$newProjectId) {
@@ -141,7 +141,7 @@ class TrainingQuoteRecordAwardWorkflowService
 
             [$serviceStartDate, $serviceEndDate] = $this->trainingServiceDates($quote);
 
-            DB::table('projects_main')->insert([
+            DB::table('projects_main')->insert($this->withProjectProposalLanguage([
                 'client_id'          => $quote->client_id,
                 'quote_id'           => $quoteId,
                 'project_name'       => $quote->training_title,
@@ -150,12 +150,11 @@ class TrainingQuoteRecordAwardWorkflowService
                 'description'        => $description,
                 'status'             => 'Active',
                 'quote_value'        => $quote->grand_total,
-                'proposal_language'  => $quote->proposal_language ?? 'en',
                 'award_date'         => $awardDate,
                 'service_start_date' => $serviceStartDate,
                 'service_end_date'   => $serviceEndDate,
                 'created_at'         => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $newProjectId = (int) DB::getPdo()->lastInsertId();
             if (!$newProjectId) {
@@ -347,5 +346,14 @@ class TrainingQuoteRecordAwardWorkflowService
         }
 
         return [$start, $end];
+    }
+
+    private function withProjectProposalLanguage(array $payload, mixed $language): array
+    {
+        if (Schema::hasColumn('projects_main', 'proposal_language')) {
+            $payload['proposal_language'] = $language ?: 'en';
+        }
+
+        return $payload;
     }
 }

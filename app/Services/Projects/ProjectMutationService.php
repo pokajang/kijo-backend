@@ -17,6 +17,7 @@ use Dompdf\Options;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 class ProjectMutationService
@@ -51,7 +52,7 @@ class ProjectMutationService
             }
         }
 
-        $newProjectId = DB::table('projects_main')->insertGetId([
+        $insert = [
             'client_id'          => $data['client_id'],
             'project_name'       => $data['project_name'],
             'project_type'       => $projectType,
@@ -62,11 +63,15 @@ class ProjectMutationService
             'service_start_date' => $data['service_start_date'] ?? null,
             'service_end_date'   => $data['service_end_date'] ?? null,
             'description'        => $data['description'] ?? '',
-            'proposal_language'  => $data['proposal_language'] ?? 'en',
             'status'             => 'Active',
             'created_at'         => now(),
             'created_by'         => $staffId,
-        ]);
+        ];
+        if (Schema::hasColumn('projects_main', 'proposal_language')) {
+            $insert['proposal_language'] = $data['proposal_language'] ?? 'en';
+        }
+
+        $newProjectId = DB::table('projects_main')->insertGetId($insert);
 
         $this->insertProgress(
             $newProjectId,
@@ -89,7 +94,7 @@ class ProjectMutationService
         $data      = $request->validated();
         $projectId = (int) ($data['project_id'] ?? $request->input('id'));
 
-        DB::table('projects_main')->where('id', $projectId)->update([
+        $updates = [
             'project_name'       => $data['project_name'],
             'project_type'       => $data['project_type'] ?? '',
             'quote_value'        => $data['quote_value'] ?? 0.00,
@@ -98,10 +103,16 @@ class ProjectMutationService
             'service_end_date'   => $data['service_end_date'] ?? null,
             'description'        => $data['description'] ?? '',
             'po_loa_number'      => $data['po_loa_number'] ?? '',
-            'proposal_language'  => $data['proposal_language'] ?? DB::table('projects_main')->where('id', $projectId)->value('proposal_language') ?? 'en',
             'updated_at'         => now(),
             'updated_by'         => $staffId,
-        ]);
+        ];
+        if (Schema::hasColumn('projects_main', 'proposal_language')) {
+            $updates['proposal_language'] = $data['proposal_language']
+                ?? DB::table('projects_main')->where('id', $projectId)->value('proposal_language')
+                ?? 'en';
+        }
+
+        DB::table('projects_main')->where('id', $projectId)->update($updates);
 
         $poLoa = $data['po_loa_number'] ?? '';
         $this->auditLog->log(

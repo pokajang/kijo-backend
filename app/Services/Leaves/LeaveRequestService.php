@@ -8,17 +8,13 @@ use App\Http\Requests\Leave\StoreLeaveRequest;
 use App\Http\Requests\Leave\UpdateEntitlementRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
+use App\Services\AppNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class LeaveRequestService extends LeaveBaseService
 {
-    private const DEFAULT_LEAVE_APPLICATION_RECIPIENTS = [
-        'hr.amiosh@gmail.com',
-        'azam@amiosh.com',
-    ];
-
     public function createLeave(StoreLeaveRequest $request): JsonResponse
     {
         $data    = $request->validated();
@@ -47,6 +43,7 @@ class LeaveRequestService extends LeaveBaseService
         ]);
 
         $this->auditLog->log($request, "Created leave application #{$leaveId}");
+        $this->notifyLeaveNeedsRecommendation($request, $leaveId, $staffId, $name, $data);
 
         $reason      = htmlspecialchars($data['reason'] ?? 'N/A');
         $applicantName = htmlspecialchars($name);
@@ -62,13 +59,14 @@ class LeaveRequestService extends LeaveBaseService
             </table>
         ";
 
-        [$to, $cc] = $this->leaveApplicationMailRecipients();
-        $mailSent = $to !== null && $this->sendHtmlMailNow(
-            $to,
-            'Human Resource',
+        $recipients = $this->workflowRecipients()->recipientsForStage(
+            LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
+            ['HR'],
+        );
+        $mailSent = $this->sendHtmlMailToRecipients(
+            $recipients,
             "New Leave Application by {$applicantName}",
             $body,
-            $cc,
         );
 
         return response()->json([
@@ -99,10 +97,13 @@ class LeaveRequestService extends LeaveBaseService
                 'reviewer.name_code as reviewer_code',
                 'approver.full_name as approver_name',
                 'approver.name_code as approver_code',
+                'canceller.full_name as canceller_name',
+                'canceller.name_code as canceller_code',
             ])
             ->leftJoin('staff_general as sg', 'hla.staff_id', '=', 'sg.staff_id')
             ->leftJoin('staff_general as reviewer', 'hla.reviewed_by', '=', 'reviewer.staff_id')
             ->leftJoin('staff_general as approver', 'hla.approved_by', '=', 'approver.staff_id')
+            ->leftJoin('staff_general as canceller', 'hla.cancelled_by', '=', 'canceller.staff_id')
             ->when($year >= 2000 && $year <= 2100, function ($query) use ($year) {
                 $query->where(function ($scoped) use ($year) {
                     $scoped
@@ -252,6 +253,15 @@ class LeaveRequestService extends LeaveBaseService
         $applicantNameStr   = htmlspecialchars($applicant->full_name ?? ('Staff #' . $leave->staff_id));
         $actorNameSafe      = htmlspecialchars($actorName);
 
+        $this->handleLeaveActionNotifications(
+            $request,
+            $leave,
+            $leaveId,
+            $action,
+            $actorId,
+            strip_tags($applicantNameStr),
+        );
+
         // Dispatch emails asynchronously
         if ($action === 'recommend') {
             $approverBody = "
@@ -261,52 +271,55 @@ class LeaveRequestService extends LeaveBaseService
                    (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
                 <p><strong>Recommended by:</strong> {$actorNameSafe}</p>
             ";
-            $this->sendHtmlMailNow(
-                'kamarul@amiosh.com',
-                'Kamarul',
-                "Please Approve Leave Application by {$applicantNameStr}",
-                $approverBody,
-            );
-            $this->sendHtmlMailNow(
-                'hr.amiosh@gmail.com',
-                'Human Resource',
+            $this->sendHtmlMailToRecipients(
+                $this->workflowRecipients()->recipientsForStage(
+                    LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
+                    ['Manager', 'System Admin'],
+                ),
                 "Please Approve Leave Application by {$applicantNameStr}",
                 $approverBody,
             );
         }
 
+        $subjectMap = [
+            'recommend' => "Your Leave Application Has Been Recommended",
+            'approve'   => "Your Leave Application Has Been Approved",
+            'reject'    => "Your Leave Application Has Been Rejected",
+        ];
+        $applicantBody = "
+            <p>Dear <strong>{$applicantNameStr}</strong>,</p>
+            <p>Your leave application has been <strong>" . htmlspecialchars(ucfirst($action) . 'd') . "</strong>.</p>
+            <p><strong>Leave Type:</strong> " . htmlspecialchars((string) $leave->type) . "</p>
+            <p><strong>Duration:</strong> " . htmlspecialchars((string) $leave->duration_days) . " day(s)
+               (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
+            <p><strong>Action by:</strong> {$actorNameSafe}</p>
+        ";
+
         // Notify applicant on any action
         if ($this->isValidEmail($applicantEmail)) {
-            $subjectMap = [
-                'recommend' => "Your Leave Application Has Been Recommended",
-                'approve'   => "Your Leave Application Has Been Approved",
-                'reject'    => "Your Leave Application Has Been Rejected",
-            ];
-            $applicantBody = "
-                <p>Dear <strong>{$applicantNameStr}</strong>,</p>
-                <p>Your leave application has been <strong>" . htmlspecialchars(ucfirst($action) . 'd') . "</strong>.</p>
-                <p><strong>Leave Type:</strong> " . htmlspecialchars((string) $leave->type) . "</p>
-                <p><strong>Duration:</strong> " . htmlspecialchars((string) $leave->duration_days) . " day(s)
-                   (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
-                <p><strong>Action by:</strong> {$actorNameSafe}</p>
-            ";
+            $this->sendHtmlMailNow(
+                $applicantEmail,
+                $applicantNameStr,
+                $subjectMap[$action],
+                $applicantBody,
+            );
+        }
 
-            if ($action === 'approve') {
-                $this->sendHtmlMailNow(
-                    $applicantEmail,
-                    $applicantNameStr,
-                    $subjectMap[$action],
-                    $applicantBody,
-                    ['kamarul@amiosh.com', 'aminrozak@amiosh.com', 'hr.amiosh@gmail.com', 'azlin@amiosh.com'],
-                );
-            } else {
-                $this->sendHtmlMailNow(
-                    $applicantEmail,
-                    $applicantNameStr,
-                    $subjectMap[$action],
-                    $applicantBody,
-                );
-            }
+        if (in_array($action, ['approve', 'reject'], true)) {
+            $stageKey = $action === 'approve'
+                ? LeaveWorkflowRecipientService::STAGE_APPROVED_NOTIFY
+                : LeaveWorkflowRecipientService::STAGE_REJECTED_NOTIFY;
+            $stageRecipients = $this->configuredOrWorkflowParticipantRecipients(
+                $stageKey,
+                $leave,
+                [],
+                [(int) $leave->staff_id],
+            );
+            $this->sendHtmlMailToRecipients(
+                $stageRecipients,
+                $subjectMap[$action],
+                $applicantBody,
+            );
         }
 
         return response()->json(['status' => 'success', 'message' => 'Leave action processed successfully.']);
@@ -322,11 +335,15 @@ class LeaveRequestService extends LeaveBaseService
 
         DB::beginTransaction();
         try {
-            $leave = DB::table('hr_leaves_application')
+            $leaveQuery = DB::table('hr_leaves_application')
                 ->lockForUpdate()
-                ->where('id', $leaveId)
-                ->where('staff_id', $staffId)
-                ->first();
+                ->where('id', $leaveId);
+
+            if (!$this->isPrivileged($request)) {
+                $leaveQuery->where('staff_id', $staffId);
+            }
+
+            $leave = $leaveQuery->first();
 
             if (!$leave) {
                 DB::rollBack();
@@ -357,6 +374,7 @@ class LeaveRequestService extends LeaveBaseService
         }
 
         $this->auditLog->log($request, "Cancelled leave application #{$leaveId}");
+        $activeRecipientIds = $this->handleLeaveCancellationNotifications($request, $leave, $leaveId, $staffId, $previousStatus);
 
         $nameSafe = htmlspecialchars($name);
         $body = "
@@ -366,13 +384,51 @@ class LeaveRequestService extends LeaveBaseService
                (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
         ";
 
-        $this->sendHtmlMailNow(
-            'hr.amiosh@gmail.com',
-            'Human Resource',
-            "Leave Application Cancelled by {$nameSafe}",
-            $body,
-            ['azam@amiosh.com'],
+        $isRevokedApprovedLeave = strtolower($previousStatus) === 'approved';
+        $stageKey = $isRevokedApprovedLeave
+            ? LeaveWorkflowRecipientService::STAGE_REVOKED_NOTIFY
+            : LeaveWorkflowRecipientService::STAGE_CANCELLED_NOTIFY;
+        $stageRecipients = $this->configuredOrWorkflowParticipantRecipients(
+            $stageKey,
+            $leave,
+            $activeRecipientIds,
+            [(int) $leave->staff_id],
         );
+        $this->sendHtmlMailToRecipients(
+            $stageRecipients,
+            $isRevokedApprovedLeave
+                ? "Leave Application Revoked by {$nameSafe}"
+                : "Leave Application Cancelled by {$nameSafe}",
+            $body,
+        );
+
+        if ($isRevokedApprovedLeave && (int) $leave->staff_id !== $staffId) {
+            $applicant = DB::table('staff_general')->where('staff_id', $leave->staff_id)->first();
+            $applicantEmail = $applicant->email ?? null;
+            if ($this->isValidEmail($applicantEmail)) {
+                $applicantName = htmlspecialchars($applicant->full_name ?? ('Staff #' . $leave->staff_id));
+                $this->sendHtmlMailNow(
+                    $applicantEmail,
+                    $applicantName,
+                    "Your Leave Application Has Been Revoked",
+                    "<p>Dear <strong>{$applicantName}</strong>,</p>{$body}",
+                );
+            }
+        }
+
+        if (!$isRevokedApprovedLeave && (int) $leave->staff_id !== $staffId) {
+            $applicant = DB::table('staff_general')->where('staff_id', $leave->staff_id)->first();
+            $applicantEmail = $applicant->email ?? null;
+            if ($this->isValidEmail($applicantEmail)) {
+                $applicantName = htmlspecialchars($applicant->full_name ?? ('Staff #' . $leave->staff_id));
+                $this->sendHtmlMailNow(
+                    $applicantEmail,
+                    $applicantName,
+                    "Your Leave Application Has Been Cancelled",
+                    "<p>Dear <strong>{$applicantName}</strong>,</p>{$body}",
+                );
+            }
+        }
 
         return response()->json(['status' => 'success', 'message' => 'Leave application cancelled successfully.']);
     }
@@ -402,6 +458,17 @@ class LeaveRequestService extends LeaveBaseService
         }
     }
 
+    private function sendHtmlMailToRecipients(array $recipients, string $subject, string $body): bool
+    {
+        $emails = $this->workflowRecipients()->emailAddresses($recipients);
+        if (empty($emails)) {
+            return false;
+        }
+
+        $to = array_shift($emails);
+        return $this->sendHtmlMailNow($to, 'Human Resource', $subject, $body, $emails);
+    }
+
     private function adjustAllocationUsedDays(object $leave, float $delta): void
     {
         $allocationYear = (int) date('Y', strtotime((string) $leave->start_date));
@@ -424,58 +491,300 @@ class LeaveRequestService extends LeaveBaseService
             ->update(['used_days' => $nextUsedDays]);
     }
 
-    private function leaveApplicationMailRecipients(): array
+    private function workflowRecipients(): LeaveWorkflowRecipientService
     {
-        $configured = $this->emailListFromValue((string) config('leave.application_mail_to', ''));
+        return app(LeaveWorkflowRecipientService::class);
+    }
+
+    private function configuredOrWorkflowParticipantRecipients(
+        string $stageKey,
+        object $leave,
+        array $fallbackStaffIds = [],
+        array $excludeStaffIds = [],
+    ): array {
+        $configured = $this->workflowRecipients()->configuredRecipientsForStage($stageKey);
+        $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
+
         if (!empty($configured)) {
-            return [$configured[0], array_slice($configured, 1)];
+            return array_values(array_filter(
+                $configured,
+                fn (array $recipient): bool => !in_array((int) $recipient['staff_id'], $exclude, true),
+            ));
         }
 
-        $roleRecipients = $this->activeStaffEmailsForRoles(['HR', 'System Admin']);
-        if (!empty($roleRecipients)) {
-            return [$roleRecipients[0], array_slice($roleRecipients, 1)];
-        }
-
-        return [
-            self::DEFAULT_LEAVE_APPLICATION_RECIPIENTS[0],
-            array_slice(self::DEFAULT_LEAVE_APPLICATION_RECIPIENTS, 1),
+        $participantIds = [
+            (int) ($leave->staff_id ?? 0),
+            (int) ($leave->reviewed_by ?? 0),
+            (int) ($leave->approved_by ?? 0),
+            ...array_map('intval', $fallbackStaffIds),
         ];
+
+        $participantIds = array_values(array_diff(
+            array_unique(array_filter($participantIds)),
+            $exclude,
+        ));
+
+        return $this->workflowRecipients()->recipientsForStaffIds($participantIds);
     }
 
-    private function emailListFromValue(string $value): array
+    private function notifications(): AppNotificationService
     {
-        $raw = trim($value);
-        if ($raw === '') {
-            return [];
+        return app(AppNotificationService::class);
+    }
+
+    private function notifyLeaveNeedsRecommendation(
+        Request $request,
+        int $leaveId,
+        int $applicantStaffId,
+        string $applicantName,
+        array $data,
+    ): void {
+        $recipientIds = $this->workflowRecipients()->stageStaffIds(
+            LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
+            ['HR'],
+        );
+        if (empty($recipientIds)) {
+            return;
         }
 
-        return array_values(array_filter(
-            array_unique(array_map('trim', preg_split('/[,;\s]+/', $raw) ?: [])),
-            fn ($email) => $email !== '' && $this->isValidEmail($email),
-        ));
+        $this->notifications()->createForStaff($recipientIds, [
+            'recipient_staff_ids' => $recipientIds,
+            'actor_staff_id' => $applicantStaffId,
+            'module_key' => 'staff.leaves',
+            'entity_type' => 'leave_application',
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+            'title' => 'Leave request needs recommendation',
+            'message' => "{$applicantName} submitted {$data['type']} leave.",
+            'route' => "/staff/leaves/records/{$leaveId}",
+            'severity' => 'warning',
+        ]);
     }
 
-    private function activeStaffEmailsForRoles(array $roles): array
-    {
-        $roleKeys = array_map(static fn ($role) => strtolower(trim((string) $role)), $roles);
+    private function handleLeaveActionNotifications(
+        Request $request,
+        object $leave,
+        int $leaveId,
+        string $action,
+        int $actorId,
+        string $applicantName,
+    ): void {
+        $notifications = $this->notifications();
 
-        return DB::table('system_users as su')
-            ->leftJoin('staff_general as sg', 'su.staff_id', '=', 'sg.staff_id')
-            ->where('su.is_active', 1)
-            ->where('sg.status', 'Active')
-            ->whereNull('sg.deleted_at')
-            ->select(['su.email as user_email', 'sg.email as staff_email', 'su.role'])
-            ->get()
-            ->filter(function ($row) use ($roleKeys) {
-                $decoded = json_decode((string) ($row->role ?? ''), true);
-                $userRoles = is_array($decoded) ? $decoded : [($row->role ?? '')];
-                $normalized = array_map(static fn ($role) => strtolower(trim((string) $role)), $userRoles);
-                return !empty(array_intersect($roleKeys, $normalized));
-            })
-            ->map(fn ($row) => trim((string) ($row->user_email ?: $row->staff_email ?: '')))
-            ->filter(fn ($email) => $email !== '' && $this->isValidEmail($email))
-            ->unique(fn ($email) => strtolower($email))
-            ->values()
-            ->all();
+        if ($action === 'recommend') {
+            $notifications->consumeEntity(
+                $request,
+                'staff.leaves',
+                'leave_application',
+                $leaveId,
+            );
+            $notifications->resolveActive(
+                'staff.leaves',
+                'leave_application',
+                $leaveId,
+                ['leave.needs_recommendation'],
+            );
+            $notifications->createForStaff($this->workflowRecipients()->stageStaffIds(
+                LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
+                ['Manager', 'System Admin'],
+            ), [
+                'actor_staff_id' => $actorId,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $leaveId,
+                'type' => 'leave.needs_approval',
+                'title' => 'Leave request needs approval',
+                'message' => "{$applicantName}'s leave request has been recommended.",
+                'route' => "/staff/leaves/records/{$leaveId}",
+                'severity' => 'warning',
+            ]);
+            return;
+        }
+
+        if ($action === 'approve') {
+            $notifications->consumeEntity($request, 'staff.leaves', 'leave_application', $leaveId);
+            $notifications->resolveActive(
+                'staff.leaves',
+                'leave_application',
+                $leaveId,
+                ['leave.needs_approval'],
+            );
+            $notifications->createForStaff([(int) $leave->staff_id], [
+                'actor_staff_id' => $actorId,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $leaveId,
+                'type' => 'leave.approved',
+                'title' => 'Leave approved',
+                'message' => 'Your leave request has been approved.',
+                'route' => "/my/leaves/records/{$leaveId}",
+                'severity' => 'success',
+            ]);
+
+            $copyRecipientIds = array_map(
+                static fn (array $recipient): int => (int) $recipient['staff_id'],
+                $this->configuredOrWorkflowParticipantRecipients(
+                    LeaveWorkflowRecipientService::STAGE_APPROVED_NOTIFY,
+                    $leave,
+                    [],
+                    [(int) $leave->staff_id],
+                ),
+            );
+            if (!empty($copyRecipientIds)) {
+                $notifications->createForStaff($copyRecipientIds, [
+                    'actor_staff_id' => $actorId,
+                    'module_key' => 'staff.leaves',
+                    'entity_type' => 'leave_application',
+                    'entity_id' => $leaveId,
+                    'type' => 'leave.approved.copy',
+                    'title' => 'Leave approved',
+                    'message' => "{$applicantName}'s leave request has been approved.",
+                    'route' => "/staff/leaves/records/{$leaveId}",
+                    'severity' => 'success',
+                ]);
+            }
+            return;
+        }
+
+        if ($action === 'reject') {
+            $notifications->consumeEntity($request, 'staff.leaves', 'leave_application', $leaveId);
+            $notifications->resolveActive(
+                'staff.leaves',
+                'leave_application',
+                $leaveId,
+                ['leave.needs_recommendation', 'leave.needs_approval'],
+            );
+            $notifications->createForStaff([(int) $leave->staff_id], [
+                'actor_staff_id' => $actorId,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $leaveId,
+                'type' => 'leave.rejected',
+                'title' => 'Leave rejected',
+                'message' => 'Your leave request has been rejected.',
+                'route' => "/my/leaves/records/{$leaveId}",
+                'severity' => 'danger',
+            ]);
+
+            $copyRecipientIds = array_map(
+                static fn (array $recipient): int => (int) $recipient['staff_id'],
+                $this->configuredOrWorkflowParticipantRecipients(
+                    LeaveWorkflowRecipientService::STAGE_REJECTED_NOTIFY,
+                    $leave,
+                    [],
+                    [(int) $leave->staff_id],
+                ),
+            );
+            if (!empty($copyRecipientIds)) {
+                $notifications->createForStaff($copyRecipientIds, [
+                    'actor_staff_id' => $actorId,
+                    'module_key' => 'staff.leaves',
+                    'entity_type' => 'leave_application',
+                    'entity_id' => $leaveId,
+                    'type' => 'leave.rejected.copy',
+                    'title' => 'Leave rejected',
+                    'message' => "{$applicantName}'s leave request has been rejected.",
+                    'route' => "/staff/leaves/records/{$leaveId}",
+                    'severity' => 'danger',
+                ]);
+            }
+        }
+    }
+
+    private function handleLeaveCancellationNotifications(
+        Request $request,
+        object $leave,
+        int $leaveId,
+        int $actorId,
+        string $previousStatus,
+    ): array {
+        $notifications = $this->notifications();
+        $activeRecipients = $notifications->resolveActive(
+            'staff.leaves',
+            'leave_application',
+            $leaveId,
+            ['leave.needs_recommendation', 'leave.needs_approval'],
+        );
+
+        if (strtolower($previousStatus) === 'approved') {
+            $copyRecipientIds = array_map(
+                static fn (array $recipient): int => (int) $recipient['staff_id'],
+                $this->configuredOrWorkflowParticipantRecipients(
+                    LeaveWorkflowRecipientService::STAGE_REVOKED_NOTIFY,
+                    $leave,
+                    $activeRecipients,
+                    [$actorId, (int) $leave->staff_id],
+                ),
+            );
+
+            if (!empty($copyRecipientIds)) {
+                $notifications->createForStaff($copyRecipientIds, [
+                    'actor_staff_id' => $actorId,
+                    'module_key' => 'staff.leaves',
+                    'entity_type' => 'leave_application',
+                    'entity_id' => $leaveId,
+                    'type' => 'leave.revoked.copy',
+                    'title' => 'Leave revoked',
+                    'message' => 'An approved leave request was revoked.',
+                    'route' => "/staff/leaves/records/{$leaveId}",
+                    'severity' => 'warning',
+                ]);
+            }
+
+            if ((int) $leave->staff_id !== $actorId) {
+                $notifications->createForStaff([(int) $leave->staff_id], [
+                    'actor_staff_id' => $actorId,
+                    'module_key' => 'staff.leaves',
+                    'entity_type' => 'leave_application',
+                    'entity_id' => $leaveId,
+                    'type' => 'leave.revoked',
+                    'title' => 'Leave revoked',
+                    'message' => 'Your approved leave has been revoked.',
+                    'route' => "/my/leaves/records/{$leaveId}",
+                    'severity' => 'warning',
+                ]);
+            }
+            return $activeRecipients;
+        }
+
+        $configuredCancelIds = array_map(
+            static fn (array $recipient): int => (int) $recipient['staff_id'],
+            $this->configuredOrWorkflowParticipantRecipients(
+                LeaveWorkflowRecipientService::STAGE_CANCELLED_NOTIFY,
+                $leave,
+                $activeRecipients,
+                [$actorId, (int) $leave->staff_id],
+            ),
+        );
+        $recipientIds = array_values(array_diff($configuredCancelIds, [$actorId]));
+        if (!empty($recipientIds)) {
+            $notifications->createForStaff($recipientIds, [
+                'actor_staff_id' => $actorId,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $leaveId,
+                'type' => 'leave.cancelled',
+                'title' => 'Leave request cancelled',
+                'message' => 'A pending leave request was cancelled.',
+                'route' => "/staff/leaves/records/{$leaveId}",
+                'severity' => 'info',
+            ]);
+        }
+
+        if ((int) $leave->staff_id !== $actorId) {
+            $notifications->createForStaff([(int) $leave->staff_id], [
+                'actor_staff_id' => $actorId,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $leaveId,
+                'type' => 'leave.cancelled.applicant',
+                'title' => 'Leave cancelled',
+                'message' => 'Your leave request has been cancelled.',
+                'route' => "/my/leaves/records/{$leaveId}",
+                'severity' => 'info',
+            ]);
+        }
+
+        return $activeRecipients;
     }
 }

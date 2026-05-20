@@ -40,6 +40,7 @@ class UpdateEquipmentQuoteRequest extends FormRequest
             'discount'               => ['nullable', 'numeric', 'min:0'],
             'price_exception_request_id' => ['nullable', 'integer', 'min:1'],
             'sst_percent'            => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'attach_proposal'         => ['nullable', 'boolean'],
             'isRevision'             => ['nullable', 'boolean'],
         ];
     }

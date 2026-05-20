@@ -45,6 +45,10 @@ class BmProposalTemplateService
         }
 
         $table = $config['table'];
+        if (!$this->hasColumn($table, 'proposal_language') || !$this->hasColumn($table, 'source_template_id')) {
+            return $this->errorResponse($legacy, 'BM proposal language schema is not ready. Please run migrations.', 503);
+        }
+
         $row = DB::table($table)->where('id', $id)->where('is_deleted', 0)->first();
         if (!$row) {
             return $this->errorResponse($legacy, 'Proposal template not found.', 404);
@@ -332,7 +336,7 @@ class BmProposalTemplateService
 
     private function findExistingBmCopy(string $table, int $sourceTemplateId): ?object
     {
-        if (!$this->hasColumn($table, 'source_template_id')) {
+        if (!$this->hasColumn($table, 'source_template_id') || !$this->hasColumn($table, 'proposal_language')) {
             return null;
         }
 

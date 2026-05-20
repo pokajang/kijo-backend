@@ -249,8 +249,13 @@ class ManpowerProposalTemplateCrudService
 
     public function listManpower(Request $request)
     {
+        $select = ['id', 'service_title', 'service_code'];
+        if ($this->hasColumn('proposal_template_manpower', 'proposal_language')) {
+            $select[] = 'proposal_language';
+        }
+
         $query = DB::table('proposal_template_manpower')
-            ->select(['id', 'service_title', 'service_code', 'proposal_language'])
+            ->select($select)
             ->where('is_deleted', 0)
             ->orderBy('service_title');
 

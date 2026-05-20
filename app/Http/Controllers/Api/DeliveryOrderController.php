@@ -11,6 +11,7 @@ use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class DeliveryOrderController extends Controller
 {
@@ -93,7 +94,7 @@ class DeliveryOrderController extends Controller
             $doNumber = $this->nextDoNumber($nameCode);
             $documentLanguage = $this->documentLanguageForProject($details['project_id'] ?? null);
 
-            $doId = DB::table('do_details')->insertGetId([
+            $insert = [
                 'do_number'               => $doNumber,
                 'client_name'             => $details['client_name'],
                 'client_address'          => $details['client_address'],
@@ -111,9 +112,13 @@ class DeliveryOrderController extends Controller
                 'project_type'            => $details['project_type'] ?? null,
                 'project_description'     => $details['project_description'] ?? null,
                 'project_service_period'  => $details['project_service_period'] ?? null,
-                'document_language'       => $documentLanguage,
                 'created_by'              => $staffId,
-            ]);
+            ];
+            if (Schema::hasColumn('do_details', 'document_language')) {
+                $insert['document_language'] = $documentLanguage;
+            }
+
+            $doId = DB::table('do_details')->insertGetId($insert);
 
             DB::table('do_breakdown')->insert(array_map(fn ($item) => [
                 'do_id'       => $doId,
@@ -158,7 +163,7 @@ class DeliveryOrderController extends Controller
                 return response()->json(['status' => 'error', 'message' => 'You are not allowed to edit this Delivery Order.'], 403);
             }
 
-            DB::table('do_details')->where('id', $id)->update([
+            $updates = [
                 'client_name'             => $details['client_name'],
                 'client_address'          => $details['client_address'],
                 'client_contact_name'     => $details['client_contact_name'],
@@ -175,9 +180,13 @@ class DeliveryOrderController extends Controller
                 'project_type'            => $details['project_type'] ?? null,
                 'project_description'     => $details['project_description'] ?? null,
                 'project_service_period'  => $details['project_service_period'] ?? null,
-                'document_language'       => $order->document_language ?? $this->documentLanguageForProject($details['project_id'] ?? null),
                 'updated_at'              => now(),
-            ]);
+            ];
+            if (Schema::hasColumn('do_details', 'document_language')) {
+                $updates['document_language'] = $order->document_language ?? $this->documentLanguageForProject($details['project_id'] ?? null);
+            }
+
+            DB::table('do_details')->where('id', $id)->update($updates);
 
             if (!empty($breakdown)) {
                 DB::table('do_breakdown')->where('do_id', $id)->delete();
@@ -322,6 +331,10 @@ class DeliveryOrderController extends Controller
     {
         $id = (int) $projectId;
         if ($id <= 0) {
+            return 'en';
+        }
+
+        if (!Schema::hasColumn('projects_main', 'proposal_language')) {
             return 'en';
         }
 

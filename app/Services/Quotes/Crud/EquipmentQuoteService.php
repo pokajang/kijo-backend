@@ -96,7 +96,7 @@ class EquipmentQuoteService
             $next  = (($row->max_run ?? 0) ?: 0) + 1;
             $refNo = 'Q' . $prefixCode . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
 
-            $quoteId = DB::table($table)->insertGetId([
+            $insert = [
                 'service_group'    => 'equipment',
                 'quote_running_no' => $next,
                 'client_id'       => $data['client_id'],
@@ -125,7 +125,13 @@ class EquipmentQuoteService
                 'quote_ref_no'    => $refNo,
                 'created_at'      => now(),
                 'updated_at'      => now(),
-            ]);
+            ];
+
+            if (Schema::hasColumn($table, 'attach_proposal')) {
+                $insert['attach_proposal'] = isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0;
+            }
+
+            $quoteId = DB::table($table)->insertGetId($insert);
 
             $lineInserts = [];
             foreach ($items as $item) {
@@ -218,6 +224,10 @@ class EquipmentQuoteService
             'grand_total'     => $grandTotal,
             'updated_at'      => now(),
         ];
+
+        if (Schema::hasColumn('quotes_equipment', 'attach_proposal')) {
+            $updates['attach_proposal'] = isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0;
+        }
 
         try {
             DB::beginTransaction();

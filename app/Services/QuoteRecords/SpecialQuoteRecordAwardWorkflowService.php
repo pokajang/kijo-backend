@@ -12,6 +12,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class SpecialQuoteRecordAwardWorkflowService
 {
@@ -37,7 +38,7 @@ class SpecialQuoteRecordAwardWorkflowService
                     'updated_at'          => now(),
                 ]);
 
-            $quote = DB::table('quotes_special')->where('id', $quoteId)->first(['client_id', 'service_title', 'grand_total', 'proposal_language']);
+            $quote = DB::table('quotes_special')->where('id', $quoteId)->first($this->specialQuoteAwardColumns());
             if (!$quote) {
                 throw new \Exception('Special quotation not found.');
             }
@@ -50,7 +51,7 @@ class SpecialQuoteRecordAwardWorkflowService
                 throw new \Exception('This Special quotation is already linked to a Special project.');
             }
 
-            DB::table('projects_main')->insert([
+            DB::table('projects_main')->insert($this->withProjectProposalLanguage([
                 'client_id'    => $quote->client_id,
                 'quote_id'     => $quoteId,
                 'project_name' => $quote->service_title,
@@ -60,10 +61,9 @@ class SpecialQuoteRecordAwardWorkflowService
                 'description'  => $description,
                 'status'       => 'Active',
                 'quote_value'  => $quote->grand_total,
-                'proposal_language' => $quote->proposal_language ?? 'en',
                 'award_date'   => $awardDate,
                 'created_at'   => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $newProjectId = (int) DB::getPdo()->lastInsertId();
             if (!$newProjectId) {
@@ -124,7 +124,7 @@ class SpecialQuoteRecordAwardWorkflowService
 
         DB::beginTransaction();
         try {
-            $quote = DB::table('quotes_special')->where('id', $quoteId)->first(['client_id', 'service_title', 'grand_total', 'status', 'proposal_language']);
+            $quote = DB::table('quotes_special')->where('id', $quoteId)->first($this->specialQuoteAwardColumns(['status']));
             if (!$quote) {
                 throw new \Exception('Special quotation not found.');
             }
@@ -132,7 +132,7 @@ class SpecialQuoteRecordAwardWorkflowService
                 throw new \Exception('Only Awarded quotations can be re-awarded.');
             }
 
-            DB::table('projects_main')->insert([
+            DB::table('projects_main')->insert($this->withProjectProposalLanguage([
                 'client_id'    => $quote->client_id,
                 'quote_id'     => $quoteId,
                 'project_name' => $quote->service_title,
@@ -141,10 +141,9 @@ class SpecialQuoteRecordAwardWorkflowService
                 'description'  => $description,
                 'status'       => 'Active',
                 'quote_value'  => $quote->grand_total,
-                'proposal_language' => $quote->proposal_language ?? 'en',
                 'award_date'   => $awardDate,
                 'created_at'   => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $newProjectId = (int) DB::getPdo()->lastInsertId();
             if (!$newProjectId) {
@@ -319,5 +318,24 @@ class SpecialQuoteRecordAwardWorkflowService
             'updated_by'    => $staffId ?: null,
             'updated_on'    => now(),
         ]);
+    }
+
+    private function specialQuoteAwardColumns(array $extra = []): array
+    {
+        $columns = ['client_id', 'service_title', 'grand_total', ...$extra];
+        if (Schema::hasColumn('quotes_special', 'proposal_language')) {
+            $columns[] = 'proposal_language';
+        }
+
+        return $columns;
+    }
+
+    private function withProjectProposalLanguage(array $payload, mixed $language): array
+    {
+        if (Schema::hasColumn('projects_main', 'proposal_language')) {
+            $payload['proposal_language'] = $language ?: 'en';
+        }
+
+        return $payload;
     }
 }

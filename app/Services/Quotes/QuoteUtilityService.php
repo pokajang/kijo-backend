@@ -15,9 +15,14 @@ class QuoteUtilityService
 
     public function listTrainingTopics(Request $request): JsonResponse
     {
+        $select = ['id', 'training_title', 'duration'];
+        if ($this->hasColumn('proposal_template_training_main', 'proposal_language')) {
+            $select[] = 'proposal_language';
+        }
+
         $query = DB::table('proposal_template_training_main')
             ->where('is_deleted', 0)
-            ->select(['id', 'training_title', 'duration', 'proposal_language'])
+            ->select($select)
             ->orderBy('training_title');
 
         if ($this->hasColumn('proposal_template_training_main', 'proposal_language')) {

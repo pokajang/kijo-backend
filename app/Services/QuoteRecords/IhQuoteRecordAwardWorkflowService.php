@@ -11,6 +11,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class IhQuoteRecordAwardWorkflowService
 {
@@ -51,7 +52,7 @@ class IhQuoteRecordAwardWorkflowService
                 throw new \Exception('This Industrial/Hygiene quotation is already linked to a project.');
             }
 
-            $newProjectId = DB::table('projects_main')->insertGetId([
+            $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
                 'client_id'     => $quote->client_id,
                 'quote_id'      => $quoteId,
                 'project_name'  => $quote->service_title,
@@ -61,10 +62,9 @@ class IhQuoteRecordAwardWorkflowService
                 'description'   => $description,
                 'status'        => 'Active',
                 'quote_value'   => $quote->grand_total,
-                'proposal_language' => $quote->proposal_language ?? 'en',
                 'award_date'    => $awardDate,
                 'created_at'    => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'IH quotation marked as Awarded. Project started.', $request);
 
@@ -125,7 +125,7 @@ class IhQuoteRecordAwardWorkflowService
                 throw new \Exception('Only Awarded quotations can be re-awarded.');
             }
 
-            $newProjectId = DB::table('projects_main')->insertGetId([
+            $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
                 'client_id'    => $quote->client_id,
                 'quote_id'     => $quoteId,
                 'project_name' => $quote->service_title,
@@ -134,10 +134,9 @@ class IhQuoteRecordAwardWorkflowService
                 'description'  => $description,
                 'status'       => 'Active',
                 'quote_value'  => $quote->grand_total,
-                'proposal_language' => $quote->proposal_language ?? 'en',
                 'award_date'   => $awardDate,
                 'created_at'   => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'New project created from Re-Award (existing quote).', $request);
 
@@ -321,5 +320,14 @@ class IhQuoteRecordAwardWorkflowService
         if ($vendorPayments > 0) {
             throw new \Exception("Cannot un-award. Linked project #{$projectId} has vendor payment records.");
         }
+    }
+
+    private function withProjectProposalLanguage(array $payload, mixed $language): array
+    {
+        if (Schema::hasColumn('projects_main', 'proposal_language')) {
+            $payload['proposal_language'] = $language ?: 'en';
+        }
+
+        return $payload;
     }
 }

@@ -11,6 +11,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class EquipmentQuoteRecordAwardWorkflowService
 {
@@ -65,7 +66,7 @@ class EquipmentQuoteRecordAwardWorkflowService
                 }
             }
 
-            $newProjectId = DB::table('projects_main')->insertGetId([
+            $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
                 'client_id'     => $quote->client_id,
                 'quote_id'      => $quoteId,
                 'project_name'  => $projectName,
@@ -75,10 +76,9 @@ class EquipmentQuoteRecordAwardWorkflowService
                 'description'   => $description,
                 'status'        => 'Active',
                 'quote_value'   => $quote->grand_total,
-                'proposal_language' => $quote->proposal_language ?? 'en',
                 'award_date'    => $awardDate,
                 'created_at'    => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'Equipment quotation marked as Awarded. Project started.', $request);
 
@@ -156,7 +156,7 @@ class EquipmentQuoteRecordAwardWorkflowService
                 }
             }
 
-            $newProjectId = DB::table('projects_main')->insertGetId([
+            $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
                 'client_id'    => $quote->client_id,
                 'quote_id'     => $quoteId,
                 'project_name' => $projectName,
@@ -165,10 +165,9 @@ class EquipmentQuoteRecordAwardWorkflowService
                 'description'  => $description,
                 'status'       => 'Active',
                 'quote_value'  => $quote->grand_total,
-                'proposal_language' => $quote->proposal_language ?? 'en',
                 'award_date'   => $awardDate,
                 'created_at'   => now(),
-            ]);
+            ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'New project created from Re-Award (existing quote).', $request);
 
@@ -346,5 +345,14 @@ class EquipmentQuoteRecordAwardWorkflowService
         if ($vendorPayments > 0) {
             throw new \Exception("Cannot un-award. Linked project #{$projectId} has vendor payment records.");
         }
+    }
+
+    private function withProjectProposalLanguage(array $payload, mixed $language): array
+    {
+        if (Schema::hasColumn('projects_main', 'proposal_language')) {
+            $payload['proposal_language'] = $language ?: 'en';
+        }
+
+        return $payload;
     }
 }

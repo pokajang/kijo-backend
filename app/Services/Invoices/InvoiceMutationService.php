@@ -7,6 +7,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class InvoiceMutationService extends InvoiceBaseService
 {
@@ -96,7 +97,11 @@ class InvoiceMutationService extends InvoiceBaseService
             DB::statement("SELECT GET_LOCK(?, 10)", [$lockName]);
             DB::beginTransaction();
 
-            $projectRow = DB::table('projects_main')->where('id', $projectId)->first(['client_id', 'proposal_language']);
+            $projectColumns = ['client_id'];
+            if (Schema::hasColumn('projects_main', 'proposal_language')) {
+                $projectColumns[] = 'proposal_language';
+            }
+            $projectRow = DB::table('projects_main')->where('id', $projectId)->first($projectColumns);
             $clientId = $projectRow->client_id ?? null;
             $documentLanguage = $this->normalizeDocumentLanguage($projectRow->proposal_language ?? 'en');
             $invoiceDate = $request->input('invoice_date', date('Y-m-d'));
@@ -113,7 +118,7 @@ class InvoiceMutationService extends InvoiceBaseService
             $padded    = str_pad((string) $runningNo, 4, '0', STR_PAD_LEFT);
             $refNo     = "INV{$yearTwo}-{$padded}{$creatorCode}";
 
-            $invoiceId = DB::table('invoices')->insertGetId([
+            $insert = [
                 'project_id'             => $projectId,
                 'client_id'              => $clientId,
                 'invoice_loa_no'         => $request->input('client_award_ref_no'),
@@ -144,11 +149,15 @@ class InvoiceMutationService extends InvoiceBaseService
                 'payment_method'         => $request->input('payment_method', ''),
                 'grant_approval_no'      => $grantNo,
                 'remarks'                => $request->input('remarks', ''),
-                'document_language'      => $documentLanguage,
                 'status'                 => 'Pending',
                 'created_at'             => now(),
                 'updated_at'             => now(),
-            ]);
+            ];
+            if (Schema::hasColumn('invoices', 'document_language')) {
+                $insert['document_language'] = $documentLanguage;
+            }
+
+            $invoiceId = DB::table('invoices')->insertGetId($insert);
 
             foreach ((array) $request->input('breakdown') as $i => $line) {
                 $qty    = (float) ($line['quantity'] ?? 1);

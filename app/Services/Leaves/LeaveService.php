@@ -6,6 +6,7 @@ use App\Http\Requests\Leave\AssignEntitlementRequest;
 use App\Http\Requests\Leave\LeaveActionRequest;
 use App\Http\Requests\Leave\StoreLeaveRequest;
 use App\Http\Requests\Leave\UpdateEntitlementRequest;
+use App\Http\Requests\Leave\UpdateWorkflowRecipientsRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
@@ -22,6 +23,11 @@ class LeaveService
     private function leaveEntitlementService(): LeaveEntitlementService
     {
         return app(LeaveEntitlementService::class);
+    }
+
+    private function leaveWorkflowRecipientService(): LeaveWorkflowRecipientService
+    {
+        return app(LeaveWorkflowRecipientService::class);
     }
 
     public function createLeave(StoreLeaveRequest $request): JsonResponse
@@ -72,6 +78,16 @@ class LeaveService
     public function deleteEntitlement(Request $request, ?int $id = null): JsonResponse
     {
         return $this->leaveEntitlementService()->deleteEntitlement($request, $id);
+    }
+
+    public function getWorkflowRecipients(Request $request): JsonResponse
+    {
+        return $this->leaveWorkflowRecipientService()->index();
+    }
+
+    public function updateWorkflowRecipients(UpdateWorkflowRecipientsRequest $request): JsonResponse
+    {
+        return $this->leaveWorkflowRecipientService()->update($request, $request->validated());
     }
 
 }

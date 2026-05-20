@@ -19,8 +19,10 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
 
         foreach ([
+            'in_app_notifications',
             'user_activities',
             'vendor_payments',
+            'hr_leave_workflow_recipients',
             'hr_leaves_application',
             'hr_leaves_allocation',
             'staff_profile',
@@ -138,6 +140,37 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             $table->timestamp('created_at')->nullable();
         });
 
+        Schema::create('in_app_notifications', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('recipient_staff_id');
+            $table->unsignedBigInteger('actor_staff_id')->nullable();
+            $table->string('module_key');
+            $table->string('entity_type');
+            $table->unsignedBigInteger('entity_id');
+            $table->string('type');
+            $table->string('title');
+            $table->text('message')->nullable();
+            $table->string('route')->nullable();
+            $table->string('severity')->default('info');
+            $table->json('metadata_json')->nullable();
+            $table->timestamp('read_at')->nullable();
+            $table->timestamp('consumed_at')->nullable();
+            $table->timestamp('resolved_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('hr_leave_workflow_recipients', function (Blueprint $table): void {
+            $table->id();
+            $table->string('stage_key');
+            $table->unsignedInteger('staff_id');
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->boolean('is_active')->default(true);
+            $table->unsignedInteger('created_by')->nullable();
+            $table->unsignedInteger('updated_by')->nullable();
+            $table->timestamps();
+            $table->unique(['stage_key', 'staff_id']);
+        });
+
         DB::table('system_users')->insert([
             ['id' => 1, 'staff_id' => 10, 'email' => 'employee@example.test', 'role' => json_encode(['Employee']), 'is_active' => 1],
             ['id' => 2, 'staff_id' => 20, 'email' => 'hr@example.test', 'role' => json_encode(['HR']), 'is_active' => 1],
@@ -233,9 +266,35 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             ->assertJsonPath('leaves.0.reason', 'Future leave submitted this year');
     }
 
+    public function test_all_leave_records_include_canceller_details(): void
+    {
+        $year = (int) now()->year;
+
+        DB::table('hr_leaves_application')->insert([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Cancelled before review',
+            'start_date' => "{$year}-06-01",
+            'start_time' => '08:30',
+            'end_date' => "{$year}-06-01",
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Cancelled',
+            'applied_at' => "{$year}-05-20 09:15:00",
+            'cancelled_by' => 10,
+            'cancelled_at' => "{$year}-05-20 10:30:00",
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->getJson("/hr/leaves?year={$year}")
+            ->assertOk()
+            ->assertJsonPath('leaves.0.canceller_name', 'Employee One')
+            ->assertJsonPath('leaves.0.canceller_code', 'EMP1');
+    }
+
     public function test_leave_application_reports_notification_send_result(): void
     {
-        $this->actingSession($this->employeeSession())
+        $response = $this->actingSession($this->employeeSession())
             ->postJson('/hr/leaves', [
                 'type' => 'Annual',
                 'reason' => 'Family matters',
@@ -250,12 +309,275 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('mail_sent', true);
 
+        $leaveId = (int) $response->json('leave_id');
+
         $this->assertDatabaseHas('hr_leaves_application', [
             'staff_id' => 10,
             'type' => 'Annual',
             'reason' => 'Family matters',
             'status' => 'Pending',
         ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 20,
+            'actor_staff_id' => 10,
+            'module_key' => 'staff.leaves',
+            'entity_type' => 'leave_application',
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+        ]);
+    }
+
+    public function test_hr_can_manage_leave_workflow_recipients_but_employee_cannot(): void
+    {
+        $this->actingSession($this->employeeSession())
+            ->putJson('/hr/leaves/workflow-recipients', [
+                'stages' => [
+                    'leave.submitted.recommenders' => [30],
+                ],
+            ])
+            ->assertStatus(403);
+
+        $this->actingSession($this->hrSession())
+            ->putJson('/hr/leaves/workflow-recipients', [
+                'stages' => [
+                    'leave.submitted.recommenders' => [30],
+                    'leave.recommended.approvers' => [40],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leave_workflow_recipients', [
+            'stage_key' => 'leave.submitted.recommenders',
+            'staff_id' => 30,
+            'is_active' => 1,
+        ]);
+
+        $stages = $this->actingSession($this->hrSession())
+            ->getJson('/hr/leaves/workflow-recipients')
+            ->assertOk()
+            ->json('stages');
+
+        $submittedStage = collect($stages)->firstWhere('key', 'leave.submitted.recommenders');
+        $this->assertSame(30, $submittedStage['recipients'][0]['staff_id']);
+        $this->assertSame(30, $submittedStage['effective_recipients'][0]['staff_id']);
+        $this->assertFalse($submittedStage['using_default']);
+        $this->assertCount(2, $stages);
+        $this->assertNull(collect($stages)->firstWhere('key', 'leave.approved.notify'));
+    }
+
+    public function test_leave_workflow_settings_expose_effective_fallback_recipients(): void
+    {
+        $stages = $this->actingSession($this->hrSession())
+            ->getJson('/hr/leaves/workflow-recipients')
+            ->assertOk()
+            ->json('stages');
+
+        $submittedStage = collect($stages)->firstWhere('key', 'leave.submitted.recommenders');
+        $recommendedStage = collect($stages)->firstWhere('key', 'leave.recommended.approvers');
+
+        $this->assertTrue($submittedStage['using_default']);
+        $this->assertSame(20, $submittedStage['effective_recipients'][0]['staff_id']);
+        $this->assertTrue($recommendedStage['using_default']);
+        $this->assertSame(30, $recommendedStage['effective_recipients'][0]['staff_id']);
+    }
+
+    public function test_leave_submission_uses_configured_recommenders_for_notifications(): void
+    {
+        DB::table('hr_leave_workflow_recipients')->insert([
+            'stage_key' => 'leave.submitted.recommenders',
+            'staff_id' => 30,
+            'sort_order' => 0,
+            'is_active' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Annual',
+                'reason' => 'Configured recommender test',
+                'start_date' => '2026-06-03',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-03',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk()
+            ->assertJsonPath('mail_sent', true);
+
+        $leaveId = (int) $response->json('leave_id');
+
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 30,
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+        ]);
+        $this->assertDatabaseMissing('in_app_notifications', [
+            'recipient_staff_id' => 20,
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+        ]);
+    }
+
+    public function test_recommend_action_uses_configured_approvers_for_notifications(): void
+    {
+        DB::table('hr_leave_workflow_recipients')->insert([
+            'stage_key' => 'leave.recommended.approvers',
+            'staff_id' => 40,
+            'sort_order' => 0,
+            'is_active' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Configured approver test',
+            'start_date' => '2026-06-04',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-04',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+        ]);
+
+        DB::table('in_app_notifications')->insert([
+            'recipient_staff_id' => 20,
+            'actor_staff_id' => 10,
+            'module_key' => 'staff.leaves',
+            'entity_type' => 'leave_application',
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+            'title' => 'Leave request needs recommendation',
+            'severity' => 'warning',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'recommend',
+                'remarks' => 'Recommended',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 40,
+            'actor_staff_id' => 20,
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_approval',
+        ]);
+        $this->assertDatabaseMissing('in_app_notifications', [
+            'recipient_staff_id' => 30,
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_approval',
+        ]);
+    }
+
+    public function test_leave_notification_lifecycle_moves_between_reviewer_approver_and_applicant(): void
+    {
+        $response = $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Annual',
+                'reason' => 'Lifecycle test',
+                'start_date' => '2026-06-02',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-02',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk();
+
+        $leaveId = (int) $response->json('leave_id');
+
+        $summary = $this->actingSession($this->hrSession())
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
+        $this->assertSame(1, $summary['by_route_group']['/staff/manage'] ?? 0);
+        $this->assertSame(1, $summary['by_tab']['staff.leaves'] ?? 0);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'recommend',
+                'remarks' => 'Recommended',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 20,
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+        ]);
+        $this->assertNotNull(
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 20)
+                ->where('entity_id', $leaveId)
+                ->where('type', 'leave.needs_recommendation')
+                ->value('consumed_at'),
+        );
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 30,
+            'actor_staff_id' => 20,
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_approval',
+        ]);
+
+        $summary = $this->actingSession($this->managerSession())
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
+
+        $this->actingSession($this->managerSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'approve',
+                'remarks' => 'Approved',
+            ])
+            ->assertOk();
+
+        $this->assertNotNull(
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 30)
+                ->where('entity_id', $leaveId)
+                ->where('type', 'leave.needs_approval')
+                ->value('consumed_at'),
+        );
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'actor_staff_id' => 30,
+            'entity_id' => $leaveId,
+            'type' => 'leave.approved',
+        ]);
+
+        $summary = $this->actingSession($this->employeeSession())
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson('/notifications/consume-entity', [
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $leaveId,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.consumed_count', 1);
+
+        $this->actingSession($this->employeeSession())
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->assertJsonPath('data.total', 0);
     }
 
     public function test_approve_leave_updates_integer_year_allocation_usage(): void
@@ -346,6 +668,55 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'id' => $leaveId,
             'status' => 'Cancelled',
             'cancelled_by' => 10,
+        ]);
+        $this->assertEquals(
+            '2',
+            (string) DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Annual')
+                ->where('year', 2026)
+                ->value('used_days'),
+        );
+    }
+
+    public function test_privileged_staff_can_cancel_approved_leave_for_other_staff(): void
+    {
+        DB::table('hr_leaves_allocation')->insert([
+            'staff_id' => 10,
+            'leave_type' => 'Annual',
+            'year' => 2026,
+            'total_days' => 14,
+            'used_days' => 3,
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'HR revoke approved leave',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Approved',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 20,
+            'reviewed_status' => 'Recommended',
+            'reviewed_at' => '2026-05-20 09:30:00',
+            'approved_by' => 30,
+            'approved_status' => 'Approved',
+            'approved_at' => '2026-05-20 10:00:00',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$leaveId}/cancel", ['id' => $leaveId])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Cancelled',
+            'cancelled_by' => 20,
         ]);
         $this->assertEquals(
             '2',

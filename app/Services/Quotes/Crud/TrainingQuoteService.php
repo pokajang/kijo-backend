@@ -64,7 +64,7 @@ class TrainingQuoteService
             $next = (($row->max_run ?? 0) ?: 0) + 1;
             $refNo = 'QTR' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
 
-            $quoteId = DB::table($table)->insertGetId([
+            $insert = [
                 'client_id' => $data['client_id'],
                 'service_group' => 'training',
                 'quote_running_no' => $next,
@@ -114,7 +114,6 @@ class TrainingQuoteService
                 'grand_total' => $trainingTotals['grand_total'],
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'proposal_id' => $data['proposal_id'] ?? null,
-                'proposal_language' => $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en'),
                 'status' => 'Open',
                 'revision_no' => 0,
                 'created_by_id' => $staffId,
@@ -123,7 +122,13 @@ class TrainingQuoteService
                 'quote_ref_no' => $refNo,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+
+            if (Schema::hasColumn($table, 'proposal_language')) {
+                $insert['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en');
+            }
+
+            $quoteId = DB::table($table)->insertGetId($insert);
             $this->markPriceExceptionUsed($priceException, $quoteId);
 
             DB::commit();
@@ -132,6 +137,7 @@ class TrainingQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
@@ -224,9 +230,12 @@ class TrainingQuoteService
                 'grand_total' => $trainingTotals['grand_total'],
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'proposal_id' => $data['proposal_id'] ?? null,
-                'proposal_language' => $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en')),
                 'updated_at' => now(),
             ];
+
+            if (Schema::hasColumn('quotes_training', 'proposal_language')) {
+                $updates['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en'));
+            }
 
             if ($isRevision) {
                 $updates['revision_no'] = DB::table('quotes_training')->where('id', $id)->lockForUpdate()->value('revision_no') + 1;
@@ -241,6 +250,7 @@ class TrainingQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 

@@ -61,16 +61,16 @@ class IhQuoteService
             $next  = (($row->max_run ?? 0) ?: 0) + 1;
             $refNo = 'QIH' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
 
-            $quoteId = DB::table($table)->insertGetId([
+            $insert = [
                 'service_group'      => 'ih',
                 'quote_running_no'   => $next,
                 'client_id'         => $data['client_id'],
                 'client_name'       => $data['client_name'],
-                'client_ssm'        => $data['client_ssm'] ?? null,
+                'client_ssm'        => $data['client_ssm'] ?? '',
                 'client_address'    => $data['client_address'],
-                'client_city'       => $data['client_city'] ?? null,
-                'client_state'      => $data['client_state'] ?? null,
-                'client_zip'        => $data['client_zip'] ?? null,
+                'client_city'       => $data['client_city'] ?? '',
+                'client_state'      => $data['client_state'] ?? '',
+                'client_zip'        => $data['client_zip'] ?? '',
                 'pic_name'          => $data['pic_name'],
                 'pic_email'         => $data['pic_email'],
                 'pic_phone'         => $data['pic_phone'],
@@ -78,10 +78,10 @@ class IhQuoteService
                 'service_id'        => $data['service_id'] ?? null,
                 'service_title'     => $data['service_title'],
                 'service_code'      => $data['service_code'],
-                'site_address'      => $data['site_address'] ?? null,
+                'site_address'      => $data['site_address'] ?? '',
                 'travel_charge'     => $this->nd($data['travel_charge'] ?? null),
                 'sample_counts'     => $this->nd($data['sample_counts'] ?? null),
-                'sample_unit'       => $data['sample_unit'] ?? null,
+                'sample_unit'       => $data['sample_unit'] ?? 'sample(s)',
                 'num_work_units'    => $this->nd($data['num_work_units'] ?? null),
                 'unit_price'        => $this->nd($data['unit_price'] ?? null),
                 'discount'          => $this->nd($data['discount'] ?? null),
@@ -91,7 +91,6 @@ class IhQuoteService
                 'grand_total'       => $this->nd($data['grand_total'] ?? null),
                 'inquiry_remarks'   => $data['inquiry_remarks'] ?? null,
                 'attach_proposal'   => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
-                'proposal_language' => $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en'),
                 'status'            => 'Open',
                 'revision_no'       => 0,
                 'created_by_id'     => $staffId,
@@ -100,7 +99,13 @@ class IhQuoteService
                 'quote_ref_no'      => $refNo,
                 'created_at'        => now(),
                 'updated_at'        => now(),
-            ]);
+            ];
+
+            if (Schema::hasColumn($table, 'proposal_language')) {
+                $insert['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en');
+            }
+
+            $quoteId = DB::table($table)->insertGetId($insert);
 
             DB::commit();
         } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
@@ -108,6 +113,7 @@ class IhQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
@@ -148,11 +154,11 @@ class IhQuoteService
         $updates = [
             'client_id'         => $data['client_id'],
             'client_name'       => $data['client_name'],
-            'client_ssm'        => $data['client_ssm'] ?? null,
+            'client_ssm'        => $data['client_ssm'] ?? '',
             'client_address'    => $data['client_address'],
-            'client_city'       => $data['client_city'] ?? null,
-            'client_state'      => $data['client_state'] ?? null,
-            'client_zip'        => $data['client_zip'] ?? null,
+            'client_city'       => $data['client_city'] ?? '',
+            'client_state'      => $data['client_state'] ?? '',
+            'client_zip'        => $data['client_zip'] ?? '',
             'pic_name'          => $data['pic_name'],
             'pic_email'         => $data['pic_email'],
             'pic_phone'         => $data['pic_phone'],
@@ -160,10 +166,10 @@ class IhQuoteService
             'service_id'        => $data['service_id'] ?? null,
             'service_title'     => $data['service_title'],
             'service_code'      => $data['service_code'],
-            'site_address'      => $data['site_address'] ?? null,
+            'site_address'      => $data['site_address'] ?? '',
             'travel_charge'     => $this->nd($data['travel_charge'] ?? null),
             'sample_counts'     => $this->nd($data['sample_counts'] ?? null),
-            'sample_unit'       => $data['sample_unit'] ?? null,
+            'sample_unit'       => $data['sample_unit'] ?? 'sample(s)',
             'num_work_units'    => $this->nd($data['num_work_units'] ?? null),
             'unit_price'        => $this->nd($data['unit_price'] ?? null),
             'discount'          => $this->nd($data['discount'] ?? null),
@@ -173,9 +179,12 @@ class IhQuoteService
             'grand_total'       => $this->nd($data['grand_total'] ?? null),
             'inquiry_remarks'   => $data['inquiry_remarks'] ?? null,
             'attach_proposal'   => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
-            'proposal_language' => $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en')),
             'updated_at'        => now(),
         ];
+
+        if (Schema::hasColumn('quotes_ih', 'proposal_language')) {
+            $updates['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en'));
+        }
 
         try {
             DB::beginTransaction();
@@ -206,6 +215,7 @@ class IhQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 

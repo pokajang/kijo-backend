@@ -8,6 +8,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class ManpowerQuoteService
 {
@@ -70,7 +71,7 @@ class ManpowerQuoteService
             $next  = (($row->max_run ?? 0) ?: 0) + 1;
             $refNo = 'QMS' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
 
-            $quoteId = DB::table($table)->insertGetId([
+            $insert = [
                 'service_group'    => 'manpower',
                 'quote_running_no' => $next,
                 'client_id'       => $data['client_id'],
@@ -97,14 +98,12 @@ class ManpowerQuoteService
                 'no_of_pax'       => $data['no_of_pax'] ?? null,
                 'unit_cost'       => $this->nd($data['unit_cost'] ?? null),
                 'discount'        => $manpowerTotals['discount'],
-                'price_exception_request_id' => $priceException?->id,
                 'sst_percent'     => $this->nd($data['sst_percent'] ?? null),
                 'sst_amount'      => $manpowerTotals['sst_amount'],
                 'sub_total'       => $manpowerTotals['sub_total'],
                 'grand_total'     => $manpowerTotals['grand_total'],
                 'inquiry_remarks' => $data['inquiry_remarks'] ?? null,
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
-                'proposal_language' => $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en'),
                 'status'          => 'Open',
                 'revision_no'     => 0,
                 'created_by_id'   => $staffId,
@@ -113,7 +112,16 @@ class ManpowerQuoteService
                 'quote_ref_no'    => $refNo,
                 'created_at'      => now(),
                 'updated_at'      => now(),
-            ]);
+            ];
+
+            if (Schema::hasColumn($table, 'price_exception_request_id')) {
+                $insert['price_exception_request_id'] = $priceException?->id;
+            }
+            if (Schema::hasColumn($table, 'proposal_language')) {
+                $insert['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en');
+            }
+
+            $quoteId = DB::table($table)->insertGetId($insert);
             $this->markPriceExceptionUsed($priceException, $quoteId);
 
             DB::commit();
@@ -122,6 +130,7 @@ class ManpowerQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
@@ -189,16 +198,21 @@ class ManpowerQuoteService
                 'no_of_pax'       => $data['no_of_pax'] ?? null,
                 'unit_cost'       => $this->nd($data['unit_cost'] ?? null),
                 'discount'        => $manpowerTotals['discount'],
-                'price_exception_request_id' => $priceException?->id ?? $quote->price_exception_request_id ?? null,
                 'sst_percent'     => $this->nd($data['sst_percent'] ?? null),
                 'sst_amount'      => $manpowerTotals['sst_amount'],
                 'sub_total'       => $manpowerTotals['sub_total'],
                 'grand_total'     => $manpowerTotals['grand_total'],
                 'inquiry_remarks' => $data['inquiry_remarks'] ?? null,
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
-                'proposal_language' => $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en')),
                 'updated_at'      => now(),
             ];
+
+            if (Schema::hasColumn('quotes_manpower', 'price_exception_request_id')) {
+                $updates['price_exception_request_id'] = $priceException?->id ?? $quote->price_exception_request_id ?? null;
+            }
+            if (Schema::hasColumn('quotes_manpower', 'proposal_language')) {
+                $updates['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en'));
+            }
 
             if ($isRevision) {
                 $updates['revision_no'] = DB::table('quotes_manpower')->where('id', $id)->lockForUpdate()->value('revision_no') + 1;
@@ -213,6 +227,7 @@ class ManpowerQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 
