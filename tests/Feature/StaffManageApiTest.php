@@ -104,9 +104,11 @@ class StaffManageApiTest extends TestCase
 
         $names = collect($response->json('staff'))->pluck('full_name')->all();
 
-        $this->assertContains('Active Manager', $names);
-        $this->assertContains('Inactive Staff', $names);
-        $this->assertContains('Terminated Staff', $names);
+        $this->assertSame([
+            'Active Manager',
+            'Inactive Staff',
+            'Terminated Staff',
+        ], $names);
     }
 
     public function test_staff_detail_allows_terminated_staff_from_manage_table(): void

@@ -97,18 +97,30 @@ class StaffDirectoryService extends StaffBaseService
             DB::raw('sp.nric as ic'),
         ];
 
-        if (Schema::hasColumn('staff_general', 'terminated_at')) {
+        $hasTerminatedAtColumn = Schema::hasColumn('staff_general', 'terminated_at');
+        $hasDeletedAtColumn = Schema::hasColumn('staff_general', 'deleted_at');
+
+        if ($hasTerminatedAtColumn) {
             $columns[] = 'sg.terminated_at';
         }
 
-        if (Schema::hasColumn('staff_general', 'deleted_at')) {
+        if ($hasDeletedAtColumn) {
             $columns[] = 'sg.deleted_at';
+        }
+
+        $activeSortConditions = ["LOWER(COALESCE(sg.status, '')) = 'active'"];
+        if ($hasTerminatedAtColumn) {
+            $activeSortConditions[] = 'sg.terminated_at IS NULL';
+        }
+        if ($hasDeletedAtColumn) {
+            $activeSortConditions[] = 'sg.deleted_at IS NULL';
         }
 
         $query = DB::table('staff_general as sg')
             ->leftJoin('staff_profile as sp', 'sp.staff_id', '=', 'sg.staff_id')
             ->select($columns)
-            ->orderByRaw("CASE WHEN sg.status = 'Active' THEN 0 ELSE 1 END")
+            ->orderByRaw('CASE WHEN ' . implode(' AND ', $activeSortConditions) . ' THEN 0 ELSE 1 END')
+            ->orderBy('sg.full_name')
             ->orderByDesc('sg.created_at');
 
         if ($q !== '') {
