@@ -16,6 +16,7 @@ use Dompdf\Options;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class StaffAccountService extends StaffBaseService
@@ -154,7 +155,6 @@ class StaffAccountService extends StaffBaseService
         try {
             $staff = DB::table('staff_general')
                 ->where('staff_id', $staffId)
-                ->whereNull('deleted_at')
                 ->lockForUpdate()
                 ->first();
 
@@ -184,22 +184,33 @@ class StaffAccountService extends StaffBaseService
                 }
             }
 
+            $staffUpdates = [
+                'full_name' => $staffName,
+                'name_code' => $data['nameCode'] ?? null,
+                'email' => $email,
+                'mobile_number' => $data['mobileNumber'] ?? null,
+                'position' => $data['position'] ?? null,
+                'staff_type' => $data['staffType'] ?? null,
+                'department' => $data['department'] ?? null,
+                'start_date' => $data['startDate'] ?? null,
+                'status' => $data['status'] ?? 'Active',
+                'grant_access' => $grantAccess ? 1 : 0,
+                'role' => $roleJson,
+                'updated_at' => now(),
+            ];
+
+            if (($data['status'] ?? 'Active') === 'Active') {
+                if (Schema::hasColumn('staff_general', 'deleted_at')) {
+                    $staffUpdates['deleted_at'] = null;
+                }
+                if (Schema::hasColumn('staff_general', 'terminated_at')) {
+                    $staffUpdates['terminated_at'] = null;
+                }
+            }
+
             DB::table('staff_general')
                 ->where('staff_id', $staffId)
-                ->update([
-                    'full_name' => $staffName,
-                    'name_code' => $data['nameCode'] ?? null,
-                    'email' => $email,
-                    'mobile_number' => $data['mobileNumber'] ?? null,
-                    'position' => $data['position'] ?? null,
-                    'staff_type' => $data['staffType'] ?? null,
-                    'department' => $data['department'] ?? null,
-                    'start_date' => $data['startDate'] ?? null,
-                    'status' => $data['status'] ?? 'Active',
-                    'grant_access' => $grantAccess ? 1 : 0,
-                    'role' => $roleJson,
-                    'updated_at' => now(),
-                ]);
+                ->update($staffUpdates);
 
             $existingUser = DB::table('system_users')
                 ->where('staff_id', $staffId)

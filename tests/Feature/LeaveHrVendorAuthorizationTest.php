@@ -21,6 +21,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         foreach ([
             'user_activities',
             'vendor_payments',
+            'hr_leaves_application',
             'hr_leaves_allocation',
             'staff_profile',
             'staff_general',
@@ -81,6 +82,30 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             $table->integer('year');
             $table->decimal('total_days', 8, 2)->default(0);
             $table->decimal('used_days', 8, 2)->default(0);
+        });
+
+        Schema::create('hr_leaves_application', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->unsignedInteger('staff_id');
+            $table->string('type');
+            $table->text('reason')->nullable();
+            $table->date('start_date');
+            $table->string('start_time');
+            $table->date('end_date');
+            $table->string('end_time');
+            $table->decimal('duration_days', 8, 2)->default(0);
+            $table->string('status')->default('Pending');
+            $table->timestamp('applied_at')->nullable();
+            $table->unsignedInteger('reviewed_by')->nullable();
+            $table->timestamp('reviewed_at')->nullable();
+            $table->string('reviewed_status')->nullable();
+            $table->text('reviewed_remarks')->nullable();
+            $table->unsignedInteger('approved_by')->nullable();
+            $table->timestamp('approved_at')->nullable();
+            $table->string('approved_status')->nullable();
+            $table->text('approved_remarks')->nullable();
+            $table->unsignedInteger('cancelled_by')->nullable();
+            $table->timestamp('cancelled_at')->nullable();
         });
 
         Schema::create('vendor_payments', function (Blueprint $table): void {
@@ -182,6 +207,55 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             ->assertJsonPath('data.general.full_name', 'Private Staff')
             ->assertJsonPath('data.profile.nric', '900101-01-1234')
             ->assertJsonPath('data.profile.chronic_illness', 'Asthma');
+    }
+
+    public function test_all_leave_records_include_applications_submitted_in_filtered_year(): void
+    {
+        $year = (int) now()->year;
+
+        DB::table('hr_leaves_application')->insert([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Future leave submitted this year',
+            'start_date' => ($year + 1) . '-01-15',
+            'start_time' => '08:30',
+            'end_date' => ($year + 1) . '-01-15',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => "{$year}-05-20 09:15:00",
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->getJson("/hr/leaves?year={$year}")
+            ->assertOk()
+            ->assertJsonPath('leaves.0.applicant_name', 'Employee One')
+            ->assertJsonPath('leaves.0.reason', 'Future leave submitted this year');
+    }
+
+    public function test_leave_application_reports_notification_send_result(): void
+    {
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Annual',
+                'reason' => 'Family matters',
+                'start_date' => '2026-06-01',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-01',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('mail_sent', true);
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Family matters',
+            'status' => 'Pending',
+        ]);
     }
 
     public function test_vendor_payment_approve_and_delete_require_manager_role(): void

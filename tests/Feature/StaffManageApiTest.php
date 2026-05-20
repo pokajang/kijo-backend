@@ -118,12 +118,70 @@ class StaffManageApiTest extends TestCase
             ->assertJsonPath('staff.deleted_at', '2026-05-03 00:00:00');
     }
 
+    public function test_update_staff_can_reactivate_terminated_staff(): void
+    {
+        $this->actingAsManager()
+            ->putJson('/staff', [
+                'staffId' => 3,
+                'fullName' => 'Terminated Staff',
+                'nameCode' => 'TRM',
+                'email' => 'terminated@example.test',
+                'mobileNumber' => '60123456789',
+                'position' => 'Consultant',
+                'staffType' => 'Permanent',
+                'department' => 'Operations',
+                'startDate' => '2026-05-01',
+                'status' => 'Active',
+                'grantAccess' => false,
+                'systemRoles' => [],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('staff_general', [
+            'staff_id' => 3,
+            'status' => 'Active',
+            'deleted_at' => null,
+            'terminated_at' => null,
+        ]);
+    }
+
+    public function test_update_staff_can_save_terminated_staff_without_reactivating(): void
+    {
+        $this->actingAsManager()
+            ->putJson('/staff', [
+                'staffId' => 3,
+                'fullName' => 'Terminated Staff Updated',
+                'nameCode' => 'TRM',
+                'email' => 'terminated@example.test',
+                'mobileNumber' => '60123456789',
+                'position' => 'Consultant',
+                'staffType' => 'Permanent',
+                'department' => 'Operations',
+                'startDate' => '2026-05-01',
+                'status' => 'Inactive',
+                'grantAccess' => false,
+                'systemRoles' => [],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('staff_general', [
+            'staff_id' => 3,
+            'full_name' => 'Terminated Staff Updated',
+            'status' => 'Inactive',
+            'deleted_at' => '2026-05-03 00:00:00',
+            'terminated_at' => '2026-05-03 00:00:00',
+        ]);
+    }
+
     private function actingAsManager(): self
     {
         return $this->withSession([
             'user_id' => 1,
             'staff_id' => 1,
             'roles' => ['HR'],
-        ]);
+            '_token' => 'test-token',
+        ])->withHeader('X-CSRF-TOKEN', 'test-token');
     }
 }

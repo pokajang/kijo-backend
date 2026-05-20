@@ -14,6 +14,10 @@ use Illuminate\Support\Facades\DB;
 
 class LeaveRequestService extends LeaveBaseService
 {
+    private const DEFAULT_LEAVE_APPLICATION_RECIPIENTS = [
+        'hr.amiosh@gmail.com',
+        'azam@amiosh.com',
+    ];
 
     public function createLeave(StoreLeaveRequest $request): JsonResponse
     {
@@ -58,25 +62,23 @@ class LeaveRequestService extends LeaveBaseService
             </table>
         ";
 
-        $mailSent = false;
-        try {
-            SendHtmlMailJob::dispatch(
-                'hr.amiosh@gmail.com',
-                'Human Resource',
-                "New Leave Application by {$applicantName}",
-                $body,
-                ['azam@amiosh.com'],
-            );
-            $mailSent = true;
-        } catch (\Throwable) {
-            // email is best-effort; leave creation already succeeded
-        }
+        [$to, $cc] = $this->leaveApplicationMailRecipients();
+        $mailSent = $to !== null && $this->sendHtmlMailNow(
+            $to,
+            'Human Resource',
+            "New Leave Application by {$applicantName}",
+            $body,
+            $cc,
+        );
 
         return response()->json([
             'status'    => 'success',
             'message'   => 'Leave application submitted successfully.',
             'leave_id'  => $leaveId,
             'mail_sent' => $mailSent,
+            'mail_message' => $mailSent
+                ? 'Leave application submitted and notification email sent.'
+                : 'Leave application submitted, but notification email could not be sent. Check mail settings and recipient list.',
         ]);
     }
 
@@ -87,24 +89,29 @@ class LeaveRequestService extends LeaveBaseService
         }
 
         $year = (int) $request->query('year', 0);
-        $yearClause = ($year >= 2000 && $year <= 2100) ? 'WHERE YEAR(hla.start_date) = ?' : '';
-        $bindings = ($year >= 2000 && $year <= 2100) ? [$year] : [];
 
-        $leaves = DB::select("
-            SELECT hla.*,
-                   sg.full_name       AS applicant_name,
-                   sg.name_code       AS applicant_code,
-                   reviewer.full_name AS reviewer_name,
-                   reviewer.name_code AS reviewer_code,
-                   approver.full_name AS approver_name,
-                   approver.name_code AS approver_code
-            FROM hr_leaves_application hla
-            LEFT JOIN staff_general sg       ON hla.staff_id    = sg.staff_id
-            LEFT JOIN staff_general reviewer ON hla.reviewed_by = reviewer.staff_id
-            LEFT JOIN staff_general approver ON hla.approved_by = approver.staff_id
-            {$yearClause}
-            ORDER BY hla.applied_at DESC
-        ", $bindings);
+        $leaves = DB::table('hr_leaves_application as hla')
+            ->select([
+                'hla.*',
+                'sg.full_name as applicant_name',
+                'sg.name_code as applicant_code',
+                'reviewer.full_name as reviewer_name',
+                'reviewer.name_code as reviewer_code',
+                'approver.full_name as approver_name',
+                'approver.name_code as approver_code',
+            ])
+            ->leftJoin('staff_general as sg', 'hla.staff_id', '=', 'sg.staff_id')
+            ->leftJoin('staff_general as reviewer', 'hla.reviewed_by', '=', 'reviewer.staff_id')
+            ->leftJoin('staff_general as approver', 'hla.approved_by', '=', 'approver.staff_id')
+            ->when($year >= 2000 && $year <= 2100, function ($query) use ($year) {
+                $query->where(function ($scoped) use ($year) {
+                    $scoped
+                        ->whereYear('hla.start_date', $year)
+                        ->orWhereYear('hla.applied_at', $year);
+                });
+            })
+            ->orderByDesc('hla.applied_at')
+            ->get();
 
         return response()->json(['status' => 'success', 'leaves' => $leaves]);
     }
@@ -261,13 +268,13 @@ class LeaveRequestService extends LeaveBaseService
                    (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
                 <p><strong>Recommended by:</strong> {$actorNameSafe}</p>
             ";
-            SendHtmlMailJob::dispatch(
+            $this->sendHtmlMailNow(
                 'kamarul@amiosh.com',
                 'Kamarul',
                 "Please Approve Leave Application by {$applicantNameStr}",
                 $approverBody,
             );
-            SendHtmlMailJob::dispatch(
+            $this->sendHtmlMailNow(
                 'hr.amiosh@gmail.com',
                 'Human Resource',
                 "Please Approve Leave Application by {$applicantNameStr}",
@@ -292,7 +299,7 @@ class LeaveRequestService extends LeaveBaseService
             ";
 
             if ($action === 'approve') {
-                SendHtmlMailJob::dispatch(
+                $this->sendHtmlMailNow(
                     $applicantEmail,
                     $applicantNameStr,
                     $subjectMap[$action],
@@ -300,7 +307,7 @@ class LeaveRequestService extends LeaveBaseService
                     ['kamarul@amiosh.com', 'aminrozak@amiosh.com', 'hr.amiosh@gmail.com', 'azlin@amiosh.com'],
                 );
             } else {
-                SendHtmlMailJob::dispatch(
+                $this->sendHtmlMailNow(
                     $applicantEmail,
                     $applicantNameStr,
                     $subjectMap[$action],
@@ -372,7 +379,7 @@ class LeaveRequestService extends LeaveBaseService
                (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
         ";
 
-        SendHtmlMailJob::dispatch(
+        $this->sendHtmlMailNow(
             'hr.amiosh@gmail.com',
             'Human Resource',
             "Leave Application Cancelled by {$nameSafe}",
@@ -381,5 +388,85 @@ class LeaveRequestService extends LeaveBaseService
         );
 
         return response()->json(['status' => 'success', 'message' => 'Leave application cancelled successfully.']);
+    }
+
+    private function sendHtmlMailNow(
+        string $to,
+        string $toName,
+        string $subject,
+        string $body,
+        array $cc = [],
+    ): bool {
+        if (!$this->isValidEmail($to)) {
+            return false;
+        }
+
+        $cc = array_values(array_filter(
+            array_unique(array_map(static fn ($email) => trim((string) $email), $cc)),
+            fn ($email) => $email !== '' && strtolower($email) !== strtolower($to) && $this->isValidEmail($email),
+        ));
+
+        try {
+            SendHtmlMailJob::dispatchSync($to, $toName, $subject, $body, $cc);
+            return true;
+        } catch (\Throwable $e) {
+            report($e);
+            return false;
+        }
+    }
+
+    private function leaveApplicationMailRecipients(): array
+    {
+        $configured = $this->emailListFromValue((string) config('leave.application_mail_to', ''));
+        if (!empty($configured)) {
+            return [$configured[0], array_slice($configured, 1)];
+        }
+
+        $roleRecipients = $this->activeStaffEmailsForRoles(['HR', 'System Admin']);
+        if (!empty($roleRecipients)) {
+            return [$roleRecipients[0], array_slice($roleRecipients, 1)];
+        }
+
+        return [
+            self::DEFAULT_LEAVE_APPLICATION_RECIPIENTS[0],
+            array_slice(self::DEFAULT_LEAVE_APPLICATION_RECIPIENTS, 1),
+        ];
+    }
+
+    private function emailListFromValue(string $value): array
+    {
+        $raw = trim($value);
+        if ($raw === '') {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_unique(array_map('trim', preg_split('/[,;\s]+/', $raw) ?: [])),
+            fn ($email) => $email !== '' && $this->isValidEmail($email),
+        ));
+    }
+
+    private function activeStaffEmailsForRoles(array $roles): array
+    {
+        $roleKeys = array_map(static fn ($role) => strtolower(trim((string) $role)), $roles);
+
+        return DB::table('system_users as su')
+            ->leftJoin('staff_general as sg', 'su.staff_id', '=', 'sg.staff_id')
+            ->where('su.is_active', 1)
+            ->where('sg.status', 'Active')
+            ->whereNull('sg.deleted_at')
+            ->select(['su.email as user_email', 'sg.email as staff_email', 'su.role'])
+            ->get()
+            ->filter(function ($row) use ($roleKeys) {
+                $decoded = json_decode((string) ($row->role ?? ''), true);
+                $userRoles = is_array($decoded) ? $decoded : [($row->role ?? '')];
+                $normalized = array_map(static fn ($role) => strtolower(trim((string) $role)), $userRoles);
+                return !empty(array_intersect($roleKeys, $normalized));
+            })
+            ->map(fn ($row) => trim((string) ($row->user_email ?: $row->staff_email ?: '')))
+            ->filter(fn ($email) => $email !== '' && $this->isValidEmail($email))
+            ->unique(fn ($email) => strtolower($email))
+            ->values()
+            ->all();
     }
 }
