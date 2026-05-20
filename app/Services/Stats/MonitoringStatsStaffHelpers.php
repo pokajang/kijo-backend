@@ -68,6 +68,24 @@ trait MonitoringStatsStaffHelpers
             }
         }
 
+        if ($this->monitoringQuoteNegotiationRequestsReady()) {
+            $negotiationStaff = DB::table('quote_price_exception_requests')
+                ->whereNotNull('requested_by_code')
+                ->selectRaw("
+                    UPPER(requested_by_code) AS staff_code,
+                    COALESCE(NULLIF(requested_by_name, ''), NULLIF(requested_by_code, ''), 'Unassigned') AS staff_name
+                ")
+                ->groupByRaw('UPPER(requested_by_code), requested_by_name, requested_by_code')
+                ->get();
+
+            foreach ($negotiationStaff as $row) {
+                $options[] = [
+                    'value' => strtoupper((string) $row->staff_code),
+                    'label' => trim(strtoupper((string) $row->staff_code) . ' - ' . $row->staff_name),
+                ];
+            }
+        }
+
         $options = collect($options)
             ->filter(fn($option) => trim((string) ($option['value'] ?? '')) !== '')
             ->unique('value')

@@ -130,6 +130,71 @@ trait MonitoringStatsEventHelpers
         return $this->monitoringQuoteActivityEvents($quotes, 'qualified-quote');
     }
 
+    private function monitoringQuoteNegotiationEvents(array $context, array $staffFilter): array
+    {
+        if (!$this->monitoringQuoteNegotiationRequestsReady()) {
+            return [];
+        }
+
+        $query = DB::table('quote_price_exception_requests')
+            ->whereIn('service_group', ['training', 'manpower'])
+            ->where('request_type', 'quote')
+            ->where('quote_id', '>', 0)
+            ->whereBetween(DB::raw('DATE(created_at)'), [$context['monthStart'], $context['monthEnd']])
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
+
+        if (!empty($staffFilter['code'])) {
+            $query->whereRaw('UPPER(requested_by_code) = ?', [$staffFilter['code']]);
+        }
+
+        $events = [];
+
+        foreach ($query->get() as $row) {
+            $date = Carbon::parse($row->created_at)->format('Y-m-d');
+            $events[] = [
+                'date' => $date,
+                'key' => 'negotiation:' . (int) $row->id,
+                'segment' => 'individual',
+                'contributor' => $this->monitoringQuoteNegotiationContributor($row, $date),
+            ];
+        }
+
+        return $events;
+    }
+
+    private function monitoringQuoteNegotiationRequestsReady(): bool
+    {
+        if (!Schema::hasTable('quote_price_exception_requests')) {
+            return false;
+        }
+
+        $requiredColumns = [
+            'id',
+            'service_group',
+            'request_type',
+            'quote_id',
+            'quote_ref_no',
+            'requested_by_name',
+            'requested_by_code',
+            'requested_discount_amount',
+            'approved_discount_amount',
+            'client_negotiation_reason',
+            'requester_remarks',
+            'approval_remarks',
+            'status',
+            'created_at',
+        ];
+
+        foreach ($requiredColumns as $column) {
+            if (!Schema::hasColumn('quote_price_exception_requests', $column)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private function monitoringQuoteContributor($quote, string $date, string $eventType): array
     {
         $remarks = $this->monitoringFirstText(
@@ -157,6 +222,50 @@ trait MonitoringStatsEventHelpers
             'ownerStaffCode' => $this->monitoringCleanText($quote->staff_code ?? ''),
             'ownerStaffName' => $this->monitoringCleanText($quote->staff_name ?? ''),
             'segment' => 'individual',
+        ];
+    }
+
+    private function monitoringQuoteNegotiationContributor($row, string $date): array
+    {
+        $requestedDiscount = is_numeric($row->requested_discount_amount ?? null)
+            ? 'Requested discount: RM ' . number_format((float) $row->requested_discount_amount, 2)
+            : '';
+        $approvedDiscount = is_numeric($row->approved_discount_amount ?? null)
+            ? 'Approved discount: RM ' . number_format((float) $row->approved_discount_amount, 2)
+            : '';
+        $status = $this->monitoringCleanText($row->status ?? '');
+        $notes = array_filter([
+            $status !== '' ? 'Status: ' . ucfirst($status) : '',
+            $requestedDiscount,
+            $approvedDiscount,
+            $this->monitoringCleanText($row->requester_remarks ?? ''),
+            $this->monitoringCleanText($row->approval_remarks ?? ''),
+        ]);
+        $serviceType = match ((string) ($row->service_group ?? '')) {
+            'training' => 'Training',
+            'manpower' => 'Manpower',
+            default => $this->monitoringCleanText($row->service_group ?? ''),
+        };
+        $quoteRefNo = $this->monitoringCleanText($row->quote_ref_no ?? '');
+        $quoteId = (int) ($row->quote_id ?? 0);
+
+        return [
+            'sourceType' => 'negotiation',
+            'sourceId' => 'negotiation:' . (int) ($row->id ?? 0),
+            'eventType' => 'NEGOTIATION',
+            'date' => $date,
+            'clientName' => $this->monitoringFirstText($quoteRefNo, 'Negotiation #' . (int) ($row->id ?? 0)),
+            'serviceType' => $serviceType,
+            'subject' => $this->monitoringCleanText($row->client_negotiation_reason ?? ''),
+            'value' => null,
+            'quoteStatus' => $status,
+            'quoteRefNo' => $quoteRefNo,
+            'source' => 'Quote Negotiation',
+            'notes' => implode(' | ', $notes),
+            'ownerStaffCode' => $this->monitoringCleanText($row->requested_by_code ?? ''),
+            'ownerStaffName' => $this->monitoringCleanText($row->requested_by_name ?? ''),
+            'segment' => 'individual',
+            'quoteId' => $quoteId > 0 ? $quoteId : null,
         ];
     }
 

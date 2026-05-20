@@ -30,6 +30,21 @@ class ClientService
         return app(ClientPicService::class);
     }
 
+    private function clientRoiReportService(): ClientRoiReportService
+    {
+        return app(ClientRoiReportService::class);
+    }
+
+    private function clientCommercialHistoryService(): ClientCommercialHistoryService
+    {
+        return app(ClientCommercialHistoryService::class);
+    }
+
+    private function clientVendorRegistrationService(): ClientVendorRegistrationService
+    {
+        return app(ClientVendorRegistrationService::class);
+    }
+
     public function listAll(ListClientsRequest $request): JsonResponse
     {
         return $this->clientCompanyLookupService()->listAll($request);
@@ -43,6 +58,56 @@ class ClientService
     public function listClientOptions(): JsonResponse
     {
         return $this->clientCompanyLookupService()->listClientOptions();
+    }
+
+    public function show(Request $request, ?int $companyId = null): JsonResponse
+    {
+        return $this->clientCompanyLookupService()->show($request, $companyId);
+    }
+
+    public function roiReport(Request $request): JsonResponse
+    {
+        return $this->clientRoiReportService()->index($request);
+    }
+
+    public function commercialHistory(Request $request, int $companyId): JsonResponse
+    {
+        return $this->clientCommercialHistoryService()->show($request, $companyId);
+    }
+
+    public function vendorRegistrations(Request $request): JsonResponse
+    {
+        return $this->clientVendorRegistrationService()->index($request);
+    }
+
+    public function vendorRegistrationAttentionCount(): JsonResponse
+    {
+        return $this->clientVendorRegistrationService()->attentionCount();
+    }
+
+    public function showVendorRegistration(int $id): JsonResponse
+    {
+        return $this->clientVendorRegistrationService()->show($id);
+    }
+
+    public function storeVendorRegistration(Request $request): JsonResponse
+    {
+        return $this->clientVendorRegistrationService()->store($request);
+    }
+
+    public function updateVendorRegistration(Request $request, int $id): JsonResponse
+    {
+        return $this->clientVendorRegistrationService()->update($request, $id);
+    }
+
+    public function deleteVendorRegistration(Request $request, int $id): JsonResponse
+    {
+        return $this->clientVendorRegistrationService()->destroy($request, $id);
+    }
+
+    public function vendorRegistrationCertificate(int $id)
+    {
+        return $this->clientVendorRegistrationService()->certificate($id);
     }
 
     public function listCompanyBranches(Request $request, ?int $companyId = null): JsonResponse

@@ -15,6 +15,8 @@ class UpdateClientRequest extends FormRequest
         $picList = $payload['pic_list'] ?? $payload['picList'] ?? null;
         $newPicList = $payload['new_pic_list'] ?? $payload['newPicList'] ?? [];
         $branchList = $payload['branch_list'] ?? $payload['branchList'] ?? null;
+        $hasPaymentTerms = array_key_exists('payment_terms_days', $payload) || array_key_exists('paymentTermsDays', $payload);
+        $useDefaultPaymentTerms = $payload['use_default_payment_terms'] ?? $payload['useDefaultPaymentTerms'] ?? ! $hasPaymentTerms;
 
         $this->merge([
             'company_id' => $this->route('companyId') ?? $this->route('company_id') ?? $payload['company_id'] ?? $payload['companyId'] ?? null,
@@ -22,6 +24,8 @@ class UpdateClientRequest extends FormRequest
             'ssm_number' => $payload['ssm_number'] ?? $payload['ssmNumber'] ?? null,
             'tax_id_no_tin' => $payload['tax_id_no_tin'] ?? $payload['taxIdNoTin'] ?? null,
             'client_status' => $payload['client_status'] ?? $payload['clientStatus'] ?? 'New',
+            'use_default_payment_terms' => $useDefaultPaymentTerms,
+            'payment_terms_days' => filter_var($useDefaultPaymentTerms, FILTER_VALIDATE_BOOLEAN) ? null : ($payload['payment_terms_days'] ?? $payload['paymentTermsDays'] ?? 30),
             'country' => $payload['country'] ?? null,
             'intl_country' => $payload['intl_country'] ?? $payload['intlCountry'] ?? null,
             'pic_list' => is_array($picList)
@@ -64,6 +68,8 @@ class UpdateClientRequest extends FormRequest
             'ssm_number' => ['nullable', 'string', 'max:100'],
             'tax_id_no_tin' => ['nullable', 'string', 'max:30'],
             'client_status' => ['nullable', 'in:Old,New'],
+            'use_default_payment_terms' => ['nullable', 'boolean'],
+            'payment_terms_days' => ['nullable', 'integer', 'min:0', 'max:365'],
             'address' => ['nullable', 'string', 'max:1000'],
             'city' => ['nullable', 'string', 'max:100'],
             'state' => ['nullable', 'string', 'max:255'],

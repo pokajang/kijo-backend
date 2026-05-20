@@ -86,7 +86,10 @@ class MonitoringStaffPipelineMatrixService
                     $quoteIssuedEvents,
                     $manualEntries['events']['PROPOSAL'] ?? []
                 ),
-                'NEGOTIATION' => $manualEntries['events']['NEGOTIATION'] ?? [],
+                'NEGOTIATION' => array_merge(
+                    $this->monitoringQuoteNegotiationEvents($context, $staffFilter),
+                    $manualEntries['events']['NEGOTIATION'] ?? []
+                ),
                 'CLOSED' => array_merge(
                     $this->monitoringSystemClosedEvents($context, $staffFilter),
                     $manualEntries['events']['CLOSED'] ?? []

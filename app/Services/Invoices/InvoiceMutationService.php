@@ -3,6 +3,7 @@
 namespace App\Services\Invoices;
 
 use App\Services\AuditLogService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,8 @@ class InvoiceMutationService extends InvoiceBaseService
             'project_id'   => 'required|integer|min:1',
             'service_type' => 'required|string',
             'breakdown'    => 'required|array|min:1',
+            'payment_terms_days' => 'nullable|integer|min:0|max:365',
+            'override_payment_terms' => 'nullable|boolean',
         ]);
 
         $staffId     = (int) $request->session()->get('staff_id', 0);
@@ -96,6 +99,10 @@ class InvoiceMutationService extends InvoiceBaseService
             $projectRow = DB::table('projects_main')->where('id', $projectId)->first(['client_id', 'proposal_language']);
             $clientId = $projectRow->client_id ?? null;
             $documentLanguage = $this->normalizeDocumentLanguage($projectRow->proposal_language ?? 'en');
+            $invoiceDate = $request->input('invoice_date', date('Y-m-d'));
+            $paymentTerms = $this->resolvePaymentTerms($request, $clientId);
+            $paymentTermsDays = $paymentTerms['days'];
+            $dueDate = $this->dueDateFor($invoiceDate, $paymentTermsDays);
 
             $maxRun    = (int) DB::table('invoices')
                 ->whereYear('created_at', $yearFull)
@@ -127,7 +134,10 @@ class InvoiceMutationService extends InvoiceBaseService
                 'invoice_ref_no'         => $refNo,
                 'invoice_running_no'     => $runningNo,
                 'invoice_purpose'        => $invoicePurpose,
-                'invoice_date'           => $request->input('invoice_date', date('Y-m-d')),
+                'invoice_date'           => $invoiceDate,
+                'payment_terms_days'     => $paymentTermsDays,
+                'payment_terms_source'   => $paymentTerms['source'],
+                'due_date'               => $dueDate,
                 'amount'                 => $request->input('amount', 0),
                 'sst_amount'             => $request->input('sst_amount', 0),
                 'grand_total'            => $request->input('grand_total', 0),
@@ -180,11 +190,16 @@ class InvoiceMutationService extends InvoiceBaseService
         $dateIssued = $request->input('invoice_date');
         $status     = trim((string) $request->input('status', ''));
 
+        $request->validate([
+            'payment_terms_days' => 'nullable|integer|min:0|max:365',
+            'override_payment_terms' => 'nullable|boolean',
+        ]);
+
         if ($invoiceRef === '' || !$dateIssued || $status === '') {
             return response()->json(['status' => 'error', 'message' => 'Missing required fields.'], 422);
         }
 
-        $existingInvoice = DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->first(['id', 'service_type']);
+        $existingInvoice = DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->first(['id', 'service_type', 'client_id', 'payment_terms_days', 'payment_terms_source']);
         if (!$existingInvoice) {
             return response()->json(['status' => 'error', 'message' => 'Invoice not found.'], 404);
         }
@@ -199,6 +214,9 @@ class InvoiceMutationService extends InvoiceBaseService
         if ($totalError !== null) {
             return response()->json(['status' => 'error', 'message' => $totalError], 422);
         }
+
+        $paymentTerms = $this->resolvePaymentTerms($request, $existingInvoice->client_id ?? null, $existingInvoice);
+        $paymentTermsDays = $paymentTerms['days'];
 
         try {
             DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->limit(1)->update([
@@ -216,6 +234,9 @@ class InvoiceMutationService extends InvoiceBaseService
                 'invoice_pic_position'   => $request->input('invoice_pic_position'),
                 'invoice_purpose'        => $request->input('invoice_purpose', ''),
                 'invoice_date'           => $dateIssued,
+                'payment_terms_days'     => $paymentTermsDays,
+                'payment_terms_source'   => $paymentTerms['source'],
+                'due_date'               => $this->dueDateFor($dateIssued, $paymentTermsDays),
                 'status'                 => $status,
                 'amount'                 => $request->input('amount', 0),
                 'sst_amount'             => $request->input('sst_amount', 0),
@@ -257,6 +278,78 @@ class InvoiceMutationService extends InvoiceBaseService
         } catch (\Throwable $e) {
             report($e);
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
+        }
+    }
+
+    private function resolvePaymentTerms(Request $request, mixed $clientId, ?object $existingInvoice = null): array
+    {
+        $overrideRequested = filter_var($request->input('override_payment_terms', false), FILTER_VALIDATE_BOOLEAN);
+        if ($overrideRequested && $request->has('payment_terms_days')) {
+            return [
+                'days' => $this->normalizePaymentTermsDays($request->input('payment_terms_days')),
+                'source' => self::PAYMENT_TERMS_SOURCE_INVOICE_OVERRIDE,
+            ];
+        }
+
+        if ($existingInvoice !== null && ! $request->has('override_payment_terms')) {
+            return [
+                'days' => $this->normalizePaymentTermsDays($existingInvoice->payment_terms_days ?? self::SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS),
+                'source' => $this->normalizePaymentTermsSource($existingInvoice->payment_terms_source ?? self::PAYMENT_TERMS_SOURCE_LEGACY),
+            ];
+        }
+
+        $clientId = (int) ($clientId ?? 0);
+        if ($clientId > 0) {
+            $days = DB::table('client_company')
+                ->where('company_id', $clientId)
+                ->value('payment_terms_days');
+
+            if ($days !== null && $days !== '') {
+                return [
+                    'days' => $this->normalizePaymentTermsDays($days),
+                    'source' => self::PAYMENT_TERMS_SOURCE_CLIENT,
+                ];
+            }
+        }
+
+        return [
+            'days' => self::SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS,
+            'source' => self::PAYMENT_TERMS_SOURCE_SYSTEM_DEFAULT,
+        ];
+    }
+
+    private function normalizePaymentTermsDays(mixed $value): int
+    {
+        if ($value === null || $value === '') {
+            return self::SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS;
+        }
+
+        return max(0, min(365, (int) $value));
+    }
+
+    private function normalizePaymentTermsSource(mixed $value): string
+    {
+        $source = trim((string) $value);
+        return in_array($source, [
+            self::PAYMENT_TERMS_SOURCE_SYSTEM_DEFAULT,
+            self::PAYMENT_TERMS_SOURCE_CLIENT,
+            self::PAYMENT_TERMS_SOURCE_INVOICE_OVERRIDE,
+            self::PAYMENT_TERMS_SOURCE_LEGACY,
+        ], true)
+            ? $source
+            : self::PAYMENT_TERMS_SOURCE_LEGACY;
+    }
+
+    private function dueDateFor(mixed $invoiceDate, int $paymentTermsDays): string
+    {
+        try {
+            return CarbonImmutable::parse((string) $invoiceDate)
+                ->addDays($paymentTermsDays)
+                ->toDateString();
+        } catch (\Throwable) {
+            return CarbonImmutable::today()
+                ->addDays($paymentTermsDays)
+                ->toDateString();
         }
     }
 

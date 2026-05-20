@@ -143,7 +143,7 @@ class DebtorService
             $attachment = $this->storeAttachment($request);
             $storedAttachment = $attachment['path'] ?? null;
             $updates = [
-                ...$this->manualPayloadColumns($data),
+                ...$this->manualPayloadColumns($data, $existing),
                 'updated_at' => now(),
             ];
 
@@ -316,6 +316,9 @@ class DebtorService
             'service_end_date' => ['nullable', 'date_format:Y-m-d'],
             'purpose' => ['nullable', 'string', 'max:5000'],
             'invoice_date' => ['required', 'date_format:Y-m-d'],
+            'override_payment_terms' => ['nullable', 'boolean'],
+            'payment_terms_changed' => ['nullable', 'boolean'],
+            'payment_terms_days' => ['nullable', 'integer', 'min:0', 'max:365'],
             'grand_total' => ['required', 'numeric', 'gt:0'],
             'status' => ['nullable', 'in:Open,Paid,Cancelled'],
             'payment_method' => ['nullable', 'string', 'max:120'],
@@ -339,6 +342,15 @@ class DebtorService
         ) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'service_end_date' => 'Service end date must be on or after the start date.',
+            ]);
+        }
+
+        if (
+            filter_var($data['override_payment_terms'] ?? false, FILTER_VALIDATE_BOOLEAN)
+            && ! isset($data['payment_terms_days'])
+        ) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'payment_terms_days' => 'Custom payment terms are required when overriding client terms.',
             ]);
         }
 
@@ -400,12 +412,13 @@ class DebtorService
         }
     }
 
-    private function manualPayloadColumns(array $data): array
+    private function manualPayloadColumns(array $data, ?object $existing = null): array
     {
         $status = $data['status'] ?? self::OPEN_STATUS;
         $isPaid = $status === self::PAID_STATUS;
+        $paymentTerms = $this->resolveManualPaymentTerms($data, $existing);
 
-        return [
+        $payload = [
             'invoice_ref_no' => trim((string) $data['invoice_ref_no']),
             'client_id' => ! empty($data['client_id']) ? (int) $data['client_id'] : null,
             'pic_id' => ! empty($data['pic_id']) ? (int) $data['pic_id'] : null,
@@ -425,6 +438,74 @@ class DebtorService
             'paid_date' => $isPaid && ! empty($data['paid_date']) ? Carbon::parse($data['paid_date'])->format('Y-m-d') : null,
             'paid_amount' => $isPaid && isset($data['paid_amount']) ? (float) $data['paid_amount'] : null,
             'paid_remarks' => $isPaid ? (trim((string) ($data['paid_remarks'] ?? '')) ?: null) : null,
+        ];
+
+        if (Schema::hasColumn('manual_debtors', 'payment_terms_days')) {
+            $payload['payment_terms_days'] = $paymentTerms['days'];
+        }
+        if (Schema::hasColumn('manual_debtors', 'payment_terms_source')) {
+            $payload['payment_terms_source'] = $paymentTerms['source'];
+        }
+        if (Schema::hasColumn('manual_debtors', 'due_date')) {
+            $payload['due_date'] = $paymentTerms['due_date'];
+        }
+
+        return $payload;
+    }
+
+    private function resolveManualPaymentTerms(array $data, ?object $existing = null): array
+    {
+        $invoiceDate = Carbon::parse($data['invoice_date'])->startOfDay();
+        $override = filter_var($data['override_payment_terms'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $paymentTermsChanged = filter_var($data['payment_terms_changed'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $inputDays = isset($data['payment_terms_days']) && $data['payment_terms_days'] !== ''
+            ? max(0, min(365, (int) $data['payment_terms_days']))
+            : null;
+
+        if ($existing && ! $paymentTermsChanged) {
+            $existingDays = property_exists($existing, 'payment_terms_days') && $existing->payment_terms_days !== null
+                ? max(0, min(365, (int) $existing->payment_terms_days))
+                : null;
+            $existingSource = property_exists($existing, 'payment_terms_source')
+                ? (string) ($existing->payment_terms_source ?? 'legacy')
+                : 'legacy';
+
+            return [
+                'days' => $existingDays,
+                'source' => $existingSource ?: 'legacy',
+                'due_date' => $existingDays !== null
+                    ? $invoiceDate->copy()->addDays($existingDays)->format('Y-m-d')
+                    : null,
+            ];
+        }
+
+        if ($override) {
+            $days = $inputDays ?? 30;
+            return [
+                'days' => $days,
+                'source' => 'manual_override',
+                'due_date' => $invoiceDate->copy()->addDays($days)->format('Y-m-d'),
+            ];
+        }
+
+        $clientId = (int) ($data['client_id'] ?? 0);
+        if ($clientId > 0 && Schema::hasTable('client_company') && Schema::hasColumn('client_company', 'payment_terms_days')) {
+            $clientTerms = DB::table('client_company')
+                ->where('company_id', $clientId)
+                ->value('payment_terms_days');
+            $days = $clientTerms === null ? 30 : max(0, min(365, (int) $clientTerms));
+
+            return [
+                'days' => $days,
+                'source' => $clientTerms === null ? 'system_default' : 'client',
+                'due_date' => $invoiceDate->copy()->addDays($days)->format('Y-m-d'),
+            ];
+        }
+
+        return [
+            'days' => null,
+            'source' => 'legacy',
+            'due_date' => null,
         ];
     }
 
@@ -481,6 +562,9 @@ class DebtorService
             ->leftJoin('staff_general as sg', 'pm.created_by', '=', 'sg.staff_id')
             ->whereDate('i.invoice_date', '<=', $asOfDate)
             ->selectRaw("i.id, i.client_id, i.project_id, i.invoice_ref_no, i.invoice_date, i.grand_total, i.status, i.paid_date, i.paid_amount,
+                COALESCE(i.payment_terms_days, cc.payment_terms_days, 30) AS payment_terms_days,
+                COALESCE(NULLIF(i.payment_terms_source, ''), CASE WHEN cc.payment_terms_days IS NULL THEN 'system_default' ELSE 'client' END) AS payment_terms_source,
+                i.due_date AS due_date,
                 COALESCE(NULLIF(i.invoice_client_name, ''), cc.company_name) AS client_name,
                 COALESCE(NULLIF(i.invoice_pic_name, ''), '-') AS pic_name,
                 COALESCE(NULLIF(i.invoice_pic_phone, ''), '') AS pic_phone,
@@ -536,6 +620,15 @@ class DebtorService
     private function normalizeInvoiceRecord(object $row, string $asOfDate): array
     {
         $invoiceDate = (string) ($row->invoice_date ?? '');
+        $paymentTermsDays = (int) ($row->payment_terms_days ?? 30);
+        $dueDate = (string) ($row->due_date ?? '');
+        if ($dueDate === '' && $invoiceDate !== '') {
+            try {
+                $dueDate = Carbon::parse($invoiceDate)->startOfDay()->addDays($paymentTermsDays)->format('Y-m-d');
+            } catch (\Throwable) {
+                $dueDate = '';
+            }
+        }
 
         return [
             'sourceType' => 'invoice',
@@ -552,7 +645,14 @@ class DebtorService
             'purpose' => (string) ($row->purpose ?? '') ?: 'Project #' . (string) ($row->project_id ?? ''),
             'invoiceDate' => $invoiceDate,
             'invoice_date' => $invoiceDate,
+            'paymentTermsDays' => $paymentTermsDays,
+            'payment_terms_days' => $paymentTermsDays,
+            'paymentTermsSource' => (string) ($row->payment_terms_source ?? 'legacy'),
+            'payment_terms_source' => (string) ($row->payment_terms_source ?? 'legacy'),
+            'dueDate' => $dueDate,
+            'due_date' => $dueDate,
             'ageDays' => $this->ageDays($invoiceDate, $asOfDate),
+            'overdueDays' => $this->ageDays($dueDate, $asOfDate),
             'grandTotal' => (float) ($row->grand_total ?? 0),
             'grand_total' => (float) ($row->grand_total ?? 0),
             'status' => (string) ($row->status ?? ''),
@@ -571,6 +671,11 @@ class DebtorService
     private function normalizeManualRecord(object $row, string $asOfDate): array
     {
         $invoiceDate = (string) ($row->invoice_date ?? '');
+        $hasPaymentTerms = property_exists($row, 'payment_terms_days') && $row->payment_terms_days !== null;
+        $paymentTermsSource = property_exists($row, 'payment_terms_source')
+            ? (string) ($row->payment_terms_source ?? 'legacy')
+            : 'legacy';
+        $dueDate = property_exists($row, 'due_date') ? (string) ($row->due_date ?? '') : '';
         $id = (int) $row->id;
 
         return [
@@ -596,7 +701,14 @@ class DebtorService
             'purpose' => (string) ($row->purpose ?? ''),
             'invoiceDate' => $invoiceDate,
             'invoice_date' => $invoiceDate,
+            'paymentTermsDays' => $hasPaymentTerms ? (int) $row->payment_terms_days : null,
+            'payment_terms_days' => $hasPaymentTerms ? (int) $row->payment_terms_days : null,
+            'paymentTermsSource' => $paymentTermsSource,
+            'payment_terms_source' => $paymentTermsSource,
+            'dueDate' => $dueDate,
+            'due_date' => $dueDate,
             'ageDays' => $this->ageDays($invoiceDate, $asOfDate),
+            'overdueDays' => $dueDate !== '' ? $this->ageDays($dueDate, $asOfDate) : null,
             'grandTotal' => (float) ($row->grand_total ?? 0),
             'grand_total' => (float) ($row->grand_total ?? 0),
             'status' => (string) ($row->status ?? self::OPEN_STATUS),

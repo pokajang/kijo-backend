@@ -38,7 +38,8 @@
                                             <td style="padding:8px;border-bottom:1px solid #e5e7eb;">{{ $row['stage'] }}</td>
                                             <td style="padding:8px;border-bottom:1px solid #e5e7eb;">
                                                 <div style="font-weight:700;color:#111827;">{{ $row['invoice_ref_no'] }}</div>
-                                                <div style="color:#6b7280;">{{ $row['invoice_date'] }} &middot; {{ $row['age_days'] }} days</div>
+                                                <div style="color:#6b7280;">Invoice: {{ $row['invoice_date'] }} &middot; Terms: {{ $row['payment_terms_days'] }} days</div>
+                                                <div style="color:#6b7280;">Due: {{ $row['due_date'] }} &middot; Overdue: {{ $row['overdue_days'] }} days</div>
                                             </td>
                                             <td style="padding:8px;border-bottom:1px solid #e5e7eb;">{{ $row['client_name'] }}</td>
                                             <td style="padding:8px;border-bottom:1px solid #e5e7eb;">{{ $row['client_pic'] }}</td>

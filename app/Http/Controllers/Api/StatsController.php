@@ -99,6 +99,11 @@ class StatsController extends Controller
         return $this->statsService()->monthlyIncomeStatement($request);
     }
 
+    public function monthlyInvoicedReceivedTrend(Request $request): JsonResponse
+    {
+        return $this->statsService()->monthlyInvoicedReceivedTrend($request);
+    }
+
     public function allDebtors(Request $request): JsonResponse
     {
         return $this->statsService()->allDebtors($request);

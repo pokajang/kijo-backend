@@ -114,7 +114,10 @@ class MonitoringPipelineToolsService
 
             $rows[] = $this->monitoringToolsDistinctRow(
                 'NEGOTIATION',
-                $manualEntries['events']['NEGOTIATION'] ?? [],
+                array_merge(
+                    $this->monitoringQuoteNegotiationEvents($context, $staffFilter),
+                    $manualEntries['events']['NEGOTIATION'] ?? []
+                ),
                 $context['weeks']
             );
 

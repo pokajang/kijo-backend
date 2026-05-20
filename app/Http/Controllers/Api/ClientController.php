@@ -41,6 +41,64 @@ class ClientController extends Controller
     }
 
 
+        public function show(Request $request, ?int $companyId = null): JsonResponse
+    {
+        return $this->clientService()->show($request, $companyId);
+    }
+
+
+        public function roiReport(Request $request): JsonResponse
+    {
+        return $this->clientService()->roiReport($request);
+    }
+
+
+        public function commercialHistory(Request $request, int $companyId): JsonResponse
+    {
+        return $this->clientService()->commercialHistory($request, $companyId);
+    }
+
+        public function vendorRegistrations(Request $request): JsonResponse
+    {
+        return $this->clientService()->vendorRegistrations($request);
+    }
+
+        public function vendorRegistrationAttentionCount(): JsonResponse
+    {
+        return $this->clientService()->vendorRegistrationAttentionCount();
+    }
+
+
+        public function showVendorRegistration(int $id): JsonResponse
+    {
+        return $this->clientService()->showVendorRegistration($id);
+    }
+
+
+        public function storeVendorRegistration(Request $request): JsonResponse
+    {
+        return $this->clientService()->storeVendorRegistration($request);
+    }
+
+
+        public function updateVendorRegistration(Request $request, int $id): JsonResponse
+    {
+        return $this->clientService()->updateVendorRegistration($request, $id);
+    }
+
+
+        public function deleteVendorRegistration(Request $request, int $id): JsonResponse
+    {
+        return $this->clientService()->deleteVendorRegistration($request, $id);
+    }
+
+
+        public function vendorRegistrationCertificate(int $id)
+    {
+        return $this->clientService()->vendorRegistrationCertificate($id);
+    }
+
+
         public function listPics(): JsonResponse
     {
         return $this->clientService()->listPics();

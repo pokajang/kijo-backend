@@ -107,6 +107,11 @@ class StatsService
         return $this->dashboardStatsService()->monthlyIncomeStatement($request);
     }
 
+    public function monthlyInvoicedReceivedTrend(Request $request): JsonResponse
+    {
+        return $this->dashboardStatsService()->monthlyInvoicedReceivedTrend($request);
+    }
+
     public function allDebtors(Request $request): JsonResponse
     {
         return $this->dashboardStatsService()->allDebtors($request);

@@ -117,6 +117,119 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(3999.0, (float) $whatsappValue['totalValue']);
     }
 
+    public function test_monitoring_pipeline_tools_combines_crm_and_manual_negotiations(): void
+    {
+        DB::table('monitoring_manual_pipeline_entries')->insert([
+            'entry_type' => 'negotiation',
+            'prospect_name' => 'Manual Negotiation',
+            'entry_date' => '2026-05-08',
+            'source' => 'WhatsApp Personal',
+            'segment_type' => 'individual',
+            'service_category' => null,
+            'estimated_rm' => null,
+            'owner_staff_id' => 1,
+            'owner_staff_code' => 'AZA',
+            'owner_staff_name' => 'Azam Bin Husain',
+            'created_by' => 1,
+            'created_by_code' => 'AZA',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->insertPriceExceptionRequest([
+            'id' => 1,
+            'quote_ref_no' => 'TR-Q-001',
+            'created_at' => '2026-05-08 10:00:00',
+            'requested_by_code' => 'AZA',
+            'requested_by_name' => 'Azam Bin Husain',
+        ]);
+
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $negotiation = collect($response->json('rows'))->firstWhere('label', 'NEGOTIATION');
+
+        $this->assertSame(2, (int) $negotiation['weekly']['W2']);
+        $this->assertSame(2, (int) $negotiation['total']);
+        $this->assertSame(2, (int) $negotiation['individualQty']);
+        $this->assertSame(0.0, (float) $negotiation['individualRm']);
+        $this->assertSame(
+            ['manual', 'negotiation'],
+            collect($negotiation['details']['weekly']['W2']['items'])->pluck('sourceType')->sort()->values()->all()
+        );
+        $this->assertSame(
+            ['manual', 'negotiation'],
+            collect($negotiation['details']['segments']['individual']['qty']['items'])->pluck('sourceType')->sort()->values()->all()
+        );
+    }
+
+    public function test_monitoring_pipeline_tools_filters_crm_negotiations_by_requester_staff_code(): void
+    {
+        $this->insertPriceExceptionRequest([
+            'id' => 1,
+            'quote_ref_no' => 'TR-Q-001',
+            'created_at' => '2026-05-08 10:00:00',
+            'requested_by_code' => 'AZA',
+            'requested_by_name' => 'Azam Bin Husain',
+        ]);
+        $this->insertPriceExceptionRequest([
+            'id' => 2,
+            'quote_ref_no' => 'MP-Q-001',
+            'service_group' => 'manpower',
+            'created_at' => '2026-05-08 11:00:00',
+            'requested_by_code' => 'BOB',
+            'requested_by_name' => 'Bob Tester',
+        ]);
+
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+            'staff_code' => 'AZA',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $negotiation = collect($response->json('rows'))->firstWhere('label', 'NEGOTIATION');
+        $items = collect($negotiation['details']['weekly']['W2']['items']);
+
+        $this->assertSame(1, (int) $negotiation['weekly']['W2']);
+        $this->assertSame(['AZA'], $items->pluck('ownerStaffCode')->values()->all());
+    }
+
+    public function test_monitoring_pipeline_tools_excludes_crm_negotiations_outside_selected_month(): void
+    {
+        $this->insertPriceExceptionRequest([
+            'id' => 1,
+            'quote_ref_no' => 'TR-Q-001',
+            'created_at' => '2026-05-08 10:00:00',
+        ]);
+        $this->insertPriceExceptionRequest([
+            'id' => 2,
+            'quote_ref_no' => 'TR-Q-002',
+            'created_at' => '2026-04-30 10:00:00',
+        ]);
+        $this->insertPriceExceptionRequest([
+            'id' => 3,
+            'quote_ref_no' => 'TR-Q-003',
+            'created_at' => '2026-06-01 10:00:00',
+        ]);
+
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $negotiation = collect($response->json('rows'))->firstWhere('label', 'NEGOTIATION');
+
+        $this->assertSame(1, (int) $negotiation['weekly']['W2']);
+        $this->assertSame(['TR-Q-001'], collect($negotiation['details']['weekly']['W2']['items'])->pluck('quoteRefNo')->values()->all());
+    }
+
     public function test_financial_open_receivables_are_scoped_by_as_of_date(): void
     {
         $totalsResponse = $this->authenticatedPost('/stats/monthly-income-statement', [
@@ -135,6 +248,26 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(1, (int) $totalsResponse->json('outstandingCount'));
         $this->assertSame('2026-05-11', $debtorsResponse->json('asOfDate'));
         $this->assertSame(['INV-OPEN-001'], collect($debtorsResponse->json('debtors'))->pluck('invoice_ref_no')->all());
+        $this->assertSame(30, (int) $debtorsResponse->json('debtors.0.payment_terms_days'));
+        $this->assertSame('system_default', $debtorsResponse->json('debtors.0.payment_terms_source'));
+    }
+
+    public function test_financial_monthly_invoiced_received_trend_uses_invoice_and_paid_dates(): void
+    {
+        $response = $this->authenticatedPost('/stats/monthly-invoiced-received-trend', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $may = collect($response->json('monthlyInvoicedReceivedTrend'))->firstWhere('month', '2026-05');
+
+        $this->assertSame(7700.0, (float) $may['invoiced']);
+        $this->assertSame(700.0, (float) $may['received']);
+        $this->assertSame(3, (int) $may['invoiceCount']);
+        $this->assertSame(1, (int) $may['receivedCount']);
+        $this->assertSame(7000.0, (float) $may['netMovement']);
     }
 
     public function test_period_presets_use_calendar_windows_and_custom_ranges_normalize(): void
@@ -217,6 +350,7 @@ class DashboardStatsControllerTest extends TestCase
             'projects_main',
             'staff_general',
             'system_users',
+            'quote_price_exception_requests',
         ] as $table) {
             Schema::dropIfExists($table);
         }
@@ -279,6 +413,43 @@ class DashboardStatsControllerTest extends TestCase
             $table->timestamps();
         });
 
+        Schema::create('quote_price_exception_requests', function (Blueprint $table) {
+            $table->id();
+            $table->string('service_group', 50)->default('training');
+            $table->string('request_type', 30)->default('quote');
+            $table->unsignedBigInteger('quote_id');
+            $table->string('quote_ref_no', 100)->nullable();
+            $table->unsignedInteger('revision_no_at_request')->default(0);
+            $table->unsignedBigInteger('requested_by_id')->nullable();
+            $table->string('requested_by_name', 255)->nullable();
+            $table->string('requested_by_code', 50)->nullable();
+            $table->decimal('base_unit_cost', 12, 2)->default(0);
+            $table->decimal('current_unit_cost', 12, 2)->default(0);
+            $table->decimal('requested_unit_cost', 12, 2)->default(0);
+            $table->decimal('requested_discount_amount', 12, 2)->default(0);
+            $table->decimal('requested_discount_percent', 8, 4)->default(0);
+            $table->decimal('current_total_amount', 12, 2)->nullable();
+            $table->decimal('requested_final_total', 12, 2)->nullable();
+            $table->decimal('approved_unit_cost_floor', 12, 2)->nullable();
+            $table->decimal('approved_discount_amount', 12, 2)->nullable();
+            $table->decimal('approved_discount_percent', 8, 4)->nullable();
+            $table->decimal('approved_final_total', 12, 2)->nullable();
+            $table->text('client_negotiation_reason')->nullable();
+            $table->text('requester_remarks')->nullable();
+            $table->text('approval_remarks')->nullable();
+            $table->text('request_payload')->nullable();
+            $table->string('status', 30)->default('pending');
+            $table->unsignedBigInteger('approved_by_id')->nullable();
+            $table->string('approved_by_name', 255)->nullable();
+            $table->string('approved_by_code', 50)->nullable();
+            $table->timestamp('approved_at')->nullable();
+            $table->unsignedBigInteger('used_revision_quote_id')->nullable();
+            $table->timestamp('used_at')->nullable();
+            $table->timestamp('decision_email_sent_at')->nullable();
+            $table->timestamp('request_email_sent_at')->nullable();
+            $table->timestamps();
+        });
+
         Schema::create('client_company', function (Blueprint $table) {
             $table->integer('company_id')->primary();
             $table->string('company_name')->nullable();
@@ -298,8 +469,23 @@ class DashboardStatsControllerTest extends TestCase
         foreach (['quotes_training', 'quotes_ih', 'quotes_manpower', 'quotes_equipment', 'quotes_special'] as $quoteTable) {
             Schema::create($quoteTable, function (Blueprint $table) {
                 $table->integer('id')->primary();
+                $table->string('quote_ref_no')->nullable();
+                $table->string('training_title')->nullable();
+                $table->string('service_title')->nullable();
+                $table->integer('created_by_id')->nullable();
                 $table->string('created_by_code')->nullable();
                 $table->string('created_by_name')->nullable();
+                $table->string('client_name')->nullable();
+                $table->dateTime('created_at')->nullable();
+                $table->dateTime('updated_at')->nullable();
+                $table->date('award_date')->nullable();
+                $table->string('status')->nullable();
+                $table->decimal('grand_total', 15, 2)->nullable();
+                $table->string('attach_proposal')->nullable();
+                $table->text('remarks')->nullable();
+                $table->text('inquiry_remarks')->nullable();
+                $table->text('status_remarks')->nullable();
+                $table->text('general_remarks')->nullable();
             });
         }
 
@@ -326,6 +512,51 @@ class DashboardStatsControllerTest extends TestCase
             $table->string('invoice_pic_phone')->nullable();
             $table->string('invoice_pic_email')->nullable();
         });
+    }
+
+    private function insertPriceExceptionRequest(array $overrides = []): void
+    {
+        $id = $overrides['id'] ?? null;
+        unset($overrides['id']);
+
+        DB::table('quote_price_exception_requests')->insert([
+            'id' => $id,
+            'service_group' => 'training',
+            'request_type' => 'quote',
+            'quote_id' => 1,
+            'quote_ref_no' => 'TR-Q-001',
+            'revision_no_at_request' => 0,
+            'requested_by_id' => 1,
+            'requested_by_name' => 'Azam Bin Husain',
+            'requested_by_code' => 'AZA',
+            'base_unit_cost' => 0,
+            'current_unit_cost' => 0,
+            'requested_unit_cost' => 0,
+            'requested_discount_amount' => 100,
+            'requested_discount_percent' => 5,
+            'current_total_amount' => 2000,
+            'requested_final_total' => 1900,
+            'approved_unit_cost_floor' => null,
+            'approved_discount_amount' => null,
+            'approved_discount_percent' => null,
+            'approved_final_total' => null,
+            'client_negotiation_reason' => 'Client requested better pricing',
+            'requester_remarks' => 'Follow up with client',
+            'approval_remarks' => null,
+            'request_payload' => null,
+            'status' => 'pending',
+            'approved_by_id' => null,
+            'approved_by_name' => null,
+            'approved_by_code' => null,
+            'approved_at' => null,
+            'used_revision_quote_id' => null,
+            'used_at' => null,
+            'decision_email_sent_at' => null,
+            'request_email_sent_at' => null,
+            'created_at' => '2026-05-08 10:00:00',
+            'updated_at' => '2026-05-08 10:00:00',
+            ...$overrides,
+        ]);
     }
 
     private function seedDashboardFacts(): void

@@ -16,6 +16,7 @@ use Dompdf\Options;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class StaffDirectoryService extends StaffBaseService
@@ -26,19 +27,25 @@ class StaffDirectoryService extends StaffBaseService
         $data = $request->validated();
         $q = trim((string) ($data['q'] ?? ''));
         $perPage = (int) ($data['per_page'] ?? 200);
+        $columns = [
+            'staff_id',
+            'full_name',
+            'name_code',
+            'email',
+            'mobile_number',
+            'position',
+            'staff_type',
+            'department',
+        ];
+        $hasStatusColumn = Schema::hasColumn('staff_general', 'status');
+        if ($hasStatusColumn) {
+            $columns[] = 'status';
+        }
 
         $query = DB::table('staff_general')
-            ->select([
-                'staff_id',
-                'full_name',
-                'name_code',
-                'email',
-                'mobile_number',
-                'position',
-                'staff_type',
-                'department',
-            ])
+            ->select($columns)
             ->whereNull('deleted_at')
+            ->when($hasStatusColumn, fn ($query) => $query->orderByRaw("CASE WHEN status = 'Active' THEN 0 ELSE 1 END"))
             ->orderBy('full_name');
 
         if ($q !== '') {
@@ -74,25 +81,33 @@ class StaffDirectoryService extends StaffBaseService
         $data = $request->validated();
         $q = trim((string) ($data['q'] ?? ''));
         $perPage = (int) ($data['per_page'] ?? 200);
+        $columns = [
+            'sg.staff_id',
+            'sg.full_name',
+            'sg.name_code',
+            'sg.email',
+            'sg.mobile_number',
+            'sg.position',
+            'sg.staff_type',
+            'sg.department',
+            'sg.start_date',
+            'sg.status',
+            'sg.grant_access',
+            'sg.role',
+            DB::raw('sp.nric as ic'),
+        ];
+
+        if (Schema::hasColumn('staff_general', 'terminated_at')) {
+            $columns[] = 'sg.terminated_at';
+        }
+
+        if (Schema::hasColumn('staff_general', 'deleted_at')) {
+            $columns[] = 'sg.deleted_at';
+        }
 
         $query = DB::table('staff_general as sg')
             ->leftJoin('staff_profile as sp', 'sp.staff_id', '=', 'sg.staff_id')
-            ->select([
-                'sg.staff_id',
-                'sg.full_name',
-                'sg.name_code',
-                'sg.email',
-                'sg.mobile_number',
-                'sg.position',
-                'sg.staff_type',
-                'sg.department',
-                'sg.start_date',
-                'sg.status',
-                'sg.grant_access',
-                'sg.role',
-                DB::raw('sp.nric as ic'),
-            ])
-            ->whereNull('sg.deleted_at')
+            ->select($columns)
             ->orderByRaw("CASE WHEN sg.status = 'Active' THEN 0 ELSE 1 END")
             ->orderByDesc('sg.created_at');
 
@@ -134,24 +149,32 @@ class StaffDirectoryService extends StaffBaseService
         }
 
         $staffId = (int) $request->validated()['staff_id'];
+        $columns = [
+            'staff_id',
+            'full_name',
+            'name_code',
+            'email',
+            'mobile_number',
+            'position',
+            'staff_type',
+            'department',
+            'start_date',
+            'status',
+            'grant_access',
+            'role',
+        ];
+
+        if (Schema::hasColumn('staff_general', 'terminated_at')) {
+            $columns[] = 'terminated_at';
+        }
+
+        if (Schema::hasColumn('staff_general', 'deleted_at')) {
+            $columns[] = 'deleted_at';
+        }
 
         $staff = DB::table('staff_general')
-            ->select([
-                'staff_id',
-                'full_name',
-                'name_code',
-                'email',
-                'mobile_number',
-                'position',
-                'staff_type',
-                'department',
-                'start_date',
-                'status',
-                'grant_access',
-                'role',
-            ])
+            ->select($columns)
             ->where('staff_id', $staffId)
-            ->whereNull('deleted_at')
             ->first();
 
         if (!$staff) {

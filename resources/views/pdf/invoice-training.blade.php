@@ -253,7 +253,16 @@
 <div class="terms-block">
     <h4><strong>{{ $L('terms_and_conditions', 'Terms and Conditions') }}</strong></h4>
     <p style="font-size:9pt;margin:0;">
-        @foreach(\App\Support\PdfLegalTerms::get($pdfLanguage, 'invoice') as $index => $term)
+        @php
+            $termsDays = (int) ($inv->payment_terms_days ?? 30);
+            $invoiceTerms = \App\Support\PdfLegalTerms::get($pdfLanguage, 'invoice');
+            if (!empty($invoiceTerms)) {
+                $invoiceTerms[0] = $pdfLanguage === 'ms-MY'
+                    ? "Bayaran perlu dijelaskan dalam tempoh {$termsDays} hari dari tarikh invois ini."
+                    : "Payment is due within {$termsDays} days from the date of this invoice.";
+            }
+        @endphp
+        @foreach($invoiceTerms as $index => $term)
             ({{ $index + 1 }}) {{ $term }}
         @endforeach
     </p>

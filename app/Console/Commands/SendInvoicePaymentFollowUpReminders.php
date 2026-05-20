@@ -64,7 +64,7 @@ class SendInvoicePaymentFollowUpReminders extends Command
 
         foreach ($rows as $row) {
             $candidate = $this->formatCandidate($row, $today);
-            $stage = $this->stageForAge($candidate['age_days']);
+            $stage = $this->stageForOverdueDays($candidate['overdue_days']);
             if ($stage === null) {
                 $skipped++;
                 continue;
@@ -160,15 +160,18 @@ class SendInvoicePaymentFollowUpReminders extends Command
             ->leftJoin('client_company as cc', 'i.client_id', '=', 'cc.company_id')
             ->leftJoin('staff_general as sg', 'sg.staff_id', '=', 'i.created_by')
             ->whereNotNull('i.invoice_date')
-            ->whereDate('i.invoice_date', '<=', $today->subDays(30)->toDateString())
+            ->whereRaw("COALESCE(i.due_date, DATE_ADD(i.invoice_date, INTERVAL COALESCE(i.payment_terms_days, cc.payment_terms_days, 30) DAY)) <= ?", [$today->toDateString()])
             ->whereRaw("LOWER(TRIM(COALESCE(i.status, 'pending'))) IN ('pending', 'unpaid', 'overdue')")
             ->whereNull('i.paid_date')
-            ->orderBy('i.invoice_date')
+            ->orderByRaw('COALESCE(i.due_date, DATE_ADD(i.invoice_date, INTERVAL COALESCE(i.payment_terms_days, cc.payment_terms_days, 30) DAY))')
             ->orderBy('i.id')
             ->select([
                 'i.id',
                 'i.invoice_ref_no',
                 'i.invoice_date',
+                DB::raw('COALESCE(i.payment_terms_days, cc.payment_terms_days, 30) AS payment_terms_days'),
+                DB::raw("COALESCE(NULLIF(i.payment_terms_source, ''), CASE WHEN cc.payment_terms_days IS NULL THEN 'system_default' ELSE 'client' END) AS payment_terms_source"),
+                DB::raw('COALESCE(i.due_date, DATE_ADD(i.invoice_date, INTERVAL COALESCE(i.payment_terms_days, cc.payment_terms_days, 30) DAY)) AS due_date'),
                 'i.status',
                 'i.amount',
                 'i.grand_total',
@@ -185,13 +188,21 @@ class SendInvoicePaymentFollowUpReminders extends Command
     private function formatCandidate(object $row, CarbonImmutable $today): array
     {
         $invoiceDate = CarbonImmutable::parse(substr((string) $row->invoice_date, 0, 10));
+        $paymentTermsDays = max(0, min(365, (int) ($row->payment_terms_days ?? 30)));
+        $dueDate = ! empty($row->due_date)
+            ? CarbonImmutable::parse(substr((string) $row->due_date, 0, 10))
+            : $invoiceDate->addDays($paymentTermsDays);
         $amount = is_numeric($row->grand_total ?? null) ? (float) $row->grand_total : (float) ($row->amount ?? 0);
 
         return [
             'invoice_id' => (int) $row->id,
             'invoice_ref_no' => (string) ($row->invoice_ref_no ?? "Invoice #{$row->id}"),
             'invoice_date' => $invoiceDate->toDateString(),
+            'payment_terms_days' => $paymentTermsDays,
+            'payment_terms_source' => (string) ($row->payment_terms_source ?? 'legacy'),
+            'due_date' => $dueDate->toDateString(),
             'age_days' => (int) $invoiceDate->diffInDays($today),
+            'overdue_days' => (int) $dueDate->diffInDays($today, false),
             'client_name' => trim((string) ($row->client_name ?? '')) ?: '-',
             'client_pic_name' => trim((string) ($row->client_pic_name ?? '')),
             'client_pic_email' => trim((string) ($row->client_pic_email ?? '')),
@@ -204,20 +215,20 @@ class SendInvoicePaymentFollowUpReminders extends Command
         ];
     }
 
-    private function stageForAge(int $ageDays): ?array
+    private function stageForOverdueDays(int $overdueDays): ?array
     {
-        if ($ageDays >= 60) {
+        if ($overdueDays >= 30) {
             return [
-                'key' => '60_internal',
-                'threshold_days' => 60,
+                'key' => '30_overdue_internal',
+                'threshold_days' => 30,
                 'heading' => 'Invoice Follow-up Reminder',
             ];
         }
 
-        if ($ageDays >= 30) {
+        if ($overdueDays >= 0) {
             return [
-                'key' => '30_internal',
-                'threshold_days' => 30,
+                'key' => 'due_internal',
+                'threshold_days' => 0,
                 'heading' => 'Invoice Follow-up Suggested',
             ];
         }
@@ -227,9 +238,15 @@ class SendInvoicePaymentFollowUpReminders extends Command
 
     private function alreadySent(int $invoiceId, string $stage): bool
     {
+        $stages = match ($stage) {
+            'due_internal' => ['due_internal', '30_internal'],
+            '30_overdue_internal' => ['30_overdue_internal', '60_internal'],
+            default => [$stage],
+        };
+
         return DB::table('invoice_payment_reminder_logs')
             ->where('invoice_id', $invoiceId)
-            ->where('stage', $stage)
+            ->whereIn('stage', $stages)
             ->where('status', 'sent')
             ->exists();
     }
@@ -240,15 +257,16 @@ class SendInvoicePaymentFollowUpReminders extends Command
             ? trim($candidate['client_pic_name'].' '.$candidate['client_pic_email'])
             : 'No client PIC email is recorded';
 
-        $opening = $stage['threshold_days'] >= 60
-            ? "Invoice {$candidate['invoice_ref_no']} has now been pending for 60+ days."
-            : "Invoice {$candidate['invoice_ref_no']} has been pending for 30+ days.";
+        $opening = $stage['threshold_days'] >= 30
+            ? "Invoice {$candidate['invoice_ref_no']} is now {$candidate['overdue_days']} days overdue."
+            : "Invoice {$candidate['invoice_ref_no']} has reached its payment due date.";
 
         return [
             "Follow-up suggested for invoice {$candidate['invoice_ref_no']}",
             [
                 "Hi {$this->displayName($candidate['internal_pic_name'], 'there')},",
                 "{$opening} This is an internal reminder only; no email has been sent to the client.",
+                "Invoice date: {$candidate['invoice_date']}. Payment terms: {$candidate['payment_terms_days']} days. Due date: {$candidate['due_date']}.",
                 "Client: {$candidate['client_name']}. Client PIC on record: {$clientPic}.",
                 'Please review the latest payment status and follow up manually with the client when appropriate.',
                 'If payment has already been received, please update the invoice status so future reminders are skipped.',
@@ -294,10 +312,13 @@ class SendInvoicePaymentFollowUpReminders extends Command
             : 'Not recorded';
 
         return [
-            'stage' => "{$stage['threshold_days']}+ days",
+            'stage' => $stage['threshold_days'] > 0 ? "{$stage['threshold_days']}+ days overdue" : 'Due',
             'invoice_ref_no' => $candidate['invoice_ref_no'],
             'invoice_date' => $candidate['invoice_date'],
+            'payment_terms_days' => $candidate['payment_terms_days'],
+            'due_date' => $candidate['due_date'],
             'age_days' => $candidate['age_days'],
+            'overdue_days' => $candidate['overdue_days'],
             'client_name' => $candidate['client_name'],
             'client_pic' => $clientPic,
             'amount' => $candidate['amount_display'],

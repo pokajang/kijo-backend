@@ -18,6 +18,7 @@ class ManualDebtorFeatureTest extends TestCase
 
         Carbon::setTestNow(Carbon::parse('2026-05-18 12:00:00'));
         Storage::fake('private');
+        $this->registerSqliteDateFormat();
 
         $this->withoutMiddleware([
             \App\Http\Middleware\RequireAuth::class,
@@ -33,6 +34,30 @@ class ManualDebtorFeatureTest extends TestCase
     {
         Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    private function registerSqliteDateFormat(): void
+    {
+        $pdo = DB::connection()->getPdo();
+        if (!method_exists($pdo, 'sqliteCreateFunction')) {
+            return;
+        }
+
+        $pdo->sqliteCreateFunction('DATE_FORMAT', static function ($date, $format) {
+            if (!$date) {
+                return null;
+            }
+
+            $timestamp = strtotime((string) $date);
+            if ($timestamp === false) {
+                return null;
+            }
+
+            return match ($format) {
+                '%Y-%m' => date('Y-m', $timestamp),
+                default => date('Y-m-d', $timestamp),
+            };
+        }, 2);
     }
 
     public function test_manual_debtor_crud_payment_lifecycle_and_attachment(): void
@@ -231,6 +256,9 @@ class ManualDebtorFeatureTest extends TestCase
             'pic_id' => 10,
             'client_name' => 'Linked Client Sdn Bhd',
             'pic_name' => 'Linked PIC, Second Linked PIC',
+            'payment_terms_days' => 30,
+            'payment_terms_source' => 'system_default',
+            'due_date' => '2026-05-31',
         ]);
 
         $manualRows = $this->actingSession()
@@ -241,6 +269,10 @@ class ManualDebtorFeatureTest extends TestCase
         $linkedRow = collect($manualRows)->firstWhere('invoiceRef', 'LINKED-001');
         $this->assertSame(2, $linkedRow['clientId']);
         $this->assertSame(10, $linkedRow['picId']);
+        $this->assertSame(30, $linkedRow['paymentTermsDays']);
+        $this->assertSame('system_default', $linkedRow['paymentTermsSource']);
+        $this->assertSame('2026-05-31', $linkedRow['dueDate']);
+        $this->assertSame(-13, $linkedRow['overdueDays']);
 
         $this->actingSession()
             ->putJson("/debtors/manual/{$id}", [
@@ -260,6 +292,100 @@ class ManualDebtorFeatureTest extends TestCase
             'client_id' => null,
             'pic_id' => null,
             'client_name' => 'Snapshot Only Client',
+            'payment_terms_days' => 30,
+            'payment_terms_source' => 'system_default',
+            'due_date' => '2026-05-31',
+        ]);
+    }
+
+    public function test_manual_debtor_uses_client_terms_and_allows_manual_override(): void
+    {
+        DB::table('client_company')->insert([
+            ['company_id' => 4, 'company_name' => 'Custom Terms Client', 'payment_terms_days' => 60],
+        ]);
+
+        $clientTermsResponse = $this->actingSession()
+            ->postJson('/debtors/manual', [
+                'invoice_ref_no' => 'CLIENT-TERMS-001',
+                'client_id' => 4,
+                'client_name' => 'Custom Terms Client',
+                'invoice_date' => '2026-05-01',
+                'grand_total' => 1000,
+                'status' => 'Open',
+                'override_payment_terms' => false,
+            ]);
+
+        $clientTermsResponse->assertCreated()->assertJsonPath('status', 'success');
+        $this->assertDatabaseHas('manual_debtors', [
+            'id' => (int) $clientTermsResponse->json('id'),
+            'payment_terms_days' => 60,
+            'payment_terms_source' => 'client',
+            'due_date' => '2026-06-30',
+        ]);
+        $clientTermsId = (int) $clientTermsResponse->json('id');
+
+        DB::table('client_company')->where('company_id', 4)->update(['payment_terms_days' => 45]);
+
+        $this->actingSession()
+            ->putJson("/debtors/manual/{$clientTermsId}", [
+                'invoice_ref_no' => 'CLIENT-TERMS-001',
+                'client_id' => 4,
+                'client_name' => 'Custom Terms Client',
+                'invoice_date' => '2026-05-02',
+                'grand_total' => 1200,
+                'status' => 'Open',
+                'override_payment_terms' => false,
+                'payment_terms_changed' => false,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('manual_debtors', [
+            'id' => $clientTermsId,
+            'payment_terms_days' => 60,
+            'payment_terms_source' => 'client',
+            'due_date' => '2026-07-01',
+        ]);
+
+        $this->actingSession()
+            ->putJson("/debtors/manual/{$clientTermsId}", [
+                'invoice_ref_no' => 'CLIENT-TERMS-001',
+                'client_id' => 4,
+                'client_name' => 'Custom Terms Client',
+                'invoice_date' => '2026-05-02',
+                'grand_total' => 1200,
+                'status' => 'Open',
+                'override_payment_terms' => false,
+                'payment_terms_changed' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('manual_debtors', [
+            'id' => $clientTermsId,
+            'payment_terms_days' => 45,
+            'payment_terms_source' => 'client',
+            'due_date' => '2026-06-16',
+        ]);
+
+        $overrideResponse = $this->actingSession()
+            ->postJson('/debtors/manual', [
+                'invoice_ref_no' => 'MANUAL-TERMS-001',
+                'client_id' => 4,
+                'client_name' => 'Custom Terms Client',
+                'invoice_date' => '2026-05-01',
+                'grand_total' => 1000,
+                'status' => 'Open',
+                'override_payment_terms' => true,
+                'payment_terms_days' => 45,
+            ]);
+
+        $overrideResponse->assertCreated()->assertJsonPath('status', 'success');
+        $this->assertDatabaseHas('manual_debtors', [
+            'id' => (int) $overrideResponse->json('id'),
+            'payment_terms_days' => 45,
+            'payment_terms_source' => 'manual_override',
+            'due_date' => '2026-06-15',
         ]);
     }
 
@@ -330,6 +456,21 @@ class ManualDebtorFeatureTest extends TestCase
         $this->assertSame(3900.0, (float) $totals->json('outstandingAmount'));
         $this->assertSame(3, (int) $totals->json('outstandingCount'));
 
+        $trend = $this->actingSession()
+            ->postJson('/stats/monthly-invoiced-received-trend', [
+                'start_date' => '2026-05-01',
+                'end_date' => '2026-05-18',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->json('monthlyInvoicedReceivedTrend');
+
+        $mayTrend = collect($trend)->firstWhere('month', '2026-05');
+        $this->assertSame(4300.0, (float) $mayTrend['invoiced']);
+        $this->assertSame(1300.0, (float) $mayTrend['received']);
+        $this->assertSame(4, (int) $mayTrend['invoiceCount']);
+        $this->assertSame(2, (int) $mayTrend['receivedCount']);
+
         $statsDebtors = $this->actingSession()
             ->postJson('/stats/debtors', ['end_date' => '2026-05-18'])
             ->assertOk()
@@ -382,6 +523,7 @@ class ManualDebtorFeatureTest extends TestCase
         Schema::create('client_company', function (Blueprint $table): void {
             $table->integer('company_id')->primary();
             $table->string('company_name')->nullable();
+            $table->unsignedSmallInteger('payment_terms_days')->nullable();
         });
 
         Schema::create('client_pic', function (Blueprint $table): void {
@@ -405,6 +547,9 @@ class ManualDebtorFeatureTest extends TestCase
             $table->date('invoice_date')->nullable();
             $table->date('paid_date')->nullable();
             $table->decimal('grand_total', 15, 2)->nullable();
+            $table->unsignedSmallInteger('payment_terms_days')->nullable();
+            $table->string('payment_terms_source', 32)->default('system_default');
+            $table->date('due_date')->nullable();
             $table->decimal('paid_amount', 15, 2)->nullable();
             $table->string('status')->nullable();
             $table->integer('client_id')->nullable();
@@ -434,6 +579,9 @@ class ManualDebtorFeatureTest extends TestCase
             $table->date('service_end_date')->nullable();
             $table->text('purpose')->nullable();
             $table->date('invoice_date');
+            $table->unsignedSmallInteger('payment_terms_days')->nullable();
+            $table->string('payment_terms_source', 32)->default('legacy');
+            $table->date('due_date')->nullable();
             $table->decimal('grand_total', 15, 2);
             $table->string('status')->default('Open');
             $table->string('payment_method')->nullable();

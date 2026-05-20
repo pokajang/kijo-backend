@@ -9,6 +9,12 @@ use Illuminate\Support\Facades\DB;
 
 abstract class InvoiceBaseService
 {
+    protected const SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS = 30;
+    protected const PAYMENT_TERMS_SOURCE_SYSTEM_DEFAULT = 'system_default';
+    protected const PAYMENT_TERMS_SOURCE_CLIENT = 'client';
+    protected const PAYMENT_TERMS_SOURCE_INVOICE_OVERRIDE = 'invoice_override';
+    protected const PAYMENT_TERMS_SOURCE_LEGACY = 'legacy';
+
     public function __construct(protected AuditLogService $auditLog) {}
 
     protected function insertProjectProgress(int $projectId, string $text, Request $request): void

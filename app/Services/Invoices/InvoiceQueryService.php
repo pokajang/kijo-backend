@@ -28,6 +28,8 @@ class InvoiceQueryService extends InvoiceBaseService
                     p.service_start_date AS service_start_date,
                     p.service_end_date  AS service_end_date,
                     p.description       AS project_description,
+                    cc.payment_terms_days AS client_payment_terms_days,
+                    CASE WHEN cc.payment_terms_days IS NULL THEN 'system_default' ELSE 'client' END AS client_payment_terms_source,
                     COALESCE(i.invoice_client_name, q.client_name, cc.company_name, CONCAT('Client #', i.client_id)) AS client_name,
                     COALESCE(i.invoice_client_ssm, q.client_ssm, cc.ssm_number)              AS client_ssm,
                     COALESCE(i.invoice_client_tin, cc.tax_id_no_tin)                         AS client_tin,

@@ -113,16 +113,122 @@ class FinanceDashboardStatsService
         }
     }
 
+    public function monthlyInvoicedReceivedTrend(Request $request): JsonResponse
+    {
+        [$start, $end] = $this->parseDates($request);
+
+        try {
+            $rows = [];
+
+            $systemInvoicedRows = DB::table('invoices')
+                ->selectRaw("DATE_FORMAT(invoice_date, '%Y-%m') AS month, SUM(COALESCE(grand_total, 0)) AS amount, COUNT(*) AS count")
+                ->where('status', '!=', 'Cancelled')
+                ->whereNotNull('invoice_date')
+                ->when($start && $end, fn ($query) => $query->whereBetween(DB::raw('DATE(invoice_date)'), [$start, $end]))
+                ->groupByRaw("DATE_FORMAT(invoice_date, '%Y-%m')")
+                ->get();
+
+            foreach ($systemInvoicedRows as $row) {
+                $month = (string) $row->month;
+                $rows[$month] = $this->monthlyTrendRow($month, $rows[$month] ?? null);
+                $rows[$month]['systemInvoiced'] += (float) $row->amount;
+                $rows[$month]['systemInvoiceCount'] += (int) $row->count;
+            }
+
+            $systemReceivedRows = DB::table('invoices')
+                ->selectRaw("DATE_FORMAT(paid_date, '%Y-%m') AS month, SUM(COALESCE(paid_amount, 0)) AS amount, COUNT(*) AS count")
+                ->where('status', 'Paid')
+                ->whereNotNull('paid_date')
+                ->when($start && $end, fn ($query) => $query->whereBetween(DB::raw('DATE(paid_date)'), [$start, $end]))
+                ->groupByRaw("DATE_FORMAT(paid_date, '%Y-%m')")
+                ->get();
+
+            foreach ($systemReceivedRows as $row) {
+                $month = (string) $row->month;
+                $rows[$month] = $this->monthlyTrendRow($month, $rows[$month] ?? null);
+                $rows[$month]['systemReceived'] += (float) $row->amount;
+                $rows[$month]['systemReceivedCount'] += (int) $row->count;
+            }
+
+            if ($this->manualDebtorsTableReady()) {
+                $manualInvoicedRows = DB::table('manual_debtors')
+                    ->selectRaw("DATE_FORMAT(invoice_date, '%Y-%m') AS month, SUM(COALESCE(grand_total, 0)) AS amount, COUNT(*) AS count")
+                    ->whereRaw("LOWER(TRIM(COALESCE(status, 'open'))) NOT IN ('cancelled', 'canceled', 'void')")
+                    ->whereNotNull('invoice_date')
+                    ->when($start && $end, fn ($query) => $query->whereBetween(DB::raw('DATE(invoice_date)'), [$start, $end]))
+                    ->groupByRaw("DATE_FORMAT(invoice_date, '%Y-%m')")
+                    ->get();
+
+                foreach ($manualInvoicedRows as $row) {
+                    $month = (string) $row->month;
+                    $rows[$month] = $this->monthlyTrendRow($month, $rows[$month] ?? null);
+                    $rows[$month]['manualInvoiced'] += (float) $row->amount;
+                    $rows[$month]['manualInvoiceCount'] += (int) $row->count;
+                }
+
+                $manualReceivedRows = DB::table('manual_debtors')
+                    ->selectRaw("DATE_FORMAT(paid_date, '%Y-%m') AS month, SUM(COALESCE(paid_amount, 0)) AS amount, COUNT(*) AS count")
+                    ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) = 'paid'")
+                    ->whereNotNull('paid_date')
+                    ->when($start && $end, fn ($query) => $query->whereBetween(DB::raw('DATE(paid_date)'), [$start, $end]))
+                    ->groupByRaw("DATE_FORMAT(paid_date, '%Y-%m')")
+                    ->get();
+
+                foreach ($manualReceivedRows as $row) {
+                    $month = (string) $row->month;
+                    $rows[$month] = $this->monthlyTrendRow($month, $rows[$month] ?? null);
+                    $rows[$month]['manualReceived'] += (float) $row->amount;
+                    $rows[$month]['manualReceivedCount'] += (int) $row->count;
+                }
+            }
+
+            $trend = collect(array_values($rows))
+                ->map(fn ($row) => array_merge($row, [
+                    'invoiced' => (float) $row['systemInvoiced'] + (float) $row['manualInvoiced'],
+                    'received' => (float) $row['systemReceived'] + (float) $row['manualReceived'],
+                    'invoiceCount' => (int) $row['systemInvoiceCount'] + (int) $row['manualInvoiceCount'],
+                    'receivedCount' => (int) $row['systemReceivedCount'] + (int) $row['manualReceivedCount'],
+                    'netMovement' => ((float) $row['systemInvoiced'] + (float) $row['manualInvoiced'])
+                        - ((float) $row['systemReceived'] + (float) $row['manualReceived']),
+                ]))
+                ->sortBy('month')
+                ->values();
+
+            return response()->json([
+                'status' => 'success',
+                'monthlyInvoicedReceivedTrend' => $trend,
+            ]);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
+        }
+    }
+
     public function allDebtors(Request $request): JsonResponse
     {
         [$start, $end] = $this->parseDates($request);
         try {
             $asOfDate = $end ?: now()->format('Y-m-d');
+            $invoiceTermsExpression = Schema::hasColumn('invoices', 'payment_terms_days')
+                ? 'i.payment_terms_days'
+                : 'NULL';
+            $invoiceSourceExpression = Schema::hasColumn('invoices', 'payment_terms_source')
+                ? "NULLIF(i.payment_terms_source, '')"
+                : 'NULL';
+            $clientTermsExpression = Schema::hasColumn('client_company', 'payment_terms_days')
+                ? 'cc.payment_terms_days'
+                : 'NULL';
+            $paymentTermsExpression = "COALESCE({$invoiceTermsExpression}, {$clientTermsExpression}, 30)";
+            $paymentTermsSourceExpression = "COALESCE({$invoiceSourceExpression}, CASE WHEN {$clientTermsExpression} IS NULL THEN 'system_default' ELSE 'client' END)";
+
             $query = DB::table('invoices as i')
                 ->leftJoin('client_company as cc', 'i.client_id', '=', 'cc.company_id')
                 ->leftJoin('projects_main as pm', 'i.project_id', '=', 'pm.id')
                 ->leftJoin('staff_general as sg', 'pm.created_by', '=', 'sg.staff_id')
                 ->selectRaw("i.id, i.client_id, i.project_id, i.invoice_ref_no, i.invoice_date, i.grand_total, i.status,
+                    {$paymentTermsExpression} AS payment_terms_days,
+                    {$paymentTermsSourceExpression} AS payment_terms_source,
                     COALESCE(NULLIF(i.invoice_client_name, ''), cc.company_name) AS client_name,
                     COALESCE(NULLIF(pm.project_name, ''), NULLIF(i.invoice_purpose, '')) AS project_name,
                     COALESCE(NULLIF(i.invoice_pic_name, ''), '-') AS pic_name,
@@ -148,8 +254,21 @@ class FinanceDashboardStatsService
 
             $manualRows = collect();
             if ($this->manualDebtorsTableReady()) {
+                $manualPaymentTermsSelect = Schema::hasColumn('manual_debtors', 'payment_terms_days')
+                    ? 'payment_terms_days'
+                    : 'NULL AS payment_terms_days';
+                $manualPaymentTermsSourceSelect = Schema::hasColumn('manual_debtors', 'payment_terms_source')
+                    ? 'payment_terms_source'
+                    : "'legacy' AS payment_terms_source";
+                $manualDueDateSelect = Schema::hasColumn('manual_debtors', 'due_date')
+                    ? 'due_date'
+                    : 'NULL AS due_date';
+
                 $manualRows = DB::table('manual_debtors')
                     ->selectRaw("id, invoice_ref_no, invoice_date, grand_total, status,
+                        {$manualPaymentTermsSelect},
+                        {$manualPaymentTermsSourceSelect},
+                        {$manualDueDateSelect},
                         client_name,
                         COALESCE(NULLIF(purpose, ''), '-') AS project_name,
                         COALESCE(NULLIF(pic_name, ''), '-') AS pic_name,
@@ -206,6 +325,21 @@ class FinanceDashboardStatsService
         }
 
         return date('Y-m-d', $timestamp);
+    }
+
+    private function monthlyTrendRow(string $month, ?array $existing = null): array
+    {
+        return $existing ?? [
+            'month' => $month,
+            'systemInvoiced' => 0.0,
+            'manualInvoiced' => 0.0,
+            'systemReceived' => 0.0,
+            'manualReceived' => 0.0,
+            'systemInvoiceCount' => 0,
+            'manualInvoiceCount' => 0,
+            'systemReceivedCount' => 0,
+            'manualReceivedCount' => 0,
+        ];
     }
 
     private function manualDebtorsTableReady(): bool

@@ -15,6 +15,8 @@ use Illuminate\Support\Facades\DB;
 
 abstract class ClientBaseService
 {
+    protected const SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS = 30;
+
     public function __construct(protected AuditLogService $auditLog) {}
 
     protected function composeState(string $state, string $country, string $intlCountry): string
@@ -48,6 +50,37 @@ abstract class ClientBaseService
         }
 
         return $countryRaw;
+    }
+
+    protected function normalizePaymentTermsDays(mixed $value): int
+    {
+        if ($value === null || $value === '') {
+            return self::SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS;
+        }
+
+        $days = (int) $value;
+        return max(0, min(365, $days));
+    }
+
+    protected function normalizeNullablePaymentTermsDays(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return $this->normalizePaymentTermsDays($value);
+    }
+
+    protected function clientPaymentTermsSource(mixed $value): string
+    {
+        return $value === null || $value === '' ? 'system_default' : 'client';
+    }
+
+    protected function effectiveClientPaymentTermsDays(mixed $value): int
+    {
+        return $value === null || $value === ''
+            ? self::SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS
+            : $this->normalizePaymentTermsDays($value);
     }
 
     protected function success(mixed $data = null, ?string $message = null, int $statusCode = 200, ?array $pagination = null): JsonResponse

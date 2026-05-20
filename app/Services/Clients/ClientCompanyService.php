@@ -24,6 +24,7 @@ class ClientCompanyService extends ClientBaseService
         if (!in_array($clientStatus, ['Old', 'New'], true)) {
             $clientStatus = 'New';
         }
+        $paymentTermsDays = $this->normalizeNullablePaymentTermsDays($data['payment_terms_days'] ?? null);
 
         $state = $this->composeState((string) ($data['state'] ?? ''), (string) ($data['country'] ?? ''), (string) ($data['intl_country'] ?? ''));
 
@@ -34,6 +35,7 @@ class ClientCompanyService extends ClientBaseService
                 'ssm_number' => trim((string) ($data['ssm_number'] ?? '')),
                 'tax_id_no_tin' => trim((string) ($data['tax_id_no_tin'] ?? '')),
                 'client_status' => $clientStatus,
+                'payment_terms_days' => $paymentTermsDays,
                 'address' => trim((string) ($data['address'] ?? '')),
                 'city' => trim((string) ($data['city'] ?? '')),
                 'state' => $state,
@@ -124,6 +126,7 @@ class ClientCompanyService extends ClientBaseService
         if (!in_array($clientStatus, ['Old', 'New'], true)) {
             $clientStatus = 'New';
         }
+        $paymentTermsDays = $this->normalizeNullablePaymentTermsDays($data['payment_terms_days'] ?? null);
 
         $state = $this->composeState((string) ($data['state'] ?? ''), (string) ($data['country'] ?? ''), (string) ($data['intl_country'] ?? ''));
 
@@ -136,6 +139,7 @@ class ClientCompanyService extends ClientBaseService
                     'ssm_number' => trim((string) ($data['ssm_number'] ?? '')),
                     'tax_id_no_tin' => trim((string) ($data['tax_id_no_tin'] ?? '')),
                     'client_status' => $clientStatus,
+                    'payment_terms_days' => $paymentTermsDays,
                     'address' => trim((string) ($data['address'] ?? '')),
                     'city' => trim((string) ($data['city'] ?? '')),
                     'state' => $state,

@@ -122,6 +122,16 @@ Route::middleware('auth.session')->group(function () {
     Route::get('client-companies',                       [ClientController::class, 'listAll']);
     Route::get('client-companies/basic',                 [ClientController::class, 'listClients']);
     Route::get('client-companies/options',               [ClientController::class, 'listClientOptions']);
+    Route::get('client-companies/roi',                   [ClientController::class, 'roiReport']);
+    Route::get('client-companies/{companyId}/commercial-history', [ClientController::class, 'commercialHistory'])->whereNumber('companyId');
+    Route::get('client-vendor-registrations',            [ClientController::class, 'vendorRegistrations']);
+    Route::post('client-vendor-registrations',           [ClientController::class, 'storeVendorRegistration']);
+    Route::get('client-vendor-registrations/attention-count', [ClientController::class, 'vendorRegistrationAttentionCount']);
+    Route::get('client-vendor-registrations/{id}',       [ClientController::class, 'showVendorRegistration'])->whereNumber('id');
+    Route::post('client-vendor-registrations/{id}',      [ClientController::class, 'updateVendorRegistration'])->whereNumber('id');
+    Route::delete('client-vendor-registrations/{id}',    [ClientController::class, 'deleteVendorRegistration'])->whereNumber('id');
+    Route::get('client-vendor-registrations/{id}/certificate', [ClientController::class, 'vendorRegistrationCertificate'])->whereNumber('id');
+    Route::get('client-companies/{companyId}',           [ClientController::class, 'show'])->whereNumber('companyId');
     Route::post('client-companies',                      [ClientController::class, 'store']);
     Route::put('client-companies/{companyId}',           [ClientController::class, 'update']);
     Route::delete('client-companies/{companyId}',        [ClientController::class, 'destroy']);
@@ -537,6 +547,7 @@ Route::middleware('auth.session')->group(function () {
     Route::match(['get','post'], 'stats/awarded-value-by-person',            [StatsController::class, 'awardedValueByPerson']);
     Route::match(['get','post'], 'stats/awarded-value-by-source',            [StatsController::class, 'awardedValueBySource']);
     Route::match(['get','post'], 'stats/monthly-income-statement',           [StatsController::class, 'monthlyIncomeStatement']);
+    Route::match(['get','post'], 'stats/monthly-invoiced-received-trend',    [StatsController::class, 'monthlyInvoicedReceivedTrend']);
     Route::match(['get','post'], 'stats/awarded-value-by-service',           [StatsController::class, 'awardedValueByService']);
     Route::match(['get','post'], 'stats/quote-count-by-person',              [StatsController::class, 'quoteCountByPerson']);
     Route::match(['get','post'], 'stats/conversion-rate-by-source',          [StatsController::class, 'conversionRateBySource']);
