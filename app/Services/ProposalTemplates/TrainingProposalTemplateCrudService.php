@@ -125,7 +125,7 @@ class TrainingProposalTemplateCrudService
             $mainInsert = [
                 'training_title'                  => $data['trainingTitle'],
                 'training_code'                   => $data['trainingCode'],
-                'hrd_no'                          => $data['hrdNo'] ?? null,
+                'hrd_no'                          => $data['hrdNo'] ?? '',
                 'introduction'                    => $data['introduction'],
                 'objectives'                      => $data['objectives'],
                 'modules'                         => $data['modules'] ?? null,
@@ -209,7 +209,7 @@ class TrainingProposalTemplateCrudService
             $mainUpdate = [
                 'training_title'                  => $data['trainingTitle'],
                 'training_code'                   => $data['trainingCode'],
-                'hrd_no'                          => $data['hrdNo'] ?? null,
+                'hrd_no'                          => $data['hrdNo'] ?? '',
                 'introduction'                    => $data['introduction'],
                 'objectives'                      => $data['objectives'],
                 'modules'                         => $data['modules'] ?? null,

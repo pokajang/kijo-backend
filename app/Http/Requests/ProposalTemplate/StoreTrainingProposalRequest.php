@@ -49,8 +49,8 @@ class StoreTrainingProposalRequest extends FormRequest
     {
         return [
             'trainingTitle'                    => ['required', 'string', 'max:255'],
-            'trainingCode'                     => ['required', 'string', 'max:100'],
-            'hrdNo'                            => ['nullable', 'string', 'max:100'],
+            'trainingCode'                     => ['required', 'string', 'max:50'],
+            'hrdNo'                            => ['nullable', 'string', 'max:20'],
             'introduction'                     => ['required', 'string'],
             'objectives'                       => ['required', 'string'],
             'modules'                          => ['nullable', 'string'],

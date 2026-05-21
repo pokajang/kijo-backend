@@ -79,6 +79,30 @@ class ProposalTemplateCreateTest extends TestCase
             ->assertJsonValidationErrors(['introduction', 'objectives', 'agenda.0.topic']);
     }
 
+    public function test_training_creation_accepts_blank_hrd_number_without_database_failure(): void
+    {
+        $this->authenticated()
+            ->postJson('/proposal-templates/training', $this->trainingPayload(['hrdNo' => '']))
+            ->assertCreated()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('proposal_template_training_main', [
+            'training_title' => 'Safety Training',
+            'hrd_no' => '',
+        ]);
+    }
+
+    public function test_training_creation_validates_legacy_schema_lengths(): void
+    {
+        $this->authenticated()
+            ->postJson('/proposal-templates/training', $this->trainingPayload([
+                'trainingCode' => str_repeat('A', 51),
+                'hrdNo' => str_repeat('B', 21),
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['trainingCode', 'hrdNo']);
+    }
+
     public function test_ih_creation_requires_introduction(): void
     {
         $this->authenticated()
@@ -135,8 +159,8 @@ class ProposalTemplateCreateTest extends TestCase
         Schema::create('proposal_template_training_main', function (Blueprint $table): void {
             $table->id();
             $table->string('training_title')->nullable();
-            $table->string('training_code')->nullable();
-            $table->string('hrd_no')->nullable();
+            $table->string('training_code', 50);
+            $table->string('hrd_no', 20);
             $table->text('introduction')->nullable();
             $table->text('objectives')->nullable();
             $table->text('modules')->nullable();
