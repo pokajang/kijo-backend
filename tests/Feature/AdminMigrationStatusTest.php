@@ -303,6 +303,31 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('data.attachment', 'quote-mail-diagnostic.pdf');
     }
 
+    public function test_default_mail_diagnostic_reports_incomplete_smtp_credentials(): void
+    {
+        config([
+            'mail.default' => 'smtp',
+            'mail.mailers.smtp' => [
+                'transport' => 'smtp',
+                'host' => 'work.amiosh.com',
+                'port' => 465,
+                'username' => 'kijo@work.amiosh.com',
+                'password' => '',
+            ],
+            'mail.from.address' => 'kijo@work.amiosh.com',
+        ]);
+
+        $this->withSession($this->authenticatedSession(['System Admin']))
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/admin/mail-diagnostics/default', [
+                'recipient_email' => 'recipient@example.test',
+            ])
+            ->assertStatus(503)
+            ->assertJsonPath('status', 'error')
+            ->assertJsonPath('data.status', 'blocked')
+            ->assertJsonPath('data.missing_config', ['password']);
+    }
+
     private function authenticatedSession(array $roles): array
     {
         return [

@@ -23,6 +23,7 @@ class AppNotificationController extends Controller
             'module_key' => ['required', 'string', 'max:80'],
             'entity_type' => ['required', 'string', 'max:80'],
             'entity_id' => ['required', 'integer', 'min:1'],
+            'route_prefix' => ['nullable', 'string', 'max:255'],
         ]);
 
         $consumed = $notifications->consumeEntity(
@@ -30,6 +31,7 @@ class AppNotificationController extends Controller
             $data['module_key'],
             $data['entity_type'],
             (int) $data['entity_id'],
+            $data['route_prefix'] ?? null,
         );
 
         return response()->json([

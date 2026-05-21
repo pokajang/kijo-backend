@@ -283,7 +283,34 @@ class AdminMailDiagnosticsController extends Controller
             ], 503);
         }
 
+        if ($transport === 'smtp') {
+            $missingFields = $this->missingSmtpConfigFields($mailerConfig);
+            if ($missingFields !== []) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => "{$label} SMTP configuration is incomplete. Missing: " . implode(', ', $missingFields) . '.',
+                    'data' => $this->diagnosticResponseData(
+                        $context + ['missing_config' => $missingFields],
+                        'blocked',
+                        $mailer,
+                        $fromAddress,
+                        $expectedFromAddress
+                    ),
+                ], 503);
+            }
+        }
+
         return null;
+    }
+
+    private function missingSmtpConfigFields(array $mailerConfig): array
+    {
+        $required = ['host', 'port', 'username', 'password'];
+
+        return array_values(array_filter(
+            $required,
+            static fn (string $field): bool => trim((string) ($mailerConfig[$field] ?? '')) === ''
+        ));
     }
 
     private function diagnosticResponseData(
@@ -302,6 +329,7 @@ class AdminMailDiagnosticsController extends Controller
             'expected_from' => $expectedFromAddress,
             'to' => $context['to'] ?? null,
             'attachment' => $context['attachment'] ?? null,
+            'missing_config' => $context['missing_config'] ?? null,
             'completed_at' => now()->toISOString(),
         ], static fn ($value): bool => $value !== null && $value !== '');
     }

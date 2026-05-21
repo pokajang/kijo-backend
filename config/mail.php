@@ -1,5 +1,16 @@
 <?php
 
+$normalizeSmtpScheme = static function ($scheme): ?string {
+    $scheme = strtolower(trim((string) $scheme));
+
+    return match ($scheme) {
+        '', 'null' => null,
+        'ssl' => 'smtps',
+        'tls' => 'smtp',
+        default => $scheme,
+    };
+};
+
 return [
 
     /*
@@ -39,7 +50,7 @@ return [
 
         'smtp' => [
             'transport' => 'smtp',
-            'scheme' => env('MAIL_SCHEME'),
+            'scheme' => $normalizeSmtpScheme(env('MAIL_SCHEME')),
             'url' => env('MAIL_URL'),
             'host' => env('MAIL_HOST', '127.0.0.1'),
             'port' => env('MAIL_PORT', 2525),
@@ -51,7 +62,7 @@ return [
 
         'quote_smtp' => [
             'transport' => 'smtp',
-            'scheme' => env('QUOTE_MAIL_SCHEME', env('MAIL_SCHEME')),
+            'scheme' => $normalizeSmtpScheme(env('QUOTE_MAIL_SCHEME', env('MAIL_SCHEME'))),
             'url' => env('QUOTE_MAIL_URL'),
             'host' => env('QUOTE_MAIL_HOST', env('MAIL_HOST', '127.0.0.1')),
             'port' => env('QUOTE_MAIL_PORT', env('MAIL_PORT', 2525)),

@@ -611,7 +611,7 @@ class LeaveRequestService extends LeaveBaseService
             );
             $notifications->createForStaff([(int) $leave->staff_id], [
                 'actor_staff_id' => $actorId,
-                'module_key' => 'staff.leaves',
+                'module_key' => 'my.leaves',
                 'entity_type' => 'leave_application',
                 'entity_id' => $leaveId,
                 'type' => 'leave.approved',
@@ -656,7 +656,7 @@ class LeaveRequestService extends LeaveBaseService
             );
             $notifications->createForStaff([(int) $leave->staff_id], [
                 'actor_staff_id' => $actorId,
-                'module_key' => 'staff.leaves',
+                'module_key' => 'my.leaves',
                 'entity_type' => 'leave_application',
                 'entity_id' => $leaveId,
                 'type' => 'leave.rejected',
@@ -734,7 +734,7 @@ class LeaveRequestService extends LeaveBaseService
             if ((int) $leave->staff_id !== $actorId) {
                 $notifications->createForStaff([(int) $leave->staff_id], [
                     'actor_staff_id' => $actorId,
-                    'module_key' => 'staff.leaves',
+                    'module_key' => 'my.leaves',
                     'entity_type' => 'leave_application',
                     'entity_id' => $leaveId,
                     'type' => 'leave.revoked',
@@ -774,7 +774,7 @@ class LeaveRequestService extends LeaveBaseService
         if ((int) $leave->staff_id !== $actorId) {
             $notifications->createForStaff([(int) $leave->staff_id], [
                 'actor_staff_id' => $actorId,
-                'module_key' => 'staff.leaves',
+                'module_key' => 'my.leaves',
                 'entity_type' => 'leave_application',
                 'entity_id' => $leaveId,
                 'type' => 'leave.cancelled.applicant',

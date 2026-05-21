@@ -29,9 +29,55 @@ class AppNotificationSummaryFeatureTest extends TestCase
             'client_vendor_registration_recipients',
             'client_vendor_registrations',
             'in_app_notifications',
+            'hr_leave_workflow_recipients',
+            'hr_leaves_application',
+            'system_users',
+            'staff_general',
         ] as $table) {
             Schema::dropIfExists($table);
         }
+
+        Schema::create('staff_general', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->integer('staff_id')->unique();
+            $table->string('full_name')->nullable();
+            $table->string('name_code')->nullable();
+            $table->string('email')->nullable();
+            $table->string('status')->default('Active');
+            $table->timestamp('deleted_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('system_users', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->integer('staff_id')->nullable();
+            $table->string('email')->nullable();
+            $table->string('role')->nullable();
+            $table->boolean('is_active')->default(true);
+            $table->timestamps();
+        });
+
+        Schema::create('hr_leaves_application', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->integer('staff_id');
+            $table->string('status')->default('Pending');
+            $table->integer('reviewed_by')->nullable();
+            $table->string('reviewed_status')->nullable();
+            $table->integer('approved_by')->nullable();
+            $table->string('approved_status')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('hr_leave_workflow_recipients', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->string('stage_key');
+            $table->integer('staff_id');
+            $table->integer('sort_order')->default(0);
+            $table->boolean('is_active')->default(true);
+            $table->integer('created_by')->nullable();
+            $table->integer('updated_by')->nullable();
+            $table->timestamps();
+        });
 
         Schema::create('client_vendor_registrations', function (Blueprint $table): void {
             $table->increments('id');
@@ -194,5 +240,187 @@ class AppNotificationSummaryFeatureTest extends TestCase
         $this->assertSame(1, $requesterSummary['by_module']['crm.negotiations'] ?? 0);
         $this->assertSame(1, $requesterSummary['by_route_group']['/crm/price-exceptions'] ?? 0);
         $this->assertSame(1, $requesterSummary['by_tab']['crm.negotiations'] ?? 0);
+    }
+
+    public function test_summary_derives_staff_leave_badges_from_actionable_workflow_rows(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 20, 'full_name' => 'HR User', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 30, 'full_name' => 'Manager User', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'full_name' => 'Employee User', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('system_users')->insert([
+            ['staff_id' => 20, 'role' => 'HR', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 30, 'role' => 'Manager', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'role' => 'Employee', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        DB::table('hr_leaves_application')->insert([
+            ['staff_id' => 40, 'status' => 'Pending', 'reviewed_by' => null, 'reviewed_status' => null, 'approved_by' => null, 'approved_status' => null, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'status' => 'Pending', 'reviewed_by' => null, 'reviewed_status' => null, 'approved_by' => null, 'approved_status' => null, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'status' => 'Pending', 'reviewed_by' => 20, 'reviewed_status' => 'Recommended', 'approved_by' => null, 'approved_status' => null, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'status' => 'Pending', 'reviewed_by' => 20, 'reviewed_status' => 'Recommended', 'approved_by' => null, 'approved_status' => null, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'status' => 'Approved', 'reviewed_by' => 20, 'reviewed_status' => 'Recommended', 'approved_by' => 30, 'approved_status' => 'Approved', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        $hrSummary = $this->withSession(['staff_id' => 20, 'roles' => ['HR']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(2, $hrSummary['by_module']['staff.leaves'] ?? 0);
+        $this->assertSame(2, $hrSummary['by_route_group']['/staff/leaves'] ?? 0);
+        $this->assertSame(2, $hrSummary['by_tab']['staff.leaves'] ?? 0);
+
+        $managerSummary = $this->withSession(['staff_id' => 30, 'roles' => ['Manager']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(2, $managerSummary['by_module']['staff.leaves'] ?? 0);
+
+        $employeeSummary = $this->withSession(['staff_id' => 40, 'roles' => ['Employee']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(0, $employeeSummary['by_module']['staff.leaves'] ?? 0);
+    }
+
+    public function test_configured_leave_workflow_recipients_control_leave_badge_visibility(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 30, 'full_name' => 'Fallback Manager', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 31, 'full_name' => 'Configured Approver', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('system_users')->insert([
+            ['staff_id' => 30, 'role' => 'Manager', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 31, 'role' => 'Employee', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('hr_leave_workflow_recipients')->insert([
+            [
+                'stage_key' => 'leave.recommended.approvers',
+                'staff_id' => 31,
+                'sort_order' => 0,
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+        DB::table('hr_leaves_application')->insert([
+            ['staff_id' => 40, 'status' => 'Pending', 'reviewed_by' => 20, 'reviewed_status' => 'Recommended', 'approved_by' => null, 'approved_status' => null, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        $fallbackManagerSummary = $this->withSession(['staff_id' => 30, 'roles' => ['Manager']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(0, $fallbackManagerSummary['by_module']['staff.leaves'] ?? 0);
+
+        $configuredApproverSummary = $this->withSession(['staff_id' => 31, 'roles' => ['Employee']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(1, $configuredApproverSummary['by_module']['staff.leaves'] ?? 0);
+        $this->assertSame(1, $configuredApproverSummary['by_tab']['staff.leaves'] ?? 0);
+    }
+
+    public function test_summary_maps_applicant_leave_notifications_to_my_leave_badges(): void
+    {
+        DB::table('in_app_notifications')->insert([
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 30,
+                'module_key' => 'my.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 1,
+                'type' => 'leave.approved',
+                'title' => 'Leave approved',
+                'route' => '/my/leaves/records/1',
+                'severity' => 'success',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 30,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 2,
+                'type' => 'leave.rejected',
+                'title' => 'Leave rejected',
+                'route' => '/my/leaves/records/2',
+                'severity' => 'danger',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $summary = $this->withSession(['staff_id' => 40, 'roles' => ['Employee']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(2, $summary['by_module']['my.leaves'] ?? 0);
+        $this->assertSame(2, $summary['by_route_group']['/my/leaves'] ?? 0);
+        $this->assertSame(2, $summary['by_tab']['my.leaves'] ?? 0);
+        $this->assertSame(0, $summary['by_route_group']['/staff/leaves'] ?? 0);
+    }
+
+    public function test_route_scoped_consumption_preserves_staff_workflow_notifications(): void
+    {
+        DB::table('in_app_notifications')->insert([
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 30,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 7,
+                'type' => 'leave.approved',
+                'title' => 'Legacy applicant leave approved',
+                'route' => '/my/leaves/records/7',
+                'severity' => 'success',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 10,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 7,
+                'type' => 'leave.needs_recommendation',
+                'title' => 'Leave request needs recommendation',
+                'route' => '/staff/leaves/records/7',
+                'severity' => 'warning',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->withSession(['staff_id' => 40, 'roles' => ['HR']])
+            ->postJson('/notifications/consume-entity', [
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 7,
+                'route_prefix' => '/my/leaves',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.consumed_count', 1);
+
+        $this->assertNotNull(
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 40)
+                ->where('type', 'leave.approved')
+                ->value('consumed_at'),
+        );
+        $this->assertNull(
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 40)
+                ->where('type', 'leave.needs_recommendation')
+                ->value('consumed_at'),
+        );
     }
 }

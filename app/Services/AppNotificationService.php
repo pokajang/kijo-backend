@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Leaves\LeaveWorkflowRecipientService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,11 @@ class AppNotificationService
             'route_group' => '/staff/leaves',
             'tab_key' => 'staff.leaves',
             'severity' => 'warning',
+        ],
+        'my.leaves' => [
+            'route_group' => '/my/leaves',
+            'tab_key' => 'my.leaves',
+            'severity' => 'success',
         ],
         'client.vendor_registration' => [
             'route_group' => '/client/manage',
@@ -97,8 +103,13 @@ class AppNotificationService
         return array_values(array_unique($recipientIds));
     }
 
-    public function consumeEntity(Request $request, string $moduleKey, string $entityType, int $entityId): int
-    {
+    public function consumeEntity(
+        Request $request,
+        string $moduleKey,
+        string $entityType,
+        int $entityId,
+        ?string $routePrefix = null,
+    ): int {
         if (!Schema::hasTable(self::TABLE)) {
             return 0;
         }
@@ -108,18 +119,23 @@ class AppNotificationService
             return 0;
         }
 
-        return DB::table(self::TABLE)
+        $query = DB::table(self::TABLE)
             ->where('recipient_staff_id', $staffId)
             ->where('module_key', $moduleKey)
             ->where('entity_type', $entityType)
             ->where('entity_id', $entityId)
             ->whereNull('consumed_at')
-            ->whereNull('resolved_at')
-            ->update([
-                'read_at' => now(),
-                'consumed_at' => now(),
-                'updated_at' => now(),
-            ]);
+            ->whereNull('resolved_at');
+
+        if ($routePrefix !== null && $routePrefix !== '') {
+            $query->where('route', 'like', $routePrefix . '%');
+        }
+
+        return $query->update([
+            'read_at' => now(),
+            'consumed_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
     public function staffIdsForRoles(array $allowedRoles): array
@@ -160,6 +176,12 @@ class AppNotificationService
             $this->addModuleCount($byModule, $moduleKey, $count);
         }
 
+        $this->setModuleCountAtLeast(
+            $byModule,
+            'staff.leaves',
+            $this->leaveAttentionCount($request),
+        );
+
         $this->addModuleCount(
             $byModule,
             'client.vendor_registration',
@@ -185,10 +207,121 @@ class AppNotificationService
             ->where('recipient_staff_id', $staffId)
             ->whereNull('consumed_at')
             ->whereNull('resolved_at')
-            ->select('module_key', DB::raw('COUNT(*) as count'))
-            ->groupBy('module_key')
-            ->pluck('count', 'module_key')
-            ->map(fn ($count) => (int) $count)
+            ->select('module_key', 'route', DB::raw('COUNT(*) as count'))
+            ->groupBy('module_key', 'route')
+            ->get()
+            ->reduce(function (array $counts, object $row): array {
+                $moduleKey = $this->storedNotificationModuleKey(
+                    (string) $row->module_key,
+                    $row->route ?? null,
+                );
+                $counts[$moduleKey] = ($counts[$moduleKey] ?? 0) + (int) $row->count;
+                return $counts;
+            }, []);
+    }
+
+    private function storedNotificationModuleKey(string $moduleKey, mixed $route): string
+    {
+        $routeText = is_string($route) ? $route : '';
+
+        if ($moduleKey === 'staff.leaves' && str_starts_with($routeText, '/my/leaves')) {
+            return 'my.leaves';
+        }
+
+        return $moduleKey;
+    }
+
+    private function leaveAttentionCount(Request $request): int
+    {
+        if (!Schema::hasTable('hr_leaves_application')) {
+            return 0;
+        }
+
+        $count = 0;
+
+        if ($this->isLeaveWorkflowRecipient(
+            $request,
+            LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
+            ['hr'],
+        )) {
+            $count += (int) DB::table('hr_leaves_application')
+                ->whereRaw("LOWER(COALESCE(status, '')) = ?", ['pending'])
+                ->where(function ($query): void {
+                    $query
+                        ->whereNull('reviewed_by')
+                        ->orWhere('reviewed_by', 0);
+                })
+                ->where(function ($query): void {
+                    $query
+                        ->whereNull('reviewed_status')
+                        ->orWhere('reviewed_status', '')
+                        ->orWhereRaw("LOWER(COALESCE(reviewed_status, '')) = ?", ['pending']);
+                })
+                ->count();
+        }
+
+        if ($this->isLeaveWorkflowRecipient(
+            $request,
+            LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
+            ['manager', 'system admin'],
+        )) {
+            $count += (int) DB::table('hr_leaves_application')
+                ->whereRaw("LOWER(COALESCE(status, '')) = ?", ['pending'])
+                ->whereRaw("LOWER(COALESCE(reviewed_status, '')) = ?", ['recommended'])
+                ->where(function ($query): void {
+                    $query
+                        ->whereNull('approved_by')
+                        ->orWhere('approved_by', 0);
+                })
+                ->where(function ($query): void {
+                    $query
+                        ->whereNull('approved_status')
+                        ->orWhere('approved_status', '')
+                        ->orWhereRaw("LOWER(COALESCE(approved_status, '')) = ?", ['pending']);
+                })
+                ->count();
+        }
+
+        return $count;
+    }
+
+    private function isLeaveWorkflowRecipient(Request $request, string $stageKey, array $fallbackRoles): bool
+    {
+        $staffId = (int) $request->session()->get('staff_id', 0);
+        if ($staffId <= 0) {
+            return false;
+        }
+
+        $configuredStaffIds = $this->configuredLeaveWorkflowStaffIds($stageKey);
+        if (!empty($configuredStaffIds)) {
+            return in_array($staffId, $configuredStaffIds, true);
+        }
+
+        return $this->rolesMatch($request->session()->get('roles', []), $fallbackRoles);
+    }
+
+    private function configuredLeaveWorkflowStaffIds(string $stageKey): array
+    {
+        if (!Schema::hasTable('hr_leave_workflow_recipients')) {
+            return [];
+        }
+
+        $query = DB::table('hr_leave_workflow_recipients as r')
+            ->where('r.stage_key', $stageKey)
+            ->where('r.is_active', 1);
+
+        if (Schema::hasTable('staff_general')) {
+            $query
+                ->join('staff_general as sg', 'sg.staff_id', '=', 'r.staff_id')
+                ->whereNull('sg.deleted_at')
+                ->whereRaw("LOWER(COALESCE(sg.status, '')) = 'active'");
+        }
+
+        return $query
+            ->pluck('r.staff_id')
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
             ->all();
     }
 
@@ -294,6 +427,15 @@ class AppNotificationService
         }
 
         $counts[$moduleKey] = ($counts[$moduleKey] ?? 0) + $count;
+    }
+
+    private function setModuleCountAtLeast(array &$counts, string $moduleKey, int $count): void
+    {
+        if ($count <= 0) {
+            return;
+        }
+
+        $counts[$moduleKey] = max($counts[$moduleKey] ?? 0, $count);
     }
 
     private function isNegotiationApprover(Request $request): bool

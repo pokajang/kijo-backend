@@ -27,16 +27,11 @@ class QuoteRecordEmailController extends Controller
         $mailer = (string) config('mail.quote.mailer', 'quote_smtp');
         $fromAddress = trim((string) config('mail.quote.from.address', ''));
         $fromName = trim((string) config('mail.quote.from.name', 'AMIOSH Admin'));
-        if (
-            $mailer === '' ||
-            in_array($mailer, ['array', 'log'], true) ||
-            $fromAddress === '' ||
-            str_contains(strtolower($fromAddress), 'example.com') ||
-            !is_array(config("mail.mailers.{$mailer}"))
-        ) {
+        $configurationError = $this->configurationError($mailer, $fromAddress);
+        if ($configurationError !== null) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Quotation email sender is not configured yet. Set the quote SMTP mailer and sender address first.',
+                'message' => $configurationError,
             ], 503);
         }
 
@@ -48,19 +43,26 @@ class QuoteRecordEmailController extends Controller
                 'message' => 'Your staff email is not available in the current session.',
             ], 422);
         }
+        if (!$this->isValidEmail($staffEmail)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Your staff email in the current session is invalid.',
+            ], 422);
+        }
 
         $quote = $this->findQuote($service, $id);
         if (!$quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
-        $recipientEmail = trim((string) ($quote->pic_email ?? ''));
-        if ($recipientEmail === '') {
+        $recipientEmails = $this->parseEmailList((string) ($quote->pic_email ?? ''));
+        if ($recipientEmails === []) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'This quotation has no client recipient email.',
+                'message' => 'This quotation has no valid client recipient email.',
             ], 422);
         }
+        $recipientEmail = implode(', ', $recipientEmails);
 
         $pdfResponse = $this->generatePdfResponse($request, $service, $id);
         if (!$pdfResponse || $pdfResponse->getStatusCode() !== 200) {
@@ -108,7 +110,7 @@ class QuoteRecordEmailController extends Controller
                 $fromName,
                 $pdfBinary,
                 $quote,
-                $recipientEmail,
+                $recipientEmails,
                 $staffEmail,
                 $staffName,
                 $subject
@@ -116,11 +118,16 @@ class QuoteRecordEmailController extends Controller
                 $recipientName = trim((string) ($quote->pic_name ?: $quote->client_name ?: ''));
 
                 $message->from($fromAddress, $fromName)
-                    ->to($recipientEmail, $recipientName !== '' ? $recipientName : null)
                     ->subject($subject)
                     ->replyTo($staffEmail, $staffName !== '' ? $staffName : null)
                     ->cc($staffEmail, $staffName !== '' ? $staffName : null)
                     ->attachData($pdfBinary, $attachmentName, ['mime' => 'application/pdf']);
+
+                if (count($recipientEmails) === 1) {
+                    $message->to($recipientEmails[0], $recipientName !== '' ? $recipientName : null);
+                } else {
+                    $message->to($recipientEmails);
+                }
             });
         } catch (\Throwable $e) {
             report($e);
@@ -180,6 +187,58 @@ class QuoteRecordEmailController extends Controller
             ->where('id', $id)
             ->select(['id', 'quote_ref_no', 'client_name', 'pic_name', 'pic_email'])
             ->first();
+    }
+
+    private function configurationError(string $mailer, string $fromAddress): ?string
+    {
+        $mailerConfig = config("mail.mailers.{$mailer}");
+        $transport = is_array($mailerConfig) ? strtolower((string) ($mailerConfig['transport'] ?? '')) : '';
+
+        if (
+            $mailer === '' ||
+            !is_array($mailerConfig) ||
+            in_array($transport, ['array', 'log'], true) ||
+            $fromAddress === '' ||
+            str_contains(strtolower($fromAddress), 'example.com')
+        ) {
+            return 'Quotation email sender is not configured yet. Set the quote SMTP mailer and sender address first.';
+        }
+
+        if ($transport === 'smtp') {
+            $missingFields = $this->missingSmtpConfigFields($mailerConfig);
+            if ($missingFields !== []) {
+                return 'Quotation SMTP configuration is incomplete. Missing: ' . implode(', ', $missingFields) . '.';
+            }
+        }
+
+        return null;
+    }
+
+    private function missingSmtpConfigFields(array $mailerConfig): array
+    {
+        $required = ['host', 'port', 'username', 'password'];
+
+        return array_values(array_filter(
+            $required,
+            static fn (string $field): bool => trim((string) ($mailerConfig[$field] ?? '')) === ''
+        ));
+    }
+
+    private function parseEmailList(string $emails): array
+    {
+        $parts = preg_split('/[,;]+/', $emails) ?: [];
+
+        return collect($parts)
+            ->map(fn ($email) => trim((string) $email))
+            ->filter(fn ($email) => $this->isValidEmail($email))
+            ->unique(fn ($email) => strtolower($email))
+            ->values()
+            ->all();
+    }
+
+    private function isValidEmail(string $email): bool
+    {
+        return filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
     }
 
     private function generatePdfResponse(Request $request, string $service, int $quoteId): mixed

@@ -555,6 +555,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $this->assertDatabaseHas('in_app_notifications', [
             'recipient_staff_id' => 10,
             'actor_staff_id' => 30,
+            'module_key' => 'my.leaves',
             'entity_id' => $leaveId,
             'type' => 'leave.approved',
         ]);
@@ -563,11 +564,12 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             ->getJson('/notifications/summary')
             ->assertOk()
             ->json('data');
-        $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
+        $this->assertSame(1, $summary['by_module']['my.leaves'] ?? 0);
+        $this->assertSame(1, $summary['by_route_group']['/my/leaves'] ?? 0);
 
         $this->actingSession($this->employeeSession())
             ->postJson('/notifications/consume-entity', [
-                'module_key' => 'staff.leaves',
+                'module_key' => 'my.leaves',
                 'entity_type' => 'leave_application',
                 'entity_id' => $leaveId,
             ])
