@@ -11,7 +11,8 @@ class IhQuotePdfService
 {
     public function __construct(
         private AuditLogService $auditLog,
-        private QuotePdfRenderer $renderer
+        private QuotePdfRenderer $renderer,
+        private PdfMergeService $pdfMerge
     ) {}
 
     public function generate(Request $request, int $quoteId)
@@ -156,7 +157,7 @@ class IhQuotePdfService
             'grandTotal' => $grandTotal,
             'preparedByName' => (string) ($quote->created_by_name ?? ''),
             'signOffTitle' => $signOffTitle,
-            'appendProposal' => $appendProposal,
+            'appendProposal' => false,
             'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Service Proposal',
             'proposalSections' => $proposalSections,
             'additionalInfoHtml' => $additionalInfoHtml,
@@ -164,13 +165,34 @@ class IhQuotePdfService
         ])->render();
 
         $dompdf = $this->renderer->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $pdfBytes = $dompdf->output();
+
+        if ($appendProposal && (!empty($proposalSections) || $additionalInfoHtml !== '')) {
+            $proposalServiceTitle = trim(preg_replace('/\s+Service Proposal$/i', '', $proposalTitle) ?? '');
+            $proposalHtml = view($this->renderer->pdfView('pdf.ih-proposal', $quote->proposal_language ?? 'en'), [
+                'proposal' => (object) [
+                    'service_title' => $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                    'proposal_language' => $quote->proposal_language ?? 'en',
+                ],
+                'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Service Proposal',
+                'sections' => $proposalSections,
+                'hasAdditionalInfo' => $additionalInfoHtml !== '',
+                'additionalInfoHtml' => $additionalInfoHtml,
+                'logoDataUri' => $logoDataUri,
+            ])->render();
+            $proposalPdf = $this->renderer->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $mergedBytes = $this->pdfMerge->mergeSequence([$pdfBytes, $proposalPdf]);
+            if ($mergedBytes !== null) {
+                $pdfBytes = $mergedBytes;
+            }
+        }
 
         $this->auditLog->log($request, "Generated IH quotation PDF for quote ID #{$quoteId}");
 
         $safeClient = preg_replace('/[^A-Za-z0-9._-]+/', '_', (string) ($quote->client_name ?? 'client'));
         $filename = ((string) ($quote->quote_ref_no ?? "quote-{$quoteId}")) . '_' . trim($safeClient, '_') . '.pdf';
 
-        return response($dompdf->output(), 200, [
+        return response($pdfBytes, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => "inline; filename=\"{$filename}\"",
         ]);

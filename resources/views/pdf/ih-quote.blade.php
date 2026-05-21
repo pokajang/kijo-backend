@@ -8,11 +8,11 @@
     <meta charset="utf-8">
     <title>{{ $quoteRefNo ?? $L('QUOTATION', 'IH Quote') }}</title>
     <style>
-        @page { margin: 10mm 20mm 10mm 20mm; }
+        @page { margin: 36mm 20mm 16mm 20mm; }
         body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.35; text-align: justify; }
         p { margin: 0 0 2mm 0; }
 
-        .pdf-header { color: #696969; margin-bottom: 4mm; }
+        .pdf-header { position: fixed; top: -26mm; left: 0; right: 0; height: 24mm; color: #696969; margin-bottom: 0; }
         .header-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .header-table td { vertical-align: top; padding: 0; }
         .header-left { width: 68%; text-align: left; }
@@ -24,19 +24,19 @@
         .document-type { font-size: 10pt; font-weight: 700; margin-top: 2.2mm; letter-spacing: 0.3px; }
         .header-separator { margin-top: 1.3mm; border-bottom: 0.7px solid #696969; }
 
-        .quote-table { width: 100%; border-collapse: collapse; margin-top: 2mm; margin-bottom: 2.2mm; font-size: 10.5pt; }
+        .quote-table { width: 100%; border-collapse: collapse; margin-top: 2mm; margin-bottom: 2.2mm; font-size: 10pt; }
         .quote-table td { border: 0.5px solid #000; padding: 4px 5px; vertical-align: top; text-align: left; }
         .quote-table .label { width: 35%; font-weight: 700; }
         .quote-table .value { width: 65%; }
         .muted { font-size: 9pt; color: #6c757d; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
-        .page-break { page-break-before: always; }
+        .page-break { page-break-before: always; height: 0; margin: 0; padding: 0; }
         .accept-box { width: 100%; border-collapse: collapse; margin-top: 2mm; font-size: 10pt; }
         .accept-box td { border: 0.5px solid #000; width: 50%; height: 30mm; vertical-align: top; padding: 4px; text-align: left; }
-        .terms-title { font-size: 11pt; font-weight: 700; margin: 0 0 1.5mm 0; }
-        .terms-section-title { font-size: 10.5pt; font-weight: 700; margin: 0 0 1.5mm 0; }
-        ol { margin: 0 0 2mm 0; padding-left: 5mm; font-size: 9pt; }
+        .terms-title { font-size: 11pt; font-weight: 700; margin: 0 0 1.5mm 0; page-break-after: avoid; break-after: avoid; }
+        .terms-section-title { font-size: 10.5pt; font-weight: 700; margin: 0 0 1.5mm 0; page-break-after: avoid; break-after: avoid; }
+        ol { margin: 0 0 2mm 0; padding-left: 5mm; font-size: 10pt; line-height: 1.35; }
         li { margin-bottom: 1.2mm; }
 
         .title-box {
@@ -51,13 +51,24 @@
             font-weight: 700;
             color: #003c00;
         }
-        .section-title { margin: 0 0 1.2mm 0; color: #006400; font-size: 11pt; font-weight: 700; }
-        .section-body { margin: 0 0 3mm 0; font-size: 10pt; }
+        .section-title { margin: 0 0 1.2mm 0; color: #006400; font-size: 11pt; font-weight: 700; page-break-after: avoid; break-after: avoid; }
+        .section-body { margin: 0 0 3mm 0; font-size: 10pt; page-break-before: avoid; break-before: avoid; }
         .section-body p,
         .section-body ul,
         .section-body ol,
-        .section-body li { font-size: 10pt !important; line-height: 1.35 !important; }
+        .section-body li,
+        .section-body table,
+        .section-body th,
+        .section-body td { font-size: 10pt !important; line-height: 1.35 !important; }
         .section-body li * { font-size: inherit !important; line-height: inherit !important; }
+        .section-body ol > li::marker,
+        .section-body ul > li::marker { font-size: 10pt !important; }
+        .section-body h1,
+        .section-body h2,
+        .section-body h3,
+        .section-body h4,
+        .section-body h5,
+        .section-body h6 { font-size: 11pt !important; line-height: 1.3 !important; }
         .section-body p { margin: 0 0 2mm 0; }
         .section-body ul, .section-body ol { margin: 0 0 2mm 0; padding-left: 5mm; }
         .section-body li { margin-bottom: 0.8mm; }
@@ -190,32 +201,6 @@
             @endforeach
         </ol>
 
-        @if($appendProposal)
-            <div class="page-break"></div>
-            @include('pdf.partials.company-header', [
-                'documentType' => 'SERVICE PROPOSAL',
-                'pdfLanguage' => $pdfLanguage,
-                'logoDataUri' => $logoDataUri ?? null,
-            ])
-
-            @include('pdf.partials.ih-proposal-main-content', [
-                'proposalTitle' => $proposalTitle ?? 'Service Proposal',
-                'sections' => $proposalSections ?? [],
-            ])
-        @endif
-
-        @if($appendProposal && !empty($additionalInfoHtml))
-            <div class="page-break"></div>
-            @include('pdf.partials.company-header', [
-                'documentType' => 'SERVICE PROPOSAL',
-                'pdfLanguage' => $pdfLanguage,
-                'logoDataUri' => $logoDataUri ?? null,
-            ])
-
-            @include('pdf.partials.ih-proposal-additional-content', [
-                'additionalInfoHtml' => $additionalInfoHtml,
-            ])
-        @endif
     </main>
 </body>
 </html>

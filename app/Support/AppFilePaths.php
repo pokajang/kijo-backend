@@ -10,6 +10,7 @@ class AppFilePaths
 {
     private const PUBLIC_PREFIXES = [
         'catalog/',
+        'knowledge/',
         'sport-time/',
         'whats-new/',
     ];

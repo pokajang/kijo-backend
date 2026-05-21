@@ -108,7 +108,7 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
     {
         $logoDataUri = $this->companyLogoDataUri();
 
-        $proposalTitle = trim((string) ($proposal->service_title ?? '')) . ' Service Proposal';
+        $proposalTitle = $this->specialProposalTitle((string) ($proposal->service_title ?? ''));
         $contentHtml = $this->toRenderableRichText((string) ($proposal->content ?? ''));
 
         return view($this->pdfView('pdf.special-proposal', $proposal->proposal_language ?? 'en'), [
@@ -122,6 +122,24 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
     private function specialAttachmentForeignKey(): string
     {
         return $this->hasColumn('proposal_special_attachments', 'template_id') ? 'template_id' : 'proposal_id';
+    }
+
+    private function specialProposalTitle(string $serviceTitle): string
+    {
+        $serviceTitle = trim($serviceTitle);
+        if ($serviceTitle === '') {
+            return 'Service Proposal';
+        }
+
+        if (preg_match('/\bproposal$/i', $serviceTitle)) {
+            return $serviceTitle;
+        }
+
+        if (preg_match('/\bservice$/i', $serviceTitle)) {
+            return $serviceTitle . ' Proposal';
+        }
+
+        return $serviceTitle . ' Service Proposal';
     }
 
     private function specialAttachmentNameColumn(): string

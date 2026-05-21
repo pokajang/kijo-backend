@@ -10,9 +10,10 @@
 <div class="title-box">{{ $proposalTitle ?? '' }}{{ $partialLanguage === 'ms-MY' ? ' Cadangan Perkhidmatan Pembekalan Tenaga Kerja' : ' Manpower Supply Service Proposal' }}</div>
 
 @foreach(($sections ?? []) as $section)
-    @if(!empty(trim((string) ($section['content'] ?? ''))))
+    @php($sectionContentHtml = (string) ($section['contentHtml'] ?? $section['content'] ?? ''))
+    @if(!empty(trim(strip_tags($sectionContentHtml))))
         @php($sectionTitle = (string) ($section['title'] ?? ''))
         <p class="section-title">{{ $partialLanguage === 'ms-MY' ? ($sectionLabels[$sectionTitle] ?? $sectionTitle) : $sectionTitle }}</p>
-        <div class="section-body">{!! $section['contentHtml'] ?? '' !!}</div>
+        <div class="section-body">{!! $sectionContentHtml !!}</div>
     @endif
 @endforeach

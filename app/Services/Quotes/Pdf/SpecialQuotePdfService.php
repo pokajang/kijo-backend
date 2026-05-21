@@ -70,6 +70,7 @@ class SpecialQuotePdfService
 
         $appendProposal = (int) ($quote->attach_proposal ?? 0) === 1 && (int) ($quote->sp_id ?? 0) > 0;
         $appendProposalContent = false;
+        $proposalServiceTitle = '';
         $proposalTitle = '';
         $proposalContentHtml = '';
         $proposalPdfAttachmentPaths = [];
@@ -80,7 +81,8 @@ class SpecialQuotePdfService
                 ->first();
 
             if ($specialProposal) {
-                $proposalTitle = trim((string) ($specialProposal->service_title ?? '')) . ' Service Proposal';
+                $proposalServiceTitle = trim((string) ($specialProposal->service_title ?? ''));
+                $proposalTitle = $this->specialProposalTitle($proposalServiceTitle);
                 $proposalContentHtml = $this->renderer->toRenderableRichText((string) ($specialProposal->content ?? ''));
 
                 $attachmentFk = $this->specialAttachmentForeignKey();
@@ -153,7 +155,7 @@ class SpecialQuotePdfService
             'grandTotal' => $grandTotal,
             'preparedByName' => (string) ($quote->created_by_name ?? ''),
             'signOffTitle' => $signOffTitle,
-            'appendProposalContent' => $appendProposalContent,
+            'appendProposalContent' => false,
             'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Service Proposal',
             'proposalContentHtml' => $proposalContentHtml,
             'logoDataUri' => $logoDataUri,
@@ -161,6 +163,20 @@ class SpecialQuotePdfService
 
         $dompdf = $this->renderer->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
         $quotePdfBytes = $dompdf->output();
+
+        if ($appendProposalContent) {
+            $proposalHtml = view($this->renderer->pdfView('pdf.special-proposal', $quote->proposal_language ?? 'en'), [
+                'proposal' => (object) [
+                    'service_title' => $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                    'proposal_language' => $quote->proposal_language ?? 'en',
+                ],
+                'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Service Proposal',
+                'contentHtml' => $proposalContentHtml,
+                'logoDataUri' => $logoDataUri,
+            ])->render();
+            $proposalPdf = $this->renderer->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $proposalPdfAttachmentPaths = [$proposalPdf, ...$proposalPdfAttachmentPaths];
+        }
 
         if (!empty($proposalPdfAttachmentPaths)) {
             $mergedBytes = $this->pdfMerge->mergeSequence([
@@ -187,6 +203,24 @@ class SpecialQuotePdfService
     private function specialAttachmentForeignKey(): string
     {
         return $this->hasColumn('proposal_special_attachments', 'template_id') ? 'template_id' : 'proposal_id';
+    }
+
+    private function specialProposalTitle(string $serviceTitle): string
+    {
+        $serviceTitle = trim($serviceTitle);
+        if ($serviceTitle === '') {
+            return 'Service Proposal';
+        }
+
+        if (preg_match('/\bproposal$/i', $serviceTitle)) {
+            return $serviceTitle;
+        }
+
+        if (preg_match('/\bservice$/i', $serviceTitle)) {
+            return $serviceTitle . ' Proposal';
+        }
+
+        return $serviceTitle . ' Service Proposal';
     }
 
     private function specialAttachmentPathColumn(): string

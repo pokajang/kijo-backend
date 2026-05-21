@@ -8,11 +8,11 @@
     <meta charset="utf-8">
     <title>{{ $quoteRefNo ?? $L('QUOTATION', 'Special Quote') }}</title>
     <style>
-        @page { margin: 10mm 20mm 10mm 20mm; }
+        @page { margin: 36mm 20mm 16mm 20mm; }
         body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.35; text-align: justify; }
         p { margin: 0 0 2mm 0; }
 
-        .pdf-header { color: #696969; margin-bottom: 4mm; }
+        .pdf-header { position: fixed; top: -26mm; left: 0; right: 0; height: 24mm; color: #696969; margin-bottom: 0; }
         .header-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .header-table td { vertical-align: top; padding: 0; border: 0; }
         .header-left { width: 68%; text-align: left; }
@@ -38,12 +38,12 @@
         .muted { font-size: 9pt; color: #6c757d; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
-        .page-break { page-break-before: always; }
+        .page-break { page-break-before: always; height: 0; margin: 0; padding: 0; }
         .accept-box { width: 100%; border-collapse: collapse; margin-top: 2mm; font-size: 10pt; }
         .accept-box td { border: 0.5px solid #000; width: 50%; height: 30mm; vertical-align: top; padding: 4px; text-align: left; }
-        .terms-title { font-size: 11pt; font-weight: 700; margin: 3mm 0 1.5mm 0; }
-        .terms-section-title { font-size: 10.5pt; font-weight: 700; margin: 0 0 1.5mm 0; }
-        ol { margin: 0 0 2mm 0; padding-left: 5mm; font-size: 9pt; }
+        .terms-title { font-size: 11pt; font-weight: 700; margin: 3mm 0 1.5mm 0; page-break-after: avoid; break-after: avoid; }
+        .terms-section-title { font-size: 10.5pt; font-weight: 700; margin: 0 0 1.5mm 0; page-break-after: avoid; break-after: avoid; }
+        ol { margin: 0 0 2mm 0; padding-left: 5mm; font-size: 10pt; line-height: 1.35; }
         li { margin-bottom: 1.2mm; }
 
         .title-box {
@@ -78,7 +78,10 @@
         .proposal-content h1, .proposal-content h2, .proposal-content h3, .proposal-content h4, .proposal-content h5, .proposal-content h6 {
             margin: 0 0 1.5mm 0;
             color: #006400;
+            font-size: 11pt !important;
             line-height: 1.3;
+            page-break-after: avoid;
+            break-after: avoid;
         }
     </style>
 </head>
@@ -227,18 +230,6 @@
             @endforeach
         </ol>
 
-        @if(!empty($appendProposalContent) && !empty($proposalContentHtml))
-            <div class="page-break"></div>
-            @include('pdf.partials.company-header', [
-                'documentType' => 'BROCHURE',
-                'pdfLanguage' => $pdfLanguage,
-                'logoDataUri' => $logoDataUri ?? null,
-            ])
-            @include('pdf.partials.special-proposal-content', [
-                'proposalTitle' => $proposalTitle ?? 'Service Proposal',
-                'contentHtml' => $proposalContentHtml,
-            ])
-        @endif
     </main>
 </body>
 </html>

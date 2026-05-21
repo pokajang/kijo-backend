@@ -44,7 +44,7 @@ class AppNotificationService
 
     public function createForStaff(array $staffIds, array $payload): void
     {
-        if (!Schema::hasTable(self::TABLE)) {
+        if (! Schema::hasTable(self::TABLE)) {
             return;
         }
 
@@ -78,7 +78,7 @@ class AppNotificationService
         int $entityId,
         ?array $types = null,
     ): array {
-        if (!Schema::hasTable(self::TABLE)) {
+        if (! Schema::hasTable(self::TABLE)) {
             return [];
         }
 
@@ -110,7 +110,7 @@ class AppNotificationService
         int $entityId,
         ?string $routePrefix = null,
     ): int {
-        if (!Schema::hasTable(self::TABLE)) {
+        if (! Schema::hasTable(self::TABLE)) {
             return 0;
         }
 
@@ -128,8 +128,51 @@ class AppNotificationService
             ->whereNull('resolved_at');
 
         if ($routePrefix !== null && $routePrefix !== '') {
-            $query->where('route', 'like', $routePrefix . '%');
+            $query->where('route', 'like', $routePrefix.'%');
         }
+
+        return $query->update([
+            'read_at' => now(),
+            'consumed_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    public function consumeRouteGroup(
+        Request $request,
+        string $routePrefix,
+        ?array $moduleKeys = null,
+    ): int {
+        if (! Schema::hasTable(self::TABLE)) {
+            return 0;
+        }
+
+        $staffId = (int) $request->session()->get('staff_id', 0);
+        $routePrefix = rtrim(trim($routePrefix), '/');
+
+        if ($staffId <= 0 || $routePrefix === '') {
+            return 0;
+        }
+
+        $moduleKeys = array_values(array_unique(array_filter(array_map(
+            static fn ($key): string => trim((string) $key),
+            $moduleKeys ?? [],
+        ))));
+
+        if (empty($moduleKeys)) {
+            return 0;
+        }
+
+        $query = DB::table(self::TABLE)
+            ->where('recipient_staff_id', $staffId)
+            ->where(function ($query) use ($routePrefix): void {
+                $query
+                    ->where('route', $routePrefix)
+                    ->orWhere('route', 'like', $routePrefix.'/%');
+            })
+            ->whereNull('consumed_at')
+            ->whereNull('resolved_at');
+        $query->whereIn('module_key', $moduleKeys);
 
         return $query->update([
             'read_at' => now(),
@@ -140,7 +183,7 @@ class AppNotificationService
 
     public function staffIdsForRoles(array $allowedRoles): array
     {
-        if (!Schema::hasTable('system_users')) {
+        if (! Schema::hasTable('system_users')) {
             return [];
         }
 
@@ -199,7 +242,7 @@ class AppNotificationService
 
     private function storedCounts(int $staffId): array
     {
-        if ($staffId <= 0 || !Schema::hasTable(self::TABLE)) {
+        if ($staffId <= 0 || ! Schema::hasTable(self::TABLE)) {
             return [];
         }
 
@@ -216,6 +259,7 @@ class AppNotificationService
                     $row->route ?? null,
                 );
                 $counts[$moduleKey] = ($counts[$moduleKey] ?? 0) + (int) $row->count;
+
                 return $counts;
             }, []);
     }
@@ -233,7 +277,7 @@ class AppNotificationService
 
     private function leaveAttentionCount(Request $request): int
     {
-        if (!Schema::hasTable('hr_leaves_application')) {
+        if (! Schema::hasTable('hr_leaves_application')) {
             return 0;
         }
 
@@ -293,7 +337,7 @@ class AppNotificationService
         }
 
         $configuredStaffIds = $this->configuredLeaveWorkflowStaffIds($stageKey);
-        if (!empty($configuredStaffIds)) {
+        if (! empty($configuredStaffIds)) {
             return in_array($staffId, $configuredStaffIds, true);
         }
 
@@ -302,7 +346,7 @@ class AppNotificationService
 
     private function configuredLeaveWorkflowStaffIds(string $stageKey): array
     {
-        if (!Schema::hasTable('hr_leave_workflow_recipients')) {
+        if (! Schema::hasTable('hr_leave_workflow_recipients')) {
             return [];
         }
 
@@ -329,8 +373,8 @@ class AppNotificationService
     {
         if (
             $staffId <= 0 ||
-            !Schema::hasTable('client_vendor_registrations') ||
-            !Schema::hasTable('client_vendor_registration_recipients')
+            ! Schema::hasTable('client_vendor_registrations') ||
+            ! Schema::hasTable('client_vendor_registration_recipients')
         ) {
             return 0;
         }
@@ -346,7 +390,7 @@ class AppNotificationService
 
     private function negotiationAttentionCount(Request $request): int
     {
-        if (!Schema::hasTable('quote_price_exception_requests')) {
+        if (! Schema::hasTable('quote_price_exception_requests')) {
             return 0;
         }
 
@@ -371,12 +415,12 @@ class AppNotificationService
 
         foreach (self::NEGOTIABLE_SERVICES as $service) {
             $table = self::SERVICE_TABLES[$service] ?? null;
-            if (!$table || !Schema::hasTable($table)) {
+            if (! $table || ! Schema::hasTable($table)) {
                 continue;
             }
 
             $query = DB::table('quote_price_exception_requests as r')
-                ->join($table . ' as q', 'q.id', '=', 'r.quote_id')
+                ->join($table.' as q', 'q.id', '=', 'r.quote_id')
                 ->where('r.request_type', 'quote')
                 ->where('r.service_group', $service)
                 ->where('r.quote_id', '>', 0)
@@ -404,7 +448,7 @@ class AppNotificationService
             }
 
             $ui = self::MODULE_UI[$moduleKey] ?? null;
-            if (!$ui) {
+            if (! $ui) {
                 continue;
             }
 
@@ -449,6 +493,6 @@ class AppNotificationService
         $roles = is_array($decoded) ? $decoded : (is_array($rawRoles) ? $rawRoles : [$rawRoles]);
         $normalized = array_map(static fn ($role) => strtolower(trim((string) $role)), $roles);
 
-        return !empty(array_intersect($allowedRoles, $normalized));
+        return ! empty(array_intersect($allowedRoles, $normalized));
     }
 }

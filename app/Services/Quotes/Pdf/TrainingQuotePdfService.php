@@ -11,7 +11,8 @@ class TrainingQuotePdfService
 {
     public function __construct(
         private AuditLogService $auditLog,
-        private QuotePdfRenderer $renderer
+        private QuotePdfRenderer $renderer,
+        private PdfMergeService $pdfMerge
     ) {}
 
     public function generate(Request $request, int $quoteId)
@@ -199,20 +200,39 @@ class TrainingQuotePdfService
             'generatedByCode' => $generatorCode,
             'generatedById' => $generatorId,
             'logoDataUri' => $logoDataUri,
-            'appendProposal' => $appendProposal,
+            'appendProposal' => false,
             'proposalTitle' => $proposalTitle,
             'proposalSections' => $proposalSections,
             'proposalAgendaByDay' => $proposalAgendaByDay,
         ])->render();
 
         $dompdf = $this->renderer->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $pdfBytes = $dompdf->output();
+
+        if ($appendProposal && !empty($proposalSections)) {
+            $proposalHtml = view($this->renderer->pdfView('pdf.training-proposal', $quote->proposal_language ?? 'en'), [
+                'proposal' => (object) [
+                    'training_title' => $proposalTitle,
+                    'proposal_language' => $quote->proposal_language ?? 'en',
+                ],
+                'proposalTitle' => $proposalTitle,
+                'sections' => $proposalSections,
+                'agendaByDay' => $proposalAgendaByDay,
+                'logoDataUri' => $logoDataUri,
+            ])->render();
+            $proposalPdf = $this->renderer->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $mergedBytes = $this->pdfMerge->mergeSequence([$pdfBytes, $proposalPdf]);
+            if ($mergedBytes !== null) {
+                $pdfBytes = $mergedBytes;
+            }
+        }
 
         $this->auditLog->log($request, "Generated training quotation PDF for quote ID #{$quoteId}");
 
         $safeClient = preg_replace('/[^A-Za-z0-9._-]+/', '_', (string) ($quote->client_name ?? 'client'));
         $filename = ((string) ($quote->quote_ref_no ?? "quote-{$quoteId}")) . '_' . trim($safeClient, '_') . '.pdf';
 
-        return response($dompdf->output(), 200, [
+        return response($pdfBytes, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => "inline; filename=\"{$filename}\"",
         ]);

@@ -4,11 +4,11 @@
     <meta charset="utf-8">
     <title>Quotation &mdash; {{ $quoteRefNo ?? 'Equipment Quote' }}</title>
     <style>
-        @page { margin: 10mm 20mm 10mm 20mm; }
+        @page { margin: 36mm 20mm 16mm 20mm; }
         body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.35; }
         p { margin: 0 0 2mm 0; }
 
-        .pdf-header { color: #696969; margin-bottom: 4mm; }
+        .pdf-header { position: fixed; top: -26mm; left: 0; right: 0; height: 24mm; color: #696969; margin-bottom: 0; }
         .header-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .header-table td { vertical-align: top; padding: 0; }
         .header-left { width: 68%; text-align: left; }
@@ -21,7 +21,7 @@
         .header-separator { margin-top: 1.3mm; border-bottom: 0.7px solid #696969; }
 
         .items-table { width: 100%; border-collapse: collapse; margin-top: 2mm; margin-bottom: 2mm; font-size: 10pt; }
-        .items-table th { background: #f4f4f4; font-weight: 700; border: 0.5px solid #999; padding: 3px 5px; text-align: center; font-size: 9.5pt; }
+        .items-table th { background: #f4f4f4; font-weight: 700; border: 0.5px solid #999; padding: 3px 5px; text-align: center; font-size: 10pt; }
         .items-table td { border: 0.5px solid #999; padding: 3px 5px; vertical-align: top; }
         .items-table td.num { text-align: center; }
         .items-table td.right { text-align: right; }
@@ -30,11 +30,11 @@
         .muted { font-size: 8.5pt; color: #6c757d; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
-        .page-break { page-break-before: always; }
+        .page-break { page-break-before: always; height: 0; margin: 0; padding: 0; }
         .accept-box { width: 100%; border-collapse: collapse; margin-top: 2mm; font-size: 10pt; }
         .accept-box td { border: 0.5px solid #000; width: 50%; height: 28mm; vertical-align: top; padding: 4px; }
-        .terms-title { font-size: 11pt; font-weight: 700; margin: 0 0 1.5mm 0; }
-        ol { margin: 0 0 2mm 0; padding-left: 5mm; font-size: 9pt; }
+        .terms-title { font-size: 11pt; font-weight: 700; margin: 0 0 1.5mm 0; page-break-after: avoid; break-after: avoid; }
+        ol { margin: 0 0 2mm 0; padding-left: 5mm; font-size: 10pt; line-height: 1.35; }
         li { margin-bottom: 1.2mm; }
     </style>
 </head>

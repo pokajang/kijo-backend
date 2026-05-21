@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Http\Middleware\RequireAuth;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -17,9 +20,9 @@ class AppNotificationSummaryFeatureTest extends TestCase
         Carbon::setTestNow('2026-05-19 09:00:00');
 
         $this->withoutMiddleware([
-            \App\Http\Middleware\RequireAuth::class,
-            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
-            \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+            RequireAuth::class,
+            ValidateCsrfToken::class,
+            VerifyCsrfToken::class,
         ]);
 
         foreach ([
@@ -398,6 +401,19 @@ class AppNotificationSummaryFeatureTest extends TestCase
                 'created_at' => now(),
                 'updated_at' => now(),
             ],
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 30,
+                'module_key' => 'my.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 13,
+                'type' => 'leave.approved',
+                'title' => 'Archived leave approved',
+                'route' => '/my/leaves-archive/records/13',
+                'severity' => 'success',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
         ]);
 
         $this->withSession(['staff_id' => 40, 'roles' => ['HR']])
@@ -422,5 +438,89 @@ class AppNotificationSummaryFeatureTest extends TestCase
                 ->where('type', 'leave.needs_recommendation')
                 ->value('consumed_at'),
         );
+    }
+
+    public function test_route_group_consumption_marks_personal_leave_table_notifications(): void
+    {
+        DB::table('in_app_notifications')->insert([
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 30,
+                'module_key' => 'my.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 10,
+                'type' => 'leave.approved',
+                'title' => 'Leave approved',
+                'route' => '/my/leaves/records/10',
+                'severity' => 'success',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 30,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 11,
+                'type' => 'leave.rejected',
+                'title' => 'Legacy leave rejected',
+                'route' => '/my/leaves/records/11',
+                'severity' => 'danger',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'recipient_staff_id' => 40,
+                'actor_staff_id' => 10,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => 12,
+                'type' => 'leave.needs_recommendation',
+                'title' => 'Leave request needs recommendation',
+                'route' => '/staff/leaves/records/12',
+                'severity' => 'warning',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->withSession(['staff_id' => 40, 'roles' => ['HR']])
+            ->postJson('/notifications/consume-route-group', [
+                'route_prefix' => '/my/leaves',
+                'module_keys' => ['my.leaves', 'staff.leaves'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.consumed_count', 2);
+
+        $this->assertSame(
+            2,
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 40)
+                ->whereIn('route', ['/my/leaves/records/10', '/my/leaves/records/11'])
+                ->whereNotNull('consumed_at')
+                ->count(),
+        );
+        $this->assertNull(
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 40)
+                ->where('route', 'like', '/staff/leaves%')
+                ->value('consumed_at'),
+        );
+        $this->assertNull(
+            DB::table('in_app_notifications')
+                ->where('recipient_staff_id', 40)
+                ->where('route', 'like', '/my/leaves-archive%')
+                ->value('consumed_at'),
+        );
+    }
+
+    public function test_route_group_consumption_requires_module_keys(): void
+    {
+        $this->withSession(['staff_id' => 40, 'roles' => ['Employee']])
+            ->postJson('/notifications/consume-route-group', [
+                'route_prefix' => '/my/leaves',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('module_keys');
     }
 }

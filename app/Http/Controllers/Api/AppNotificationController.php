@@ -42,4 +42,27 @@ class AppNotificationController extends Controller
             ],
         ]);
     }
+
+    public function consumeRouteGroup(Request $request, AppNotificationService $notifications): JsonResponse
+    {
+        $data = $request->validate([
+            'route_prefix' => ['required', 'string', 'max:255'],
+            'module_keys' => ['required', 'array', 'min:1'],
+            'module_keys.*' => ['string', 'max:80'],
+        ]);
+
+        $consumed = $notifications->consumeRouteGroup(
+            $request,
+            $data['route_prefix'],
+            $data['module_keys'] ?? null,
+        );
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'consumed_count' => $consumed,
+                'consumed' => $consumed,
+            ],
+        ]);
+    }
 }

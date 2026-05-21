@@ -33,6 +33,7 @@ use App\Http\Controllers\Api\ToolRequestController;
 use App\Http\Controllers\Api\GoogleController;
 use App\Http\Controllers\Api\HandbookController;
 use App\Http\Controllers\Api\InvoiceController;
+use App\Http\Controllers\Api\KnowledgeController;
 use App\Http\Controllers\Api\StatsController;
 use App\Http\Controllers\Api\VendorController;
 use App\Http\Controllers\Api\VendorLoaController;
@@ -54,6 +55,7 @@ Route::middleware('auth.session')->group(function () {
 
     Route::get('notifications/summary', [AppNotificationController::class, 'summary']);
     Route::post('notifications/consume-entity', [AppNotificationController::class, 'consumeEntity']);
+    Route::post('notifications/consume-route-group', [AppNotificationController::class, 'consumeRouteGroup']);
 
     // What's New notices
     Route::get('whats-new/latest',                    [WhatsNewController::class, 'latestUnread']);
@@ -67,6 +69,16 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('whats-new/{id}',                   [WhatsNewController::class, 'destroy'])->whereNumber('id');
     Route::post('whats-new/{id}/publish',             [WhatsNewController::class, 'publish'])->whereNumber('id');
     Route::post('whats-new/{id}/unpublish',           [WhatsNewController::class, 'unpublish'])->whereNumber('id');
+
+    // Knowledge Hub
+    Route::get('knowledge/articles',                   [KnowledgeController::class, 'index']);
+    Route::get('knowledge/articles/my',                [KnowledgeController::class, 'mine']);
+    Route::post('knowledge/articles',                  [KnowledgeController::class, 'store']);
+    Route::get('knowledge/articles/{slug}',            [KnowledgeController::class, 'show']);
+    Route::post('knowledge/articles/{id}',             [KnowledgeController::class, 'update'])->whereNumber('id');
+    Route::post('knowledge/articles/{id}/publish',     [KnowledgeController::class, 'publish'])->whereNumber('id');
+    Route::post('knowledge/articles/{id}/unpublish',   [KnowledgeController::class, 'unpublish'])->whereNumber('id');
+    Route::delete('knowledge/articles/{id}',           [KnowledgeController::class, 'destroy'])->whereNumber('id');
 
     // Batch 1 — Feedback
     Route::get('feedback',         [FeedbackController::class, 'index']);

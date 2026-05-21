@@ -4,12 +4,16 @@ namespace App\Services\QuoteRecords;
 
 use App\Services\AuditLogService;
 use App\Services\Pdf\PdfRenderer;
+use App\Services\Quotes\Pdf\PdfMergeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ManpowerQuoteRecordPdfService extends PdfRenderer
 {
-    public function __construct(private AuditLogService $auditLog) {}
+    public function __construct(
+        private AuditLogService $auditLog,
+        private PdfMergeService $pdfMerge
+    ) {}
 
     public function pdfManpower(Request $request, int $id = 0): mixed
     {
@@ -88,7 +92,11 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
                 ] as $title => $content) {
                     $plain = trim(str_replace("\xc2\xa0", ' ', strip_tags(html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8'))));
                     if ($plain !== '') {
-                        $proposalSections[] = ['title' => $title, 'contentHtml' => $content];
+                        $proposalSections[] = [
+                            'title' => $title,
+                            'content' => $content,
+                            'contentHtml' => $this->toRenderableRichText($content),
+                        ];
                     }
                 }
             } else {
@@ -140,20 +148,39 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
             'inquiryRemarks'     => (string) ($quote->inquiry_remarks ?? ''),
             'preparedByName'     => (string) ($quote->created_by_name ?? ''),
             'signOffTitle'       => $signOffTitle,
-            'appendProposal'     => $appendProposal,
+            'appendProposal'     => false,
             'proposalTitle'      => $proposalTitle ?: 'Service Proposal',
             'proposalSections'   => $proposalSections,
             'logoDataUri'        => $logoDataUri,
         ])->render();
 
         $dompdf = $this->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $pdfBytes = $dompdf->output();
+
+        if ($appendProposal && !empty($proposalSections)) {
+            $proposalServiceTitle = trim(preg_replace('/\s+Manpower Supply Service Proposal$/i', '', $proposalTitle) ?? '');
+            $proposalHtml = view($this->pdfView('pdf.manpower-proposal', $quote->proposal_language ?? 'en'), [
+                'proposal' => (object) [
+                    'service_title' => $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                    'proposal_language' => $quote->proposal_language ?? 'en',
+                ],
+                'proposalTitle' => $proposalTitle ?: 'Service Proposal',
+                'sections' => $proposalSections,
+                'logoDataUri' => $logoDataUri,
+            ])->render();
+            $proposalPdf = $this->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $mergedBytes = $this->pdfMerge->mergeSequence([$pdfBytes, $proposalPdf]);
+            if ($mergedBytes !== null) {
+                $pdfBytes = $mergedBytes;
+            }
+        }
 
         $this->auditLog->log($request, "Generated Manpower quotation PDF for quote ID #{$quoteId}");
 
         $safeClient = preg_replace('/[^A-Za-z0-9._-]+/', '_', (string) ($quote->client_name ?? 'client'));
         $filename   = ((string) ($quote->quote_ref_no ?? "quote-{$quoteId}")) . '_' . trim($safeClient, '_') . '.pdf';
 
-        return response($dompdf->output(), 200, [
+        return response($pdfBytes, 200, [
             'Content-Type'        => 'application/pdf',
             'Content-Disposition' => "inline; filename=\"{$filename}\"",
         ]);
