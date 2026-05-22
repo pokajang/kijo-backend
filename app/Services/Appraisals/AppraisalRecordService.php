@@ -35,6 +35,7 @@ class AppraisalRecordService extends AppraisalBaseService
             'feedback'   => $data['input'],
             'created_by' => $createdBy,
             'created_at' => now(),
+            'updated_at' => now(),
         ]);
 
         $this->auditLog->log($request, "Created appraisal #{$appraisalId} for staff #{$data['staffId']}");

@@ -12,6 +12,8 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class ClientCompanyService extends ClientBaseService
 {
@@ -132,25 +134,29 @@ class ClientCompanyService extends ClientBaseService
 
         DB::beginTransaction();
         try {
+            $companyUpdate = [
+                'company_name' => $companyName,
+                'ssm_number' => trim((string) ($data['ssm_number'] ?? '')),
+                'tax_id_no_tin' => trim((string) ($data['tax_id_no_tin'] ?? '')),
+                'client_status' => $clientStatus,
+                'payment_terms_days' => $paymentTermsDays,
+                'address' => trim((string) ($data['address'] ?? '')),
+                'city' => trim((string) ($data['city'] ?? '')),
+                'state' => $state,
+                'zip' => trim((string) ($data['zip'] ?? '')),
+            ];
+            if (Schema::hasColumn('client_company', 'updated_at')) {
+                $companyUpdate['updated_at'] = now();
+            }
+
             DB::table('client_company')
                 ->where('company_id', $companyId)
-                ->update([
-                    'company_name' => $companyName,
-                    'ssm_number' => trim((string) ($data['ssm_number'] ?? '')),
-                    'tax_id_no_tin' => trim((string) ($data['tax_id_no_tin'] ?? '')),
-                    'client_status' => $clientStatus,
-                    'payment_terms_days' => $paymentTermsDays,
-                    'address' => trim((string) ($data['address'] ?? '')),
-                    'city' => trim((string) ($data['city'] ?? '')),
-                    'state' => $state,
-                    'zip' => trim((string) ($data['zip'] ?? '')),
-                    'updated_at' => now(),
-                ]);
+                ->update($companyUpdate);
 
             if (is_array($data['pic_list'] ?? null)) {
                 $existingPicIds = DB::table('client_pic')
                     ->where('company_id', $companyId)
-                    ->whereNull('deleted_at')
+                    ->when(Schema::hasColumn('client_pic', 'deleted_at'), fn ($query) => $query->whereNull('deleted_at'))
                     ->whereNotNull('pic_id')
                     ->pluck('pic_id')
                     ->map(static fn ($id): int => (int) $id)
@@ -222,7 +228,7 @@ class ClientCompanyService extends ClientBaseService
             if (is_array($data['branch_list'] ?? null)) {
                 $existingBranchIds = DB::table('client_company_branch')
                     ->where('company_id', $companyId)
-                    ->whereNull('deleted_at')
+                    ->when(Schema::hasColumn('client_company_branch', 'deleted_at'), fn ($query) => $query->whereNull('deleted_at'))
                     ->whereNotNull('branch_id')
                     ->pluck('branch_id')
                     ->map(static fn ($id): int => (int) $id)
@@ -256,13 +262,18 @@ class ClientCompanyService extends ClientBaseService
                     ];
 
                     if ($branchId > 0 && in_array($branchId, $existingBranchIds, true)) {
+                        $branchRestore = [];
+                        if (Schema::hasColumn('client_company_branch', 'deleted_at')) {
+                            $branchRestore['deleted_at'] = null;
+                        }
+                        if (Schema::hasColumn('client_company_branch', 'deleted_by')) {
+                            $branchRestore['deleted_by'] = null;
+                        }
+
                         DB::table('client_company_branch')
                             ->where('branch_id', $branchId)
                             ->where('company_id', $companyId)
-                            ->update($params + [
-                                'deleted_at' => null,
-                                'deleted_by' => null,
-                            ]);
+                            ->update($params + $branchRestore);
 
                         $keptExistingIds[] = $branchId;
                     } else {
@@ -272,19 +283,25 @@ class ClientCompanyService extends ClientBaseService
 
                 $toDelete = array_values(array_diff($existingBranchIds, $keptExistingIds));
                 foreach ($toDelete as $branchIdToDelete) {
+                    $branchDelete = ['status' => 'inactive'];
+                    if (Schema::hasColumn('client_company_branch', 'deleted_at')) {
+                        $branchDelete['deleted_at'] = now();
+                    }
+
                     DB::table('client_company_branch')
                         ->where('branch_id', $branchIdToDelete)
                         ->where('company_id', $companyId)
-                        ->update([
-                            'deleted_at' => now(),
-                            'status' => 'inactive',
-                        ]);
+                        ->update($branchDelete);
                 }
             }
 
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            Log::error('Failed to update client company.', [
+                'company_id' => $companyId,
+                'exception' => $e,
+            ]);
             return $this->error('Database error.', 500);
         }
 
@@ -304,32 +321,40 @@ class ClientCompanyService extends ClientBaseService
 
         DB::beginTransaction();
         try {
+            $companyDelete = ['status' => 'inactive'];
+            if (Schema::hasColumn('client_company', 'deleted_at')) {
+                $companyDelete['deleted_at'] = now();
+            }
+            if (Schema::hasColumn('client_company', 'deleted_by')) {
+                $companyDelete['deleted_by'] = $deletedBy;
+            }
+
             $affected = DB::table('client_company')
                 ->where('company_id', $companyId)
-                ->whereNull('deleted_at')
-                ->update([
-                    'status' => 'inactive',
-                    'deleted_at' => now(),
-                    'deleted_by' => $deletedBy,
-                ]);
+                ->when(Schema::hasColumn('client_company', 'deleted_at'), fn ($query) => $query->whereNull('deleted_at'))
+                ->update($companyDelete);
 
             if ($affected === 0) {
                 DB::rollBack();
                 return $this->error('Company not found or already deleted.', 404);
             }
 
+            $branchDelete = ['status' => 'inactive'];
+            if (Schema::hasColumn('client_company_branch', 'deleted_at')) {
+                $branchDelete['deleted_at'] = now();
+            }
+            if (Schema::hasColumn('client_company_branch', 'deleted_by')) {
+                $branchDelete['deleted_by'] = $deletedBy;
+            }
+
             DB::table('client_company_branch')
                 ->where('company_id', $companyId)
-                ->whereNull('deleted_at')
-                ->update([
-                    'status' => 'inactive',
-                    'deleted_at' => now(),
-                    'deleted_by' => $deletedBy,
-                ]);
+                ->when(Schema::hasColumn('client_company_branch', 'deleted_at'), fn ($query) => $query->whereNull('deleted_at'))
+                ->update($branchDelete);
 
             DB::table('client_pic')
                 ->where('company_id', $companyId)
-                ->whereNull('deleted_at')
+                ->when(Schema::hasColumn('client_pic', 'deleted_at'), fn ($query) => $query->whereNull('deleted_at'))
                 ->update([
                     'company_id' => null,
                     'status' => 'unassigned',
