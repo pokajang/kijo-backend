@@ -69,6 +69,8 @@ class KnowledgeService
         'archived',
     ];
 
+    private const SEARCH_TEXT_MAX_LENGTH = 12000;
+
     private array $pendingImagePaths = [];
     private array $deferredDeletePaths = [];
 
@@ -276,11 +278,12 @@ class KnowledgeService
             'updated_by_name_code' => $this->nameCode($request),
             'updated_at' => now(),
         ]);
-        $this->insertEditLog($id, $request, $status, match ($status) {
+        $remarks = $this->nullableTrim($request->input('edit_remarks')) ?: match ($status) {
             'published' => 'Published article.',
             'archived' => 'Archived article.',
             default => 'Unpublished article.',
-        });
+        };
+        $this->insertEditLog($id, $request, $status, $remarks);
 
         return response()->json([
             'status' => 'success',
@@ -514,6 +517,7 @@ class KnowledgeService
     private function formatArticle(object $article, array $images = [], bool $includeBody = false): array
     {
         $decodedTags = $article->tags !== null ? json_decode((string) $article->tags, true) : [];
+        $tags = is_array($decodedTags) ? array_values(array_filter($decodedTags, 'is_string')) : [];
 
         return [
             'id' => (int) $article->id,
@@ -522,7 +526,7 @@ class KnowledgeService
             'summary' => $article->summary,
             'body_html' => $includeBody ? $article->body_html : null,
             'category' => (string) $article->category,
-            'tags' => is_array($decodedTags) ? array_values(array_filter($decodedTags, 'is_string')) : [],
+            'tags' => $tags,
             'related_route' => $article->related_route,
             'contributor_note' => $article->contributor_note,
             'status' => (string) $article->status,
@@ -532,10 +536,47 @@ class KnowledgeService
             'created_by_staff_id' => $article->created_by_staff_id ? (int) $article->created_by_staff_id : null,
             'created_by_name_code' => $article->created_by_name_code,
             'updated_by_name_code' => $article->updated_by_name_code,
+            'search_text' => $this->searchTextForArticle($article, $tags),
             'images' => $images,
             'latest_edit_log' => $includeBody ? $this->latestEditLogForArticle((int) $article->id) : null,
             'edit_logs' => $includeBody ? $this->editLogsForArticle((int) $article->id) : [],
         ];
+    }
+
+    private function searchTextForArticle(object $article, array $tags): string
+    {
+        $text = $this->normalizePlainText(implode(' ', array_filter([
+            $article->title ?? '',
+            $article->summary ?? '',
+            $article->category ?? '',
+            implode(' ', $tags),
+            $article->related_route ?? '',
+            $article->created_by_name_code ?? '',
+            $article->updated_by_name_code ?? '',
+            $this->plainTextFromHtml((string) ($article->body_html ?? '')),
+        ], fn ($value) => trim((string) $value) !== '')));
+
+        return Str::limit($text, self::SEARCH_TEXT_MAX_LENGTH, '');
+    }
+
+    private function plainTextFromHtml(string $html): string
+    {
+        $withoutUnsafeBlocks = preg_replace(
+            '/<(script|style)\b[^>]*>.*?<\/\1>/is',
+            '',
+            $html,
+        ) ?? '';
+
+        return $this->normalizePlainText(html_entity_decode(
+            strip_tags($withoutUnsafeBlocks),
+            ENT_QUOTES | ENT_HTML5,
+            'UTF-8',
+        ));
+    }
+
+    private function normalizePlainText(string $text): string
+    {
+        return trim((string) preg_replace('/[\s\x{00A0}]+/u', ' ', $text));
     }
 
     private function insertEditLog(int $articleId, Request $request, string $action, ?string $remarks): void

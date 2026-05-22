@@ -161,6 +161,52 @@ class KnowledgeControllerTest extends TestCase
         $this->assertSame([], array_column($body['data'], 'title'));
     }
 
+    public function test_list_response_includes_safe_search_text_with_body_keywords(): void
+    {
+        $controller = app(KnowledgeController::class);
+        $this->insertArticle([
+            'title' => 'Proposal Guide',
+            'slug' => 'proposal-guide',
+            'summary' => 'Create proposal templates.',
+            'body_html' => '<h2>BM proposal</h2><script>alert("bad")</script><p>Machine translated Bahasa Melayu copy.</p>',
+            'category' => 'Proposals',
+            'tags' => json_encode(['proposal', 'bm']),
+            'related_route' => '/templates/create',
+            'status' => 'published',
+            'published_at' => now(),
+            'created_by_name_code' => 'ST7',
+            'updated_by_name_code' => 'ST8',
+        ]);
+
+        $body = $controller->index($this->request('GET', ['staff_id' => 7]))->getData(true);
+        $searchText = $body['data'][0]['search_text'];
+
+        $this->assertStringContainsString('Proposal Guide', $searchText);
+        $this->assertStringContainsString('Machine translated Bahasa Melayu copy.', $searchText);
+        $this->assertStringContainsString('/templates/create', $searchText);
+        $this->assertStringContainsString('ST8', $searchText);
+        $this->assertStringNotContainsString('<h2>', $searchText);
+        $this->assertStringNotContainsString('<script', $searchText);
+        $this->assertStringNotContainsString('alert("bad")', $searchText);
+        $this->assertNull($body['data'][0]['body_html']);
+    }
+
+    public function test_list_response_caps_search_text_length(): void
+    {
+        $controller = app(KnowledgeController::class);
+        $this->insertArticle([
+            'title' => 'Long Guide',
+            'slug' => 'long-guide',
+            'body_html' => '<p>' . str_repeat('long searchable keyword ', 1200) . '</p>',
+            'status' => 'published',
+            'published_at' => now(),
+        ]);
+
+        $body = $controller->index($this->request('GET', ['staff_id' => 7]))->getData(true);
+
+        $this->assertLessThanOrEqual(12000, strlen($body['data'][0]['search_text']));
+    }
+
     public function test_authenticated_staff_can_update_shared_article_with_remarks(): void
     {
         $controller = app(KnowledgeController::class);
@@ -204,6 +250,25 @@ class KnowledgeControllerTest extends TestCase
         ]), $articleId);
 
         $this->assertSame(422, $response->getStatusCode());
+    }
+
+    public function test_status_actions_store_supplied_edit_remarks(): void
+    {
+        $controller = app(KnowledgeController::class);
+        $articleId = $this->insertArticle([
+            'title' => 'Draft Guide',
+            'slug' => 'draft-guide',
+            'status' => 'draft',
+        ]);
+
+        $response = $controller->publish($this->request('POST', ['staff_id' => 8, 'name_code' => 'ST8'], [
+            'edit_remarks' => 'Reviewed and ready for the team.',
+        ]), $articleId);
+        $body = $response->getData(true);
+
+        $this->assertSame('published', $body['data']['status']);
+        $this->assertSame('ST8', $body['data']['latest_edit_log']['name_code']);
+        $this->assertSame('Reviewed and ready for the team.', $body['data']['latest_edit_log']['remarks']);
     }
 
     public function test_slug_collision_uses_numeric_suffix(): void
