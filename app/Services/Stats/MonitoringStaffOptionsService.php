@@ -17,6 +17,7 @@ class MonitoringStaffOptionsService
     use MonitoringStatsStaffHelpers;
     use MonitoringStatsEventHelpers;
     use MonitoringStatsDetailHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:

@@ -190,6 +190,7 @@ class VendorPaymentService extends VendorBaseService
                 'created_by_name_code'  => $nameCode,
             ]);
         } catch (\Throwable $e) {
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error'], 500);
         }
 

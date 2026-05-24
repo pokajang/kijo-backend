@@ -50,6 +50,7 @@ class QuoteRecordFollowUpService
             ]);
             return response()->json(['status' => 'success', 'message' => 'Follow-up record added successfully']);
         } catch (\Throwable $e) {
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }

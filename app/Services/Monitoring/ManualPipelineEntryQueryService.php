@@ -61,8 +61,25 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
             });
         }
 
-        return $query->limit(1000)->get()->map(fn($entry) => [
+        return $query->limit(1000)->get()->map(fn($entry) => $this->mapEntry($entry, $sessionStaffId))->all();
+    }
+
+    public function find(Request $request, int $id): ?array
+    {
+        $entry = DB::table('monitoring_manual_pipeline_entries')->where('id', $id)->first();
+        if (!$entry) {
+            return null;
+        }
+
+        return $this->mapEntry($entry, (int) $request->session()->get('staff_id', 0));
+    }
+
+    private function mapEntry($entry, int $sessionStaffId): array
+    {
+        return [
             'id' => (int) $entry->id,
+            'recordSource' => 'manual',
+            'legalAssessmentId' => null,
             'entryType' => (string) $entry->entry_type,
             'prospectName' => (string) $entry->prospect_name,
             'entryDate' => (string) $entry->entry_date,
@@ -89,7 +106,7 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
                     (int) ($entry->created_by ?? 0) === $sessionStaffId
                     || (int) ($entry->owner_staff_id ?? 0) === $sessionStaffId
                 ),
-        ])->all();
+        ];
     }
 
     public function entriesTableReady(): bool

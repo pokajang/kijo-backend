@@ -71,6 +71,7 @@ class ClientPicService extends ClientBaseService
                     'status' => $status,
                 ]);
         } catch (\Throwable $e) {
+            report($e);
             return $this->error('Database error.', 500);
         }
 
@@ -94,6 +95,7 @@ class ClientPicService extends ClientBaseService
                     'status' => 'unassigned',
                 ]);
         } catch (\Throwable $e) {
+            report($e);
             return $this->error('Database error.', 500);
         }
 
@@ -115,6 +117,7 @@ class ClientPicService extends ClientBaseService
                 ->where('status', 'unassigned')
                 ->update(['deleted_at' => now()]);
         } catch (\Throwable $e) {
+            report($e);
             return $this->error('Failed to delete PIC.', 500);
         }
 

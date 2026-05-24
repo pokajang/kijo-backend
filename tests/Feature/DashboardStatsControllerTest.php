@@ -230,6 +230,131 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(['TR-Q-001'], collect($negotiation['details']['weekly']['W2']['items'])->pluck('quoteRefNo')->values()->all());
     }
 
+    public function test_free_legal_compliance_assessments_count_as_meeting_pitching_per_assessor(): void
+    {
+        $this->insertLegalComplianceAssessment([
+            'id' => 10,
+            'assessment_date' => '2026-05-16',
+            'selected_assessors' => [
+                [
+                    'value' => 1,
+                    'label' => 'Azam Bin Husain (AZA)',
+                    'data' => [
+                        'staff_id' => 1,
+                        'full_name' => 'Azam Bin Husain',
+                        'name_code' => 'AZA',
+                        'email' => 'azam@example.test',
+                    ],
+                ],
+                [
+                    'value' => 2,
+                    'label' => 'Bob Tester (BOB)',
+                    'data' => [
+                        'staff_id' => 2,
+                        'full_name' => 'Bob Tester',
+                        'name_code' => 'BOB',
+                        'email' => 'bob@example.test',
+                    ],
+                ],
+            ],
+        ]);
+        $this->insertLegalComplianceAssessment([
+            'id' => 11,
+            'assessment_date' => '2026-05-16',
+            'company_name' => 'Paid Assessment Sdn Bhd',
+            'template_snapshot' => ['assessment_tier' => 'paid'],
+        ]);
+        $this->insertLegalComplianceAssessment([
+            'id' => 12,
+            'assessment_date' => '2026-05-16',
+            'company_name' => 'Project Assessment Sdn Bhd',
+            'project_id' => 101,
+        ]);
+
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $meeting = collect($response->json('rows'))->firstWhere('label', 'MEETING/ PITCHING');
+        $items = collect($meeting['details']['weekly']['W3']['items']);
+
+        $this->assertSame(2, (int) $meeting['weekly']['W3']);
+        $this->assertSame(2, (int) $meeting['total']);
+        $this->assertSame(['AZA', 'BOB'], $items->pluck('ownerStaffCode')->sort()->values()->all());
+        $this->assertSame(['legal_compliance'], $items->pluck('sourceType')->unique()->values()->all());
+    }
+
+    public function test_legal_compliance_assessments_respect_staff_filter_and_appear_in_records(): void
+    {
+        $this->insertLegalComplianceAssessment([
+            'id' => 20,
+            'assessment_date' => '2026-05-16',
+            'company_name' => 'Filtered Legal Prospect',
+            'selected_assessors' => [
+                [
+                    'value' => 1,
+                    'label' => 'Azam Bin Husain (AZA)',
+                    'data' => [
+                        'staff_id' => 1,
+                        'full_name' => 'Azam Bin Husain',
+                        'name_code' => 'AZA',
+                        'email' => 'azam@example.test',
+                    ],
+                ],
+                [
+                    'value' => 2,
+                    'label' => 'Bob Tester (BOB)',
+                    'data' => [
+                        'staff_id' => 2,
+                        'full_name' => 'Bob Tester',
+                        'name_code' => 'BOB',
+                        'email' => 'bob@example.test',
+                    ],
+                ],
+            ],
+        ]);
+
+        $pipelineResponse = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+            'staff_code' => 'BOB',
+        ]);
+        $recordsResponse = $this->authenticatedPost('/stats/monitoring-manual-pipeline-entries', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+            'staff_code' => 'BOB',
+            'entry_type' => 'meeting_pitching',
+        ]);
+        $staffResponse = $this->authenticatedPost('/stats/monitoring-staff-options', []);
+
+        $pipelineResponse->assertOk()->assertJsonPath('status', 'success');
+        $recordsResponse->assertOk()->assertJsonPath('status', 'success');
+        $staffResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $meeting = collect($pipelineResponse->json('rows'))->firstWhere('label', 'MEETING/ PITCHING');
+        $record = collect($recordsResponse->json('entries'))->firstWhere('recordSource', 'legal_compliance');
+
+        $this->assertSame(1, (int) $meeting['weekly']['W3']);
+        $this->assertSame(['BOB'], collect($meeting['details']['weekly']['W3']['items'])->pluck('ownerStaffCode')->values()->all());
+        $this->assertNotNull($record);
+        $this->assertSame('meeting_pitching', $record['entryType']);
+        $this->assertSame('Free Legal Compliance Assessment', $record['source']);
+        $this->assertFalse((bool) $record['canUpdate']);
+        $this->assertFalse((bool) $record['canDelete']);
+        $this->assertContains('BOB', collect($staffResponse->json('staffOptions'))->pluck('value')->all());
+
+        $detailResponse = $this->authenticatedGet(
+            '/stats/monitoring-manual-pipeline-entry/' . rawurlencode((string) $record['id'])
+        );
+
+        $detailResponse->assertOk()->assertJsonPath('status', 'success');
+        $this->assertSame('legal_compliance', $detailResponse->json('entry.recordSource'));
+        $this->assertSame(20, (int) $detailResponse->json('entry.legalAssessmentId'));
+    }
+
     public function test_financial_open_receivables_are_scoped_by_as_of_date(): void
     {
         $totalsResponse = $this->authenticatedPost('/stats/monthly-income-statement', [
@@ -298,6 +423,21 @@ class DashboardStatsControllerTest extends TestCase
             ->postJson($uri, $payload);
     }
 
+    private function authenticatedGet(string $uri)
+    {
+        return $this
+            ->withSession([
+                '_token' => 'test-csrf-token',
+                'user_id' => 1,
+                'staff_id' => 1,
+                'name_code' => 'AZA',
+                'full_name' => 'Azam Bin Husain',
+                'roles' => ['System Admin'],
+            ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->getJson($uri);
+    }
+
     private function assertMonthlySalesMonths(array $expectedMonths, array $payload): void
     {
         $response = $this->authenticatedPost('/stats/monthly-sales', $payload);
@@ -351,6 +491,7 @@ class DashboardStatsControllerTest extends TestCase
             'staff_general',
             'system_users',
             'quote_price_exception_requests',
+            'legal_compliance_assessments',
         ] as $table) {
             Schema::dropIfExists($table);
         }
@@ -447,6 +588,29 @@ class DashboardStatsControllerTest extends TestCase
             $table->timestamp('used_at')->nullable();
             $table->timestamp('decision_email_sent_at')->nullable();
             $table->timestamp('request_email_sent_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('legal_compliance_assessments', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->unsignedBigInteger('template_id')->nullable();
+            $table->string('template_version', 50)->nullable();
+            $table->json('template_snapshot')->nullable();
+            $table->string('stage', 50)->default('details_saved');
+            $table->string('company_name')->nullable();
+            $table->text('site_location')->nullable();
+            $table->string('client_pic_name')->nullable();
+            $table->string('client_pic_email')->nullable();
+            $table->unsignedBigInteger('project_id')->nullable();
+            $table->string('project_name')->nullable();
+            $table->date('assessment_date')->nullable();
+            $table->text('assessor_name')->nullable();
+            $table->text('assessor_email')->nullable();
+            $table->json('selected_assessors')->nullable();
+            $table->timestamp('submitted_at')->nullable();
+            $table->unsignedBigInteger('submitted_by_staff_id')->nullable();
+            $table->timestamp('deleted_at')->nullable();
             $table->timestamps();
         });
 
@@ -559,12 +723,65 @@ class DashboardStatsControllerTest extends TestCase
         ]);
     }
 
+    private function insertLegalComplianceAssessment(array $overrides = []): void
+    {
+        $payload = [
+            'id' => $overrides['id'] ?? null,
+            'staff_id' => $overrides['staff_id'] ?? 1,
+            'template_id' => $overrides['template_id'] ?? null,
+            'template_version' => $overrides['template_version'] ?? 'v1',
+            'template_snapshot' => json_encode($overrides['template_snapshot'] ?? [
+                'assessment_tier' => 'free',
+            ]),
+            'stage' => $overrides['stage'] ?? 'submitted',
+            'company_name' => $overrides['company_name'] ?? 'Legal Prospect Sdn Bhd',
+            'site_location' => $overrides['site_location'] ?? 'Shah Alam',
+            'client_pic_name' => $overrides['client_pic_name'] ?? 'Client PIC',
+            'client_pic_email' => $overrides['client_pic_email'] ?? 'pic@example.test',
+            'project_id' => $overrides['project_id'] ?? null,
+            'project_name' => $overrides['project_name'] ?? null,
+            'assessment_date' => $overrides['assessment_date'] ?? '2026-05-16',
+            'assessor_name' => $overrides['assessor_name'] ?? 'Azam Bin Husain',
+            'assessor_email' => $overrides['assessor_email'] ?? 'azam@example.test',
+            'selected_assessors' => json_encode($overrides['selected_assessors'] ?? [
+                [
+                    'value' => 1,
+                    'label' => 'Azam Bin Husain (AZA) - azam@example.test',
+                    'data' => [
+                        'staff_id' => 1,
+                        'full_name' => 'Azam Bin Husain',
+                        'name_code' => 'AZA',
+                        'email' => 'azam@example.test',
+                    ],
+                ],
+            ]),
+            'submitted_at' => $overrides['submitted_at'] ?? '2026-05-17 09:00:00',
+            'submitted_by_staff_id' => $overrides['submitted_by_staff_id'] ?? 1,
+            'deleted_at' => $overrides['deleted_at'] ?? null,
+            'created_at' => $overrides['created_at'] ?? '2026-05-16 08:00:00',
+            'updated_at' => $overrides['updated_at'] ?? '2026-05-17 09:00:00',
+        ];
+
+        if ($payload['id'] === null) {
+            unset($payload['id']);
+        }
+
+        DB::table('legal_compliance_assessments')->insert($payload);
+    }
+
     private function seedDashboardFacts(): void
     {
         DB::table('staff_general')->insert([
-            'staff_id' => 1,
-            'name_code' => 'AZA',
-            'full_name' => 'Azam Bin Husain',
+            [
+                'staff_id' => 1,
+                'name_code' => 'AZA',
+                'full_name' => 'Azam Bin Husain',
+            ],
+            [
+                'staff_id' => 2,
+                'name_code' => 'BOB',
+                'full_name' => 'Bob Tester',
+            ],
         ]);
 
         DB::table('all_quotes')->insert([

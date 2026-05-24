@@ -81,6 +81,7 @@ class QuoteUtilityService
                 'created_at'   => now(),
             ]);
         } catch (\Throwable $e) {
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 

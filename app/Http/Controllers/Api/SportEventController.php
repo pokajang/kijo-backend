@@ -161,6 +161,7 @@ class SportEventController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             Storage::disk('public')->delete($storedPath);
             return response()->json(['success' => false, 'message' => 'Server error.'], 500);
         }
@@ -235,6 +236,7 @@ class SportEventController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             if ($storedPath) Storage::disk('public')->delete($storedPath);
             return response()->json(['success' => false, 'message' => 'Server error.'], 500);
         }
@@ -267,6 +269,7 @@ class SportEventController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['success' => false, 'message' => 'Server error.'], 500);
         }
 

@@ -55,6 +55,7 @@ class KpiController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json([
                 'status'  => 'error',
                 'message' => 'Failed to insert KPI parameters: ' . $e->getMessage(),
@@ -171,6 +172,7 @@ class KpiController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json([
                 'status'  => 'error',
                 'message' => 'Failed to update KPI parameters: ' . $e->getMessage(),

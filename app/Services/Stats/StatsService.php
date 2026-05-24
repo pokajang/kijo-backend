@@ -157,6 +157,11 @@ class StatsService
         return $this->monitoringManualStatsService()->monitoringManualPipelineEntries($request);
     }
 
+    public function monitoringManualPipelineEntry(Request $request): JsonResponse
+    {
+        return $this->monitoringManualStatsService()->monitoringManualPipelineEntry($request);
+    }
+
     public function deleteMonitoringManualPipelineEntry(Request $request): JsonResponse
     {
         return $this->monitoringManualStatsService()->deleteMonitoringManualPipelineEntry($request);

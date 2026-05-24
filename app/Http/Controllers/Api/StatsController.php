@@ -149,6 +149,11 @@ class StatsController extends Controller
         return $this->statsService()->monitoringManualPipelineEntries($request);
     }
 
+    public function monitoringManualPipelineEntry(Request $request): JsonResponse
+    {
+        return $this->statsService()->monitoringManualPipelineEntry($request);
+    }
+
     public function deleteMonitoringManualPipelineEntry(Request $request): JsonResponse
     {
         return $this->statsService()->deleteMonitoringManualPipelineEntry($request);

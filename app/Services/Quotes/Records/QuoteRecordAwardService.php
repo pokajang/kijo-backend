@@ -41,6 +41,7 @@ class QuoteRecordAwardService
             ]);
             return response()->json(['status' => 'success', 'message' => 'Quotation marked as Failed.']);
         } catch (\Throwable $e) {
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }

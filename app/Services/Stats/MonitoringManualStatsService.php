@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Schema;
 
 class MonitoringManualStatsService
 {
+    use MonitoringStatsLegalComplianceHelpers;
+
     /**
      * Dashboard metric contract:
      * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
@@ -78,11 +80,61 @@ class MonitoringManualStatsService
                 return $this->monitoringStaffForbiddenResponse();
             }
 
+            $entries = array_merge(
+                $this->manualPipelineEntryService()->list($request, $start, $end, $staffFilter),
+                $this->monitoringLegalCompliancePipelineEntries($request, $start, $end, $staffFilter)
+            );
+
+            usort($entries, function ($left, $right) {
+                $dateComparison = strcmp((string) ($right['entryDate'] ?? ''), (string) ($left['entryDate'] ?? ''));
+                if ($dateComparison !== 0) {
+                    return $dateComparison;
+                }
+
+                return strcmp((string) ($right['id'] ?? ''), (string) ($left['id'] ?? ''));
+            });
+
             return response()->json([
                 'status' => 'success',
-                'entries' => $this->manualPipelineEntryService()->list($request, $start, $end, $staffFilter),
+                'entries' => array_slice($entries, 0, 1000),
                 'staffOptions' => $this->buildMonitoringStaffOptions($request),
             ]);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
+        }
+    }
+
+    public function monitoringManualPipelineEntry(Request $request): JsonResponse
+    {
+        try {
+            if (!$this->manualPipelineEntryService()->entriesTableReady()) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Manual monitoring entries table is not available.',
+                ], 409);
+            }
+
+            $id = (string) $request->route('id', '');
+
+            if (str_starts_with($id, 'legal-compliance:')) {
+                $entry = $this->monitoringLegalCompliancePipelineEntryById($request, $id);
+
+                return $entry
+                    ? response()->json(['status' => 'success', 'entry' => $entry])
+                    : response()->json(['status' => 'error', 'message' => 'Pipeline entry not found.'], 404);
+            }
+
+            $manualId = (int) $id;
+            if ($manualId <= 0 || (string) $manualId !== $id) {
+                return response()->json(['status' => 'error', 'message' => 'Invalid pipeline entry id.'], 400);
+            }
+
+            $entry = $this->manualPipelineEntryService()->find($request, $manualId);
+
+            return $entry
+                ? response()->json(['status' => 'success', 'entry' => $entry])
+                : response()->json(['status' => 'error', 'message' => 'Pipeline entry not found.'], 404);
         } catch (\Throwable $e) {
             report($e);
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
@@ -158,6 +210,10 @@ class MonitoringManualStatsService
                     'label' => trim(strtoupper((string) $row->staff_code) . ' - ' . $row->staff_name),
                 ];
             }
+        }
+
+        foreach ($this->monitoringLegalComplianceStaffOptions() as $option) {
+            $options[] = $option;
         }
 
         $options = collect($options)

@@ -177,6 +177,7 @@ class ProjectMutationService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Failed to delete project: ' . $e->getMessage()]);
         }
 
@@ -227,6 +228,7 @@ class ProjectMutationService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error: ' . $e->getMessage()]);
         }
 

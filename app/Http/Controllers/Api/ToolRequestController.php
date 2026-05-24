@@ -68,6 +68,7 @@ class ToolRequestController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 
@@ -104,6 +105,7 @@ class ToolRequestController extends Controller
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 

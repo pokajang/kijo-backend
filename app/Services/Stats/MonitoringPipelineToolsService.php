@@ -17,6 +17,7 @@ class MonitoringPipelineToolsService
     use MonitoringStatsStaffHelpers;
     use MonitoringStatsEventHelpers;
     use MonitoringStatsDetailHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:
@@ -78,6 +79,7 @@ class MonitoringPipelineToolsService
             $rows = [];
 
             $manualEntries = $this->monitoringManualEntries($context, $staffFilter);
+            $legalComplianceEvents = $this->monitoringLegalComplianceAssessmentEvents($context, $staffFilter);
             $quoteIssuedEvents = $this->monitoringQuoteActivityEvents($quotes, 'proposal-quote', 'individual', true);
             $rows[] = $this->monitoringToolsDistinctRow(
                 'LEADS',
@@ -99,7 +101,10 @@ class MonitoringPipelineToolsService
 
             $rows[] = $this->monitoringToolsDistinctRow(
                 'MEETING/ PITCHING',
-                $manualEntries['events']['MEETING/ PITCHING'] ?? [],
+                array_merge(
+                    $manualEntries['events']['MEETING/ PITCHING'] ?? [],
+                    $legalComplianceEvents
+                ),
                 $context['weeks']
             );
 

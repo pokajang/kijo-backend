@@ -47,6 +47,11 @@ class ManualPipelineEntryService
         return $this->manualPipelineEntryQueryService()->list($request, $start, $end, $staffFilter);
     }
 
+    public function find(Request $request, int $id): ?array
+    {
+        return $this->manualPipelineEntryQueryService()->find($request, $id);
+    }
+
     public function entriesTableReady(): bool
     {
         return $this->manualPipelineEntryQueryService()->entriesTableReady();

@@ -122,6 +122,7 @@ class QuoteRecordListingService
                 'award_history' => $awardHistory,
             ]);
         } catch (\Throwable $e) {
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }
@@ -161,6 +162,7 @@ class QuoteRecordListingService
             );
             return response()->json($items);
         } catch (\Throwable $e) {
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }

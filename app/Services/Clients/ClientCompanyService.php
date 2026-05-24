@@ -102,6 +102,7 @@ class ClientCompanyService extends ClientBaseService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return $this->error('Database error.', 500);
         }
 
@@ -363,6 +364,7 @@ class ClientCompanyService extends ClientBaseService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return $this->error('Failed to delete company.', 500);
         }
 

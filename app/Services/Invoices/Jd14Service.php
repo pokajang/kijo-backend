@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\DB;
 
 class Jd14Service
 {
+    private const TRAINING_PROJECT_TYPE = 'Training';
+
     public function __construct(private AuditLogService $auditLog)
     {
     }
@@ -50,6 +52,11 @@ class Jd14Service
         $staffId = (int) $request->session()->get('staff_id', 0);
         if ($staffId <= 0) {
             return response()->json(['status' => 'error', 'message' => 'Unauthenticated.'], 401);
+        }
+
+        $projectValidation = $this->validateTrainingProject((int) $request->input('project_id'));
+        if ($projectValidation !== null) {
+            return $projectValidation;
         }
 
         try {
@@ -107,6 +114,29 @@ class Jd14Service
         $staffId = (int) $request->session()->get('staff_id', 0);
         if ($staffId <= 0 || $id <= 0) {
             return response()->json(['status' => 'error', 'message' => 'Missing session or form ID.'], 422);
+        }
+
+        $jd14 = DB::table('invoices_jd14form')
+            ->where('id', $id)
+            ->first(['id', 'project_id']);
+
+        if (!$jd14) {
+            return response()->json(['status' => 'error', 'message' => 'JD14 form not found'], 404);
+        }
+
+        if ($request->has('project_id') && (int) $request->input('project_id') !== (int) $jd14->project_id) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'JD14 project cannot be changed.',
+                'errors' => [
+                    'project_id' => ['JD14 project cannot be changed.'],
+                ],
+            ], 422);
+        }
+
+        $projectValidation = $this->validateTrainingProject((int) $jd14->project_id);
+        if ($projectValidation !== null) {
+            return $projectValidation;
         }
 
         try {
@@ -455,6 +485,45 @@ EOD;
             report($e);
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
+    }
+
+    private function validateTrainingProject(int $projectId): ?JsonResponse
+    {
+        if ($projectId <= 0) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Invalid or missing project ID.',
+                'errors' => [
+                    'project_id' => ['Invalid or missing project ID.'],
+                ],
+            ], 422);
+        }
+
+        $project = DB::table('projects_main')
+            ->where('id', $projectId)
+            ->first(['id', 'project_type']);
+
+        if (!$project) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Project not found.',
+                'errors' => [
+                    'project_id' => ['Project not found.'],
+                ],
+            ], 422);
+        }
+
+        if ((string) $project->project_type !== self::TRAINING_PROJECT_TYPE) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'JD14 forms can only be generated for Training projects.',
+                'errors' => [
+                    'project_id' => ['JD14 forms can only be generated for Training projects.'],
+                ],
+            ], 422);
+        }
+
+        return null;
     }
 
     private function insertProjectProgress(int $projectId, string $text, Request $request): void

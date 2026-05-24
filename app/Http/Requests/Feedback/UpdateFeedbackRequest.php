@@ -12,7 +12,7 @@ class UpdateFeedbackRequest extends FormRequest
     {
         return [
             'feedback'    => ['sometimes', 'string', 'max:5000', 'min:1'],
-            'status'      => ['sometimes', 'string', 'in:Pending,In Progress,Resolved'],
+            'status'      => ['sometimes', 'string', 'in:Pending,Fixed Pending Pushed,In Progress,Fixed Completed,Resolved'],
             'action_date' => ['sometimes', 'nullable', 'date'],
             'remarks'     => ['sometimes', 'nullable', 'string', 'max:2000'],
         ];

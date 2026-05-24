@@ -155,6 +155,7 @@ class EquipmentQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
@@ -273,6 +274,7 @@ class EquipmentQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 

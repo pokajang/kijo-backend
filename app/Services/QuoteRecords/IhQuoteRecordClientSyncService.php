@@ -261,6 +261,7 @@ class IhQuoteRecordClientSyncService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Server error: ' . $e->getMessage()], 500);
         }
 

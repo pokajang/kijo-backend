@@ -17,6 +17,7 @@ class MonitoringTrendsService
     use MonitoringStatsStaffHelpers;
     use MonitoringStatsEventHelpers;
     use MonitoringStatsDetailHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:
@@ -81,6 +82,7 @@ class MonitoringTrendsService
 
                 $quotes = $quotesQuery->get();
                 $manualEntries = $this->monitoringManualEntries($monthContext, $staffFilter);
+                $legalComplianceEvents = $this->monitoringLegalComplianceAssessmentEvents($monthContext, $staffFilter);
                 $quoteIssuedEvents = $this->monitoringQuoteActivityEvents($quotes, 'proposal-quote', 'individual', true);
                 $proposalEvents = array_merge(
                     $quoteIssuedEvents,
@@ -99,7 +101,10 @@ class MonitoringTrendsService
                         $this->monitoringSystemQualifiedEvents($quotes),
                         $manualEntries['events']['QUALIFIED'] ?? []
                     ),
-                    'MEETING/ PITCHING' => $manualEntries['events']['MEETING/ PITCHING'] ?? [],
+                    'MEETING/ PITCHING' => array_merge(
+                        $manualEntries['events']['MEETING/ PITCHING'] ?? [],
+                        $legalComplianceEvents
+                    ),
                     'PROPOSAL' => $proposalEvents,
                     'NEGOTIATION' => $manualEntries['events']['NEGOTIATION'] ?? [],
                     'CLOSED' => $closedEvents,

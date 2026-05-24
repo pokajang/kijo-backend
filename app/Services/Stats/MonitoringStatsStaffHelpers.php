@@ -86,6 +86,12 @@ trait MonitoringStatsStaffHelpers
             }
         }
 
+        if (method_exists($this, 'monitoringLegalComplianceStaffOptions')) {
+            foreach ($this->monitoringLegalComplianceStaffOptions() as $option) {
+                $options[] = $option;
+            }
+        }
+
         $options = collect($options)
             ->filter(fn($option) => trim((string) ($option['value'] ?? '')) !== '')
             ->unique('value')

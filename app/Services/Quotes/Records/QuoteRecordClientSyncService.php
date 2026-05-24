@@ -151,6 +151,7 @@ class QuoteRecordClientSyncService
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Server error.'], 500);
         }
     }

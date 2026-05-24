@@ -34,6 +34,8 @@ use App\Http\Controllers\Api\GoogleController;
 use App\Http\Controllers\Api\HandbookController;
 use App\Http\Controllers\Api\InvoiceController;
 use App\Http\Controllers\Api\KnowledgeController;
+use App\Http\Controllers\Api\LegalComplianceAssessmentController;
+use App\Http\Controllers\Api\LegalComplianceTemplateController;
 use App\Http\Controllers\Api\StatsController;
 use App\Http\Controllers\Api\VendorController;
 use App\Http\Controllers\Api\VendorLoaController;
@@ -90,6 +92,24 @@ Route::middleware('auth.session')->group(function () {
     Route::get('tool-requests',                      [ToolRequestController::class, 'index']);
     Route::post('tool-requests',                     [ToolRequestController::class, 'store']);
     Route::put('tool-requests/{id}/achievement',     [ToolRequestController::class, 'updateAchievement']);
+
+    // Internal tools - Legal Compliance Assessment
+    Route::get('legal-compliance-templates/default', [LegalComplianceTemplateController::class, 'default']);
+    Route::get('legal-compliance-templates', [LegalComplianceTemplateController::class, 'index']);
+    Route::get('legal-compliance-templates/{id}', [LegalComplianceTemplateController::class, 'show'])->whereNumber('id');
+    Route::middleware('role:Manager,System Admin')->group(function () {
+        Route::post('legal-compliance-templates', [LegalComplianceTemplateController::class, 'store']);
+        Route::put('legal-compliance-templates/{id}/draft', [LegalComplianceTemplateController::class, 'updateDraft'])->whereNumber('id');
+        Route::post('legal-compliance-templates/{id}/publish', [LegalComplianceTemplateController::class, 'publish'])->whereNumber('id');
+        Route::post('legal-compliance-templates/{id}/default', [LegalComplianceTemplateController::class, 'setDefault'])->whereNumber('id');
+        Route::delete('legal-compliance-templates/{id}', [LegalComplianceTemplateController::class, 'destroy'])->whereNumber('id');
+    });
+    Route::get('legal-compliance-assessments',        [LegalComplianceAssessmentController::class, 'index']);
+    Route::get('legal-compliance-assessments/{id}/pdf', [LegalComplianceAssessmentController::class, 'pdf'])->whereNumber('id');
+    Route::get('legal-compliance-assessments/{id}',    [LegalComplianceAssessmentController::class, 'show'])->whereNumber('id');
+    Route::post('legal-compliance-assessments',       [LegalComplianceAssessmentController::class, 'store']);
+    Route::post('legal-compliance-assessments/{id}/revision', [LegalComplianceAssessmentController::class, 'createRevision'])->whereNumber('id');
+    Route::delete('legal-compliance-assessments/{id}', [LegalComplianceAssessmentController::class, 'destroy'])->whereNumber('id');
 
     // Batch 1 — Signature
     Route::get('signature',  [SignatureController::class, 'show']);
@@ -586,6 +606,7 @@ Route::middleware('auth.session')->group(function () {
     Route::match(['get','post'], 'stats/monitoring-staff-options',          [StatsController::class, 'monitoringStaffOptions']);
     Route::match(['get','post'], 'stats/monitoring-manual-pipeline-entries', [StatsController::class, 'monitoringManualPipelineEntries']);
     Route::post('stats/monitoring-manual-pipeline-entry',                   [StatsController::class, 'createMonitoringManualPipelineEntry']);
+    Route::get('stats/monitoring-manual-pipeline-entry/{id}',               [StatsController::class, 'monitoringManualPipelineEntry']);
     Route::match(['post','put'], 'stats/monitoring-manual-pipeline-entry/{id}', [StatsController::class, 'updateMonitoringManualPipelineEntry']);
     Route::delete('stats/monitoring-manual-pipeline-entry/{id}',            [StatsController::class, 'deleteMonitoringManualPipelineEntry']);
     Route::get('stats/monitoring-manual-pipeline-entry/{id}/photo',         [StatsController::class, 'viewMonitoringManualPipelineEntryPhoto']);

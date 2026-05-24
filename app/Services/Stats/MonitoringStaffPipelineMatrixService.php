@@ -17,6 +17,7 @@ class MonitoringStaffPipelineMatrixService
     use MonitoringStatsStaffHelpers;
     use MonitoringStatsEventHelpers;
     use MonitoringStatsDetailHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:
@@ -71,6 +72,7 @@ class MonitoringStaffPipelineMatrixService
                 ->whereBetween(DB::raw('DATE(created_at)'), [$context['monthStart'], $context['monthEnd']])
                 ->get();
             $manualEntries = $this->monitoringManualEntries($context, $staffFilter);
+            $legalComplianceEvents = $this->monitoringLegalComplianceAssessmentEvents($context, $staffFilter);
             $quoteIssuedEvents = $this->monitoringQuoteActivityEvents($quotes, 'proposal-quote', 'individual', true);
             $stageEvents = [
                 'LEADS' => array_merge(
@@ -81,7 +83,10 @@ class MonitoringStaffPipelineMatrixService
                     $this->monitoringSystemQualifiedEvents($quotes),
                     $manualEntries['events']['QUALIFIED'] ?? []
                 ),
-                'MEETING/ PITCHING' => $manualEntries['events']['MEETING/ PITCHING'] ?? [],
+                'MEETING/ PITCHING' => array_merge(
+                    $manualEntries['events']['MEETING/ PITCHING'] ?? [],
+                    $legalComplianceEvents
+                ),
                 'PROPOSAL' => array_merge(
                     $quoteIssuedEvents,
                     $manualEntries['events']['PROPOSAL'] ?? []

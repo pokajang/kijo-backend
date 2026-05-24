@@ -133,6 +133,7 @@ class VendorCrudService extends VendorBaseService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Failed to create vendor'], 500);
         }
 
@@ -204,6 +205,7 @@ class VendorCrudService extends VendorBaseService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error'], 500);
         }
 
@@ -304,6 +306,7 @@ class VendorCrudService extends VendorBaseService
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Failed to delete vendor.'], 500);
         }
 

@@ -191,6 +191,7 @@ class EquipmentQuoteRecordListingService
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
+            report($e);
 
             return response()->json(['status' => 'error', 'message' => 'Database error: '.$e->getMessage()], 500);
         }

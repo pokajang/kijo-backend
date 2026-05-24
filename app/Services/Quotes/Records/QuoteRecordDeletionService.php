@@ -47,6 +47,7 @@ class QuoteRecordDeletionService
             return response()->json(['status' => 'success', 'message' => 'Quotation deleted successfully.']);
         } catch (\Throwable $e) {
             DB::rollBack();
+            report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }
