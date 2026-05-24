@@ -219,11 +219,7 @@ class AppNotificationService
             $this->addModuleCount($byModule, $moduleKey, $count);
         }
 
-        $this->setModuleCountAtLeast(
-            $byModule,
-            'staff.leaves',
-            $this->leaveAttentionCount($request),
-        );
+        $byModule['staff.leaves'] = $this->leaveAttentionCount($request);
 
         $this->addModuleCount(
             $byModule,
@@ -471,15 +467,6 @@ class AppNotificationService
         }
 
         $counts[$moduleKey] = ($counts[$moduleKey] ?? 0) + $count;
-    }
-
-    private function setModuleCountAtLeast(array &$counts, string $moduleKey, int $count): void
-    {
-        if ($count <= 0) {
-            return;
-        }
-
-        $counts[$moduleKey] = max($counts[$moduleKey] ?? 0, $count);
     }
 
     private function isNegotiationApprover(Request $request): bool

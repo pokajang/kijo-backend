@@ -174,6 +174,14 @@ class LeaveRequestService extends LeaveBaseService
                         'message' => 'Leave has already been reviewed.',
                     ], 422);
                 }
+                if (!$this->canActForLeaveStage(
+                    $request,
+                    LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
+                    ['HR'],
+                )) {
+                    DB::rollBack();
+                    return $this->unauthorizedLeaveActionResponse('recommend this leave');
+                }
 
                 DB::table('hr_leaves_application')->where('id', $leaveId)->update([
                     'reviewed_by'      => $actorId,
@@ -197,6 +205,14 @@ class LeaveRequestService extends LeaveBaseService
                         'message' => 'Leave must be reviewed/recommended before it can be approved.',
                     ], 422);
                 }
+                if (!$this->canActForLeaveStage(
+                    $request,
+                    LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
+                    ['Manager', 'System Admin'],
+                )) {
+                    DB::rollBack();
+                    return $this->unauthorizedLeaveActionResponse('approve this leave');
+                }
 
                 DB::table('hr_leaves_application')->where('id', $leaveId)->update([
                     'approved_by'      => $actorId,
@@ -218,6 +234,15 @@ class LeaveRequestService extends LeaveBaseService
                 }
 
                 if (!empty($leave->reviewed_by)) {
+                    if (!$this->canActForLeaveStage(
+                        $request,
+                        LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
+                        ['Manager', 'System Admin'],
+                    )) {
+                        DB::rollBack();
+                        return $this->unauthorizedLeaveActionResponse('reject this reviewed leave');
+                    }
+
                     // Already reviewed - reject at approver level
                     DB::table('hr_leaves_application')->where('id', $leaveId)->update([
                         'approved_by'      => $actorId,
@@ -227,6 +252,15 @@ class LeaveRequestService extends LeaveBaseService
                         'status'           => 'Rejected',
                     ]);
                 } else {
+                    if (!$this->canActForLeaveStage(
+                        $request,
+                        LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
+                        ['HR'],
+                    )) {
+                        DB::rollBack();
+                        return $this->unauthorizedLeaveActionResponse('reject this unreviewed leave');
+                    }
+
                     // Not yet reviewed - reject at reviewer level
                     DB::table('hr_leaves_application')->where('id', $leaveId)->update([
                         'reviewed_by'      => $actorId,
@@ -494,6 +528,28 @@ class LeaveRequestService extends LeaveBaseService
     private function workflowRecipients(): LeaveWorkflowRecipientService
     {
         return app(LeaveWorkflowRecipientService::class);
+    }
+
+    private function canActForLeaveStage(Request $request, string $stageKey, array $fallbackRoles): bool
+    {
+        $staffId = (int) $request->session()->get('staff_id', 0);
+        if ($staffId <= 0) {
+            return false;
+        }
+
+        return in_array(
+            $staffId,
+            $this->workflowRecipients()->stageStaffIds($stageKey, $fallbackRoles),
+            true,
+        );
+    }
+
+    private function unauthorizedLeaveActionResponse(string $actionLabel): JsonResponse
+    {
+        return response()->json([
+            'status' => 'error',
+            'message' => "You are not authorized to {$actionLabel}.",
+        ], 403);
     }
 
     private function configuredOrWorkflowParticipantRecipients(

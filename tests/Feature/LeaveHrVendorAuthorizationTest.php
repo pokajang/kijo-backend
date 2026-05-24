@@ -479,6 +479,67 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
     }
 
+    public function test_leave_recommend_action_requires_recommender_stage_access(): void
+    {
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Manager should not recommend',
+            'start_date' => '2026-06-05',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-05',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+        ]);
+
+        $this->actingSession($this->managerSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'recommend',
+                'remarks' => 'Recommended',
+            ])
+            ->assertStatus(403)
+            ->assertJsonPath('message', 'You are not authorized to recommend this leave.');
+
+        $this->assertNull(DB::table('hr_leaves_application')->where('id', $leaveId)->value('reviewed_by'));
+    }
+
+    public function test_leave_approve_action_requires_approver_stage_access(): void
+    {
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'HR should not approve',
+            'start_date' => '2026-06-06',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-06',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 20,
+            'reviewed_at' => now(),
+            'reviewed_status' => 'Recommended',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'approve',
+                'remarks' => 'Approved',
+            ])
+            ->assertStatus(403)
+            ->assertJsonPath('message', 'You are not authorized to approve this leave.');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Pending',
+            'approved_by' => null,
+        ]);
+    }
+
     public function test_leave_notification_lifecycle_moves_between_reviewer_approver_and_applicant(): void
     {
         $response = $this->actingSession($this->employeeSession())

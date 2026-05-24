@@ -290,6 +290,46 @@ class AppNotificationSummaryFeatureTest extends TestCase
         $this->assertSame(0, $employeeSummary['by_module']['staff.leaves'] ?? 0);
     }
 
+    public function test_staff_leave_badge_ignores_stale_stored_notifications(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 30, 'full_name' => 'Manager User', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'full_name' => 'Employee User', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('system_users')->insert([
+            ['staff_id' => 30, 'role' => 'Manager', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 40, 'role' => 'Employee', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('hr_leaves_application')->insert([
+            ['staff_id' => 40, 'status' => 'Pending', 'reviewed_by' => 20, 'reviewed_status' => 'Recommended', 'approved_by' => null, 'approved_status' => null, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        foreach (range(1, 5) as $entityId) {
+            DB::table('in_app_notifications')->insert([
+                'recipient_staff_id' => 30,
+                'actor_staff_id' => 20,
+                'module_key' => 'staff.leaves',
+                'entity_type' => 'leave_application',
+                'entity_id' => $entityId,
+                'type' => 'leave.needs_approval',
+                'title' => 'Leave request needs approval',
+                'route' => "/staff/leaves/records/{$entityId}",
+                'severity' => 'warning',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $summary = $this->withSession(['staff_id' => 30, 'roles' => ['Manager']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
+        $this->assertSame(1, $summary['by_route_group']['/staff/leaves'] ?? 0);
+        $this->assertSame(1, $summary['by_tab']['staff.leaves'] ?? 0);
+    }
+
     public function test_configured_leave_workflow_recipients_control_leave_badge_visibility(): void
     {
         DB::table('staff_general')->insert([
