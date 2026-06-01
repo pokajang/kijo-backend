@@ -437,6 +437,10 @@ class LegalComplianceTemplateController extends Controller
         $roles = $request->attributes->get('auth.roles', $request->session()->get('roles', []));
         $roles = is_array($roles) ? $roles : [$roles];
         $normalizedRoles = array_map(static fn ($role) => strtolower(trim((string) $role)), $roles);
+        if (in_array('system admin', $normalizedRoles, true)) {
+            return true;
+        }
+
         $normalizedAllowed = array_map(static fn ($role) => strtolower(trim((string) $role)), $allowedRoles);
 
         return ! empty(array_intersect($normalizedRoles, $normalizedAllowed));

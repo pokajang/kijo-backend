@@ -27,6 +27,7 @@ class ClientRoiReportService extends ClientBaseService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return $this->error('Server error', 500);
         }
     }
@@ -49,7 +50,7 @@ class ClientRoiReportService extends ClientBaseService
         $this->mergeAwardedProjects($metrics, $start, $end);
         $this->mergeSystemInvoices($metrics, $start, $end);
         $this->mergeManualDebtors($metrics, $start, $end);
-        $this->mergeProjectCosts($metrics);
+        $this->mergeProjectCosts($metrics, $start, $end);
 
         if (empty($metrics)) {
             return [];
@@ -60,7 +61,7 @@ class ClientRoiReportService extends ClientBaseService
 
         foreach ($metrics as $clientId => $metric) {
             $client = $clients[$clientId] ?? null;
-            if (!$client) {
+            if (! $client) {
                 continue;
             }
 
@@ -117,11 +118,11 @@ class ClientRoiReportService extends ClientBaseService
         $start = trim((string) $request->query('start', ''));
         $end = trim((string) $request->query('end', ''));
 
-        if ($start !== '' && !$this->isValidDate($start)) {
+        if ($start !== '' && ! $this->isValidDate($start)) {
             return [null, null, 'Invalid start date. Use YYYY-MM-DD.'];
         }
 
-        if ($end !== '' && !$this->isValidDate($end)) {
+        if ($end !== '' && ! $this->isValidDate($end)) {
             return [null, null, 'Invalid end date. Use YYYY-MM-DD.'];
         }
 
@@ -134,7 +135,7 @@ class ClientRoiReportService extends ClientBaseService
 
     private function isValidDate(string $value): bool
     {
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
             return false;
         }
 
@@ -147,7 +148,7 @@ class ClientRoiReportService extends ClientBaseService
 
     private function mergeAwardedProjects(array &$metrics, ?string $start, ?string $end): void
     {
-        if (!Schema::hasTable('projects_main') || !Schema::hasColumn('projects_main', 'client_id')) {
+        if (! Schema::hasTable('projects_main') || ! Schema::hasColumn('projects_main', 'client_id')) {
             return;
         }
 
@@ -169,7 +170,7 @@ class ClientRoiReportService extends ClientBaseService
 
     private function mergeSystemInvoices(array &$metrics, ?string $start, ?string $end): void
     {
-        if (!Schema::hasTable('invoices') || !Schema::hasColumn('invoices', 'client_id')) {
+        if (! Schema::hasTable('invoices') || ! Schema::hasColumn('invoices', 'client_id')) {
             return;
         }
 
@@ -210,7 +211,7 @@ class ClientRoiReportService extends ClientBaseService
 
     private function mergeManualDebtors(array &$metrics, ?string $start, ?string $end): void
     {
-        if (!$this->manualDebtorsReady()) {
+        if (! $this->manualDebtorsReady()) {
             return;
         }
 
@@ -252,7 +253,7 @@ class ClientRoiReportService extends ClientBaseService
     private function mergePaymentDays(array &$metrics, string $table, ?string $start, ?string $end): void
     {
         foreach (['client_id', 'status', 'invoice_date', 'paid_date'] as $column) {
-            if (!Schema::hasTable($table) || !Schema::hasColumn($table, $column)) {
+            if (! Schema::hasTable($table) || ! Schema::hasColumn($table, $column)) {
                 return;
             }
         }
@@ -279,9 +280,9 @@ class ClientRoiReportService extends ClientBaseService
         }
     }
 
-    private function mergeProjectCosts(array &$metrics): void
+    private function mergeProjectCosts(array &$metrics, ?string $start, ?string $end): void
     {
-        if (!Schema::hasTable('projects_main') || !Schema::hasColumn('projects_main', 'client_id')) {
+        if (! Schema::hasTable('projects_main') || ! Schema::hasColumn('projects_main', 'client_id')) {
             return;
         }
 
@@ -297,6 +298,8 @@ class ClientRoiReportService extends ClientBaseService
                 $vendorQuery->whereNull('vp.deleted_at');
             }
 
+            $this->applyDateRange($vendorQuery, $this->vendorPaymentDateExpression(), $start, $end);
+
             foreach ($vendorQuery->get() as $row) {
                 $this->addMetric($metrics, (int) $row->client_id, [
                     'vendor_cost' => (float) $row->vendor_cost,
@@ -310,6 +313,8 @@ class ClientRoiReportService extends ClientBaseService
                 ->selectRaw('p.client_id, COALESCE(SUM(pe.amount), 0) AS expense_cost')
                 ->whereNotNull('p.client_id')
                 ->groupBy('p.client_id');
+
+            $this->applyDateRange($expenseQuery, $this->projectExpenseDateExpression(), $start, $end);
 
             foreach ($expenseQuery->get() as $row) {
                 $this->addMetric($metrics, (int) $row->client_id, [
@@ -362,6 +367,7 @@ class ClientRoiReportService extends ClientBaseService
                 if ($value !== null && ($metrics[$clientId][$key] === null || $value > $metrics[$clientId][$key])) {
                     $metrics[$clientId][$key] = $value;
                 }
+
                 continue;
             }
 
@@ -369,21 +375,68 @@ class ClientRoiReportService extends ClientBaseService
         }
     }
 
-    private function applyDateRange($query, string $column, ?string $start, ?string $end): void
+    private function applyDateRange($query, ?string $column, ?string $start, ?string $end): void
     {
+        if ($column === null) {
+            return;
+        }
+
+        $dateColumn = str_contains($column, '(') ? DB::raw($column) : $column;
+
         if ($start !== null) {
-            $query->whereDate($column, '>=', $start);
+            $query->whereDate($dateColumn, '>=', $start);
         }
 
         if ($end !== null) {
-            $query->whereDate($column, '<=', $end);
+            $query->whereDate($dateColumn, '<=', $end);
         }
+    }
+
+    private function vendorPaymentDateExpression(): ?string
+    {
+        $columns = [];
+        foreach (['paid_date', 'date_approved', 'created_at'] as $column) {
+            if (Schema::hasColumn('vendor_payments', $column)) {
+                $columns[] = "vp.{$column}";
+            }
+        }
+
+        if (! $columns && Schema::hasColumn('projects_main', 'award_date')) {
+            $columns[] = 'p.award_date';
+        }
+
+        return $this->dateExpression($columns);
+    }
+
+    private function projectExpenseDateExpression(): ?string
+    {
+        $columns = [];
+        foreach (['date', 'created_at'] as $column) {
+            if (Schema::hasColumn('project_expenses', $column)) {
+                $columns[] = "pe.{$column}";
+            }
+        }
+
+        if (! $columns && Schema::hasColumn('projects_main', 'award_date')) {
+            $columns[] = 'p.award_date';
+        }
+
+        return $this->dateExpression($columns);
+    }
+
+    private function dateExpression(array $columns): ?string
+    {
+        if (count($columns) > 1) {
+            return 'COALESCE('.implode(', ', $columns).')';
+        }
+
+        return $columns[0] ?? null;
     }
 
     private function manualDebtorsReady(): bool
     {
         foreach (['client_id', 'status', 'invoice_date', 'grand_total', 'paid_date', 'paid_amount'] as $column) {
-            if (!Schema::hasTable('manual_debtors') || !Schema::hasColumn('manual_debtors', $column)) {
+            if (! Schema::hasTable('manual_debtors') || ! Schema::hasColumn('manual_debtors', $column)) {
                 return false;
             }
         }

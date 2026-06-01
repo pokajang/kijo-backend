@@ -2,12 +2,12 @@
 
 namespace App\Services\QuoteRecords;
 
-use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
 use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
-use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\Projects\ProjectCollaboratorAssignmentService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,29 +15,28 @@ use Illuminate\Support\Facades\Schema;
 
 class ManpowerQuoteRecordAwardWorkflowService
 {
-
     public function __construct(private AuditLogService $auditLog) {}
 
     public function awardManpower(AwardQuoteRequest $request): JsonResponse
     {
-        $quoteId     = (int) $request->input('quote_id');
-        $remarks     = trim((string) $request->input('remarks', ''));
-        $awardDate   = $request->input('award_date') ?: now()->format('Y-m-d');
+        $quoteId = (int) $request->input('quote_id');
+        $remarks = trim((string) $request->input('remarks', ''));
+        $awardDate = $request->input('award_date') ?: now()->format('Y-m-d');
         $description = (string) $request->input('description', '');
         $clientRefNo = $request->input('client_award_ref_no');
 
         DB::beginTransaction();
         try {
             DB::table('quotes_manpower')->where('id', $quoteId)->update([
-                'status'              => 'Awarded',
-                'status_remarks'      => $remarks,
-                'award_date'          => $awardDate,
+                'status' => 'Awarded',
+                'status_remarks' => $remarks,
+                'award_date' => $awardDate,
                 'client_award_ref_no' => $clientRefNo,
-                'updated_at'          => now(),
+                'updated_at' => now(),
             ]);
 
             $quote = DB::table('quotes_manpower')->where('id', $quoteId)->first();
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Manpower quotation not found.');
             }
 
@@ -50,32 +49,35 @@ class ManpowerQuoteRecordAwardWorkflowService
             }
 
             $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
-                'client_id'     => $quote->client_id,
-                'quote_id'      => $quoteId,
-                'project_name'  => $quote->service_title,
-                'project_type'  => 'Manpower Supply',
-                'quote_type'    => 'manpower',
+                'client_id' => $quote->client_id,
+                'quote_id' => $quoteId,
+                'project_name' => $quote->service_title,
+                'project_type' => 'Manpower Supply',
+                'quote_type' => 'manpower',
                 'po_loa_number' => $clientRefNo,
-                'description'   => $description,
-                'status'        => 'Active',
-                'quote_value'   => $quote->grand_total,
-                'award_date'    => $awardDate,
-                'created_at'    => now(),
+                'description' => $description,
+                'status' => 'Active',
+                'quote_value' => $quote->grand_total,
+                'award_date' => $awardDate,
+                'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'Manpower quotation marked as Awarded. Project started.', $request);
+            app(ProjectCollaboratorAssignmentService::class)
+                ->assignInitialCollaborators($newProjectId, $request);
 
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
         }
 
         $this->auditLog->log($request, "Marked Manpower quotation ID #{$quoteId} as Awarded and created project ID #{$newProjectId}");
 
         return response()->json([
-            'status'     => 'success',
-            'message'    => 'Manpower quotation awarded and project created successfully.',
+            'status' => 'success',
+            'message' => 'Manpower quotation awarded and project created successfully.',
             'project_id' => $newProjectId,
         ]);
     }
@@ -86,7 +88,7 @@ class ManpowerQuoteRecordAwardWorkflowService
         $remarks = trim((string) $request->input('remarks', ''));
 
         $row = DB::table('quotes_manpower')->where('id', $quoteId)->first();
-        if (!$row) {
+        if (! $row) {
             return response()->json(['status' => 'error', 'message' => 'Manpower quotation not found.'], 404);
         }
         if (strtolower(trim($row->status)) === 'failed') {
@@ -94,9 +96,9 @@ class ManpowerQuoteRecordAwardWorkflowService
         }
 
         DB::table('quotes_manpower')->where('id', $quoteId)->update([
-            'status'         => 'Failed',
+            'status' => 'Failed',
             'status_remarks' => $remarks,
-            'updated_at'     => now(),
+            'updated_at' => now(),
         ]);
 
         $this->auditLog->log($request, "Marked Manpower quotation ID #{$quoteId} as Failed");
@@ -106,16 +108,16 @@ class ManpowerQuoteRecordAwardWorkflowService
 
     public function reAwardManpower(AwardQuoteRequest $request): JsonResponse
     {
-        $quoteId     = (int) $request->input('quote_id');
-        $remarks     = trim((string) $request->input('remarks', ''));
-        $awardDate   = $request->input('award_date') ?: now()->format('Y-m-d');
+        $quoteId = (int) $request->input('quote_id');
+        $remarks = trim((string) $request->input('remarks', ''));
+        $awardDate = $request->input('award_date') ?: now()->format('Y-m-d');
         $description = trim((string) $request->input('description', 'Re-awarded project from existing awarded quotation.'));
         $clientRefNo = $request->input('client_award_ref_no');
 
         DB::beginTransaction();
         try {
             $quote = DB::table('quotes_manpower')->where('id', $quoteId)->first();
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Manpower quotation not found.');
             }
             if (strtolower(trim((string) $quote->status)) !== 'awarded') {
@@ -123,19 +125,22 @@ class ManpowerQuoteRecordAwardWorkflowService
             }
 
             $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
-                'client_id'    => $quote->client_id,
-                'quote_id'     => $quoteId,
+                'client_id' => $quote->client_id,
+                'quote_id' => $quoteId,
                 'project_name' => $quote->service_title,
                 'project_type' => 'Manpower Supply',
-                'quote_type'   => 'manpower',
-                'description'  => $description,
-                'status'       => 'Active',
-                'quote_value'  => $quote->grand_total,
-                'award_date'   => $awardDate,
-                'created_at'   => now(),
+                'quote_type' => 'manpower',
+                'po_loa_number' => $clientRefNo,
+                'description' => $description,
+                'status' => 'Active',
+                'quote_value' => $quote->grand_total,
+                'award_date' => $awardDate,
+                'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'New project created from Re-Award (existing quote).', $request);
+            app(ProjectCollaboratorAssignmentService::class)
+                ->assignInitialCollaborators($newProjectId, $request);
 
             $awardCount = DB::table('projects_main')
                 ->where('quote_id', $quoteId)
@@ -146,25 +151,26 @@ class ManpowerQuoteRecordAwardWorkflowService
             $statusRemark = $remarks !== '' ? $remarks : 'Re-Awarded';
 
             DB::table('quotes_manpower')->where('id', $quoteId)->update([
-                'status'              => 'Awarded',
-                'status_remarks'      => $statusRemark,
-                'award_date'          => $awardDate,
+                'status' => 'Awarded',
+                'status_remarks' => $statusRemark,
+                'award_date' => $awardDate,
                 'client_award_ref_no' => $clientRefNo,
-                'updated_at'          => now(),
+                'updated_at' => now(),
             ]);
 
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
         }
 
         $this->auditLog->log($request, "Re-awarded manpower quote ID #{$quoteId} and created project ID #{$newProjectId}");
 
         return response()->json([
-            'status'         => 'success',
-            'message'        => 'Re-awarded successfully. Project created.',
-            'award_count'    => $awardCount,
+            'status' => 'success',
+            'message' => 'Re-awarded successfully. Project created.',
+            'award_count' => $awardCount,
             'status_remarks' => $statusRemark,
         ]);
     }
@@ -180,7 +186,7 @@ class ManpowerQuoteRecordAwardWorkflowService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Manpower quotation not found.');
             }
             if (strtolower(trim((string) $quote->status)) !== 'awarded') {
@@ -195,7 +201,7 @@ class ManpowerQuoteRecordAwardWorkflowService
                 ORDER BY COALESCE(created_at, '1970-01-01') DESC, id DESC
             ", [$quoteId]);
 
-            $linkedCount     = count($projects);
+            $linkedCount = count($projects);
             $targetProjectId = $linkedCount > 0 ? (int) $projects[0]->id : null;
 
             if ($targetProjectId) {
@@ -214,32 +220,33 @@ class ManpowerQuoteRecordAwardWorkflowService
                     ->first();
 
                 DB::table('quotes_manpower')->where('id', $quoteId)->update([
-                    'status'         => 'Awarded',
+                    'status' => 'Awarded',
                     'status_remarks' => $remainingProjects > 1 ? 'Re-Awarded' : 'Awarded',
-                    'award_date'     => $latest->award_date ?? null,
-                    'updated_at'     => now(),
+                    'award_date' => $latest->award_date ?? null,
+                    'updated_at' => now(),
                 ]);
             } else {
                 DB::table('quotes_manpower')->where('id', $quoteId)->update([
-                    'status'              => 'Open',
-                    'status_remarks'      => 'Un-awarded by user.',
-                    'award_date'          => null,
+                    'status' => 'Open',
+                    'status_remarks' => 'Un-awarded by user.',
+                    'award_date' => null,
                     'client_award_ref_no' => null,
-                    'updated_at'          => now(),
+                    'updated_at' => now(),
                 ]);
             }
 
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
-            $code = $e instanceof \Illuminate\Database\QueryException ? 500 : 400;
+            $code = $e instanceof QueryException ? 500 : 400;
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], $code);
         }
 
         $deletedCount = $targetProjectId ? 1 : 0;
         $this->auditLog->log($request, "Un-awarded Manpower quotation ID #{$quoteId}; removed {$deletedCount} latest linked project(s), remaining {$remainingProjects}");
 
-        if (!$targetProjectId) {
+        if (! $targetProjectId) {
             $message = 'No linked project found. Quotation reset to Open.';
         } elseif ($remainingProjects > 0) {
             $message = "Latest award removed. Quotation remains Awarded with {$remainingProjects} linked project(s).";
@@ -248,9 +255,9 @@ class ManpowerQuoteRecordAwardWorkflowService
         }
 
         return response()->json([
-            'status'             => 'success',
-            'message'            => $message,
-            'deleted_projects'   => $deletedCount,
+            'status' => 'success',
+            'message' => $message,
+            'deleted_projects' => $deletedCount,
             'remaining_projects' => $remainingProjects,
         ]);
     }
@@ -262,11 +269,11 @@ class ManpowerQuoteRecordAwardWorkflowService
         }
         try {
             DB::table('project_progress')->insert([
-                'project_id'    => $projectId,
+                'project_id' => $projectId,
                 'progress_date' => now()->format('Y-m-d'),
                 'progress_text' => $text,
-                'updated_by'    => (int) $request->session()->get('staff_id', 0) ?: null,
-                'updated_on'    => now(),
+                'updated_by' => (int) $request->session()->get('staff_id', 0) ?: null,
+                'updated_on' => now(),
             ]);
         } catch (\Throwable $e) {
             report($e);

@@ -2,7 +2,6 @@
 
 namespace App\Services\Invoices;
 
-use App\Services\AuditLogService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -11,39 +10,38 @@ use Illuminate\Support\Facades\Schema;
 
 class InvoiceMutationService extends InvoiceBaseService
 {
-
     public function store(Request $request): JsonResponse
     {
         $request->validate([
-            'project_id'   => 'required|integer|min:1',
+            'project_id' => 'required|integer|min:1',
             'service_type' => 'required|string',
-            'breakdown'    => 'required|array|min:1',
+            'breakdown' => 'required|array|min:1',
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
         ]);
 
-        $staffId     = (int) $request->session()->get('staff_id', 0);
+        $staffId = (int) $request->session()->get('staff_id', 0);
         $creatorCode = (string) $request->session()->get('name_code', '');
 
         if ($staffId <= 0) {
             return response()->json(['status' => 'error', 'message' => 'Unauthenticated.'], 401);
         }
 
-        $projectId      = (int) $request->input('project_id');
-        $serviceType    = trim((string) $request->input('service_type'));
-        $quoteIdRaw     = $request->input('quote_id');
-        $quoteId        = ($quoteIdRaw !== null && $quoteIdRaw !== '') ? (int) $quoteIdRaw : null;
+        $projectId = (int) $request->input('project_id');
+        $serviceType = trim((string) $request->input('service_type'));
+        $quoteIdRaw = $request->input('quote_id');
+        $quoteId = ($quoteIdRaw !== null && $quoteIdRaw !== '') ? (int) $quoteIdRaw : null;
         $invoicePurpose = trim((string) $request->input('invoice_purpose', ''));
-        $grantNo        = trim((string) $request->input('grant_approval_no', ''));
+        $grantNo = trim((string) $request->input('grant_approval_no', ''));
 
         // Duplicate grant_no check
         if ($grantNo !== '') {
             $existing = DB::table('invoices')->where('grant_approval_no', $grantNo)->first(['id']);
             if ($existing) {
                 return response()->json([
-                    'status'     => 'exists',
+                    'status' => 'exists',
                     'invoice_id' => $existing->id,
-                    'message'    => 'This HRD Grant Approval No. is already used.',
+                    'message' => 'This HRD Grant Approval No. is already used.',
                 ]);
             }
         }
@@ -51,7 +49,7 @@ class InvoiceMutationService extends InvoiceBaseService
         // Duplicate invoice check (NULL-safe for quote_id)
         if (strtolower($serviceType) !== 'manpower supply') {
             $existing = DB::selectOne(
-                "SELECT id, grant_approval_no FROM invoices WHERE project_id = ? AND service_type = ? AND quote_id <=> ? LIMIT 1",
+                'SELECT id, grant_approval_no FROM invoices WHERE project_id = ? AND service_type = ? AND quote_id <=> ? LIMIT 1',
                 [$projectId, $serviceType, $quoteId]
             );
         } else {
@@ -66,15 +64,16 @@ class InvoiceMutationService extends InvoiceBaseService
             $existingGrant = trim((string) ($existing->grant_approval_no ?? ''));
             if ($grantNo !== '' && $existingGrant === '') {
                 return response()->json([
-                    'status'     => 'exists',
+                    'status' => 'exists',
                     'invoice_id' => $existing->id,
-                    'message'    => 'Invoice exists; cannot add HRD grant retrospectively.',
+                    'message' => 'Invoice exists; cannot add HRD grant retrospectively.',
                 ]);
             }
+
             return response()->json([
-                'status'     => 'exists',
+                'status' => 'exists',
                 'invoice_id' => $existing->id,
-                'message'    => 'An invoice for this project & service already exists.',
+                'message' => 'An invoice for this project & service already exists.',
             ]);
         }
 
@@ -90,11 +89,13 @@ class InvoiceMutationService extends InvoiceBaseService
         }
 
         $yearFull = date('Y');
-        $yearTwo  = date('y');
+        $yearTwo = date('y');
         $lockName = "invoices_{$yearFull}";
 
+        $lockAcquired = false;
+
         try {
-            DB::statement("SELECT GET_LOCK(?, 10)", [$lockName]);
+            $lockAcquired = $this->acquireInvoiceYearLock($lockName);
             DB::beginTransaction();
 
             $projectColumns = ['client_id'];
@@ -109,68 +110,69 @@ class InvoiceMutationService extends InvoiceBaseService
             $paymentTermsDays = $paymentTerms['days'];
             $dueDate = $this->dueDateFor($invoiceDate, $paymentTermsDays);
 
-            $maxRun    = (int) DB::table('invoices')
+            $maxRun = (int) DB::table('invoices')
                 ->whereYear('created_at', $yearFull)
                 ->where('invoice_ref_no', 'like', "INV{$yearTwo}-%")
                 ->whereBetween('invoice_running_no', [1, 9999])
                 ->max('invoice_running_no');
             $runningNo = $maxRun + 1;
-            $padded    = str_pad((string) $runningNo, 4, '0', STR_PAD_LEFT);
-            $refNo     = "INV{$yearTwo}-{$padded}{$creatorCode}";
+            $padded = str_pad((string) $runningNo, 4, '0', STR_PAD_LEFT);
+            $refNo = "INV{$yearTwo}-{$padded}{$creatorCode}";
 
             $insert = [
-                'project_id'             => $projectId,
-                'client_id'              => $clientId,
-                'invoice_loa_no'         => $request->input('client_award_ref_no'),
-                'invoice_client_name'    => $request->input('invoice_client_name'),
-                'invoice_client_ssm'     => $request->input('invoice_client_ssm'),
-                'invoice_client_tin'     => $request->input('invoice_client_tin'),
+                'project_id' => $projectId,
+                'client_id' => $clientId,
+                'invoice_loa_no' => $request->input('client_award_ref_no'),
+                'invoice_client_name' => $request->input('invoice_client_name'),
+                'invoice_client_ssm' => $request->input('invoice_client_ssm'),
+                'invoice_client_tin' => $request->input('invoice_client_tin'),
                 'invoice_client_address' => $request->input('invoice_client_address'),
-                'invoice_client_city'    => $request->input('invoice_client_city'),
-                'invoice_client_state'   => $request->input('invoice_client_state'),
-                'invoice_client_zip'     => $request->input('invoice_client_zip'),
-                'invoice_pic_name'       => $request->input('invoice_pic_name'),
-                'invoice_pic_phone'      => $request->input('invoice_pic_phone'),
-                'invoice_pic_email'      => $request->input('invoice_pic_email'),
-                'invoice_pic_position'   => $request->input('invoice_pic_position'),
-                'service_type'           => $serviceType,
-                'quote_id'               => $quoteId,
-                'created_by'             => $staffId,
-                'invoice_ref_no'         => $refNo,
-                'invoice_running_no'     => $runningNo,
-                'invoice_purpose'        => $invoicePurpose,
-                'invoice_date'           => $invoiceDate,
-                'payment_terms_days'     => $paymentTermsDays,
-                'payment_terms_source'   => $paymentTerms['source'],
-                'due_date'               => $dueDate,
-                'amount'                 => $request->input('amount', 0),
-                'sst_amount'             => $request->input('sst_amount', 0),
-                'grand_total'            => $request->input('grand_total', 0),
-                'payment_method'         => $request->input('payment_method', ''),
-                'grant_approval_no'      => $grantNo,
-                'remarks'                => $request->input('remarks', ''),
-                'status'                 => 'Pending',
-                'created_at'             => now(),
-                'updated_at'             => now(),
+                'invoice_client_city' => $request->input('invoice_client_city'),
+                'invoice_client_state' => $request->input('invoice_client_state'),
+                'invoice_client_zip' => $request->input('invoice_client_zip'),
+                'invoice_pic_name' => $request->input('invoice_pic_name'),
+                'invoice_pic_phone' => $request->input('invoice_pic_phone'),
+                'invoice_pic_email' => $request->input('invoice_pic_email'),
+                'invoice_pic_position' => $request->input('invoice_pic_position'),
+                'service_type' => $serviceType,
+                'quote_id' => $quoteId,
+                'created_by' => $staffId,
+                'invoice_ref_no' => $refNo,
+                'invoice_running_no' => $runningNo,
+                'invoice_purpose' => $invoicePurpose,
+                'invoice_date' => $invoiceDate,
+                'payment_terms_days' => $paymentTermsDays,
+                'payment_terms_source' => $paymentTerms['source'],
+                'due_date' => $dueDate,
+                'amount' => $request->input('amount', 0),
+                'sst_amount' => $request->input('sst_amount', 0),
+                'grand_total' => $request->input('grand_total', 0),
+                'payment_method' => $request->input('payment_method', ''),
+                'grant_approval_no' => $grantNo,
+                'remarks' => $request->input('remarks', ''),
+                'status' => 'Pending',
+                'created_at' => now(),
+                'updated_at' => now(),
             ];
             if (Schema::hasColumn('invoices', 'document_language')) {
                 $insert['document_language'] = $documentLanguage;
             }
 
             $invoiceId = DB::table('invoices')->insertGetId($insert);
+            $this->markClientOldIfEligible($clientId);
 
             foreach ((array) $request->input('breakdown') as $i => $line) {
-                $qty    = (float) ($line['quantity'] ?? 1);
+                $qty = (float) ($line['quantity'] ?? 1);
                 $uprice = (float) ($line['unit_price'] ?? 0);
                 DB::table('invoice_breakdown')->insert([
-                    'invoice_id'       => $invoiceId,
+                    'invoice_id' => $invoiceId,
                     'item_description' => $line['item_description'] ?? '',
-                    'description'      => $line['description'] ?? null,
-                    'unit'             => $line['unit'] ?? 'Lot',
-                    'quantity'         => $qty,
-                    'unit_price'       => $uprice,
-                    'subtotal'         => $qty * $uprice,
-                    'sort_order'       => $i + 1,
+                    'description' => $line['description'] ?? null,
+                    'unit' => $line['unit'] ?? 'Lot',
+                    'quantity' => $qty,
+                    'unit_price' => $uprice,
+                    'subtotal' => $qty * $uprice,
+                    'sort_order' => $i + 1,
                 ]);
             }
 
@@ -178,17 +180,20 @@ class InvoiceMutationService extends InvoiceBaseService
             $this->auditLog->log($request, "Created invoice {$refNo} (service: {$serviceType}) for project {$projectId}");
 
             DB::commit();
-            DB::statement("DO RELEASE_LOCK(?)", [$lockName]);
+            $this->releaseInvoiceYearLock($lockName, $lockAcquired);
 
             return response()->json([
-                'status'         => 'success',
-                'invoice_id'     => $invoiceId,
+                'status' => 'success',
+                'invoice_id' => $invoiceId,
                 'invoice_ref_no' => $refNo,
             ]);
         } catch (\Throwable $e) {
-            DB::rollBack();
-            DB::statement("DO RELEASE_LOCK(?)", [$lockName]);
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            $this->releaseInvoiceYearLock($lockName, $lockAcquired);
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -197,19 +202,19 @@ class InvoiceMutationService extends InvoiceBaseService
     {
         $invoiceRef = trim((string) $request->input('invoice_ref_no', ''));
         $dateIssued = $request->input('invoice_date');
-        $status     = trim((string) $request->input('status', ''));
+        $status = trim((string) $request->input('status', ''));
 
         $request->validate([
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
         ]);
 
-        if ($invoiceRef === '' || !$dateIssued || $status === '') {
+        if ($invoiceRef === '' || ! $dateIssued || $status === '') {
             return response()->json(['status' => 'error', 'message' => 'Missing required fields.'], 422);
         }
 
         $existingInvoice = DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->first(['id', 'service_type', 'client_id', 'payment_terms_days', 'payment_terms_source']);
-        if (!$existingInvoice) {
+        if (! $existingInvoice) {
             return response()->json(['status' => 'error', 'message' => 'Invoice not found.'], 404);
         }
 
@@ -229,34 +234,34 @@ class InvoiceMutationService extends InvoiceBaseService
 
         try {
             DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->limit(1)->update([
-                'invoice_loa_no'         => $request->input('invoice_loa_no'),
-                'invoice_client_name'    => $request->input('invoice_client_name'),
-                'invoice_client_ssm'     => $request->input('invoice_client_ssm'),
-                'invoice_client_tin'     => $request->input('invoice_client_tin'),
+                'invoice_loa_no' => $request->input('invoice_loa_no'),
+                'invoice_client_name' => $request->input('invoice_client_name'),
+                'invoice_client_ssm' => $request->input('invoice_client_ssm'),
+                'invoice_client_tin' => $request->input('invoice_client_tin'),
                 'invoice_client_address' => $request->input('invoice_client_address'),
-                'invoice_client_city'    => $request->input('invoice_client_city'),
-                'invoice_client_state'   => $request->input('invoice_client_state'),
-                'invoice_client_zip'     => $request->input('invoice_client_zip'),
-                'invoice_pic_name'       => $request->input('invoice_pic_name'),
-                'invoice_pic_phone'      => $request->input('invoice_pic_phone'),
-                'invoice_pic_email'      => $request->input('invoice_pic_email'),
-                'invoice_pic_position'   => $request->input('invoice_pic_position'),
-                'invoice_purpose'        => $request->input('invoice_purpose', ''),
-                'invoice_date'           => $dateIssued,
-                'payment_terms_days'     => $paymentTermsDays,
-                'payment_terms_source'   => $paymentTerms['source'],
-                'due_date'               => $this->dueDateFor($dateIssued, $paymentTermsDays),
-                'status'                 => $status,
-                'amount'                 => $request->input('amount', 0),
-                'sst_amount'             => $request->input('sst_amount', 0),
-                'grand_total'            => $request->input('grand_total', 0),
-                'payment_method'         => $request->input('payment_method', ''),
-                'grant_approval_no'      => $request->input('grant_approval_no'),
-                'paid_date'              => $request->input('paid_date'),
-                'paid_amount'            => $request->input('paid_amount'),
-                'paid_remarks'           => $request->input('paid_remarks', ''),
-                'remarks'                => $request->input('remarks', ''),
-                'updated_at'             => now(),
+                'invoice_client_city' => $request->input('invoice_client_city'),
+                'invoice_client_state' => $request->input('invoice_client_state'),
+                'invoice_client_zip' => $request->input('invoice_client_zip'),
+                'invoice_pic_name' => $request->input('invoice_pic_name'),
+                'invoice_pic_phone' => $request->input('invoice_pic_phone'),
+                'invoice_pic_email' => $request->input('invoice_pic_email'),
+                'invoice_pic_position' => $request->input('invoice_pic_position'),
+                'invoice_purpose' => $request->input('invoice_purpose', ''),
+                'invoice_date' => $dateIssued,
+                'payment_terms_days' => $paymentTermsDays,
+                'payment_terms_source' => $paymentTerms['source'],
+                'due_date' => $this->dueDateFor($dateIssued, $paymentTermsDays),
+                'status' => $status,
+                'amount' => $request->input('amount', 0),
+                'sst_amount' => $request->input('sst_amount', 0),
+                'grand_total' => $request->input('grand_total', 0),
+                'payment_method' => $request->input('payment_method', ''),
+                'grant_approval_no' => $request->input('grant_approval_no'),
+                'paid_date' => $request->input('paid_date'),
+                'paid_amount' => $request->input('paid_amount'),
+                'paid_remarks' => $request->input('paid_remarks', ''),
+                'remarks' => $request->input('remarks', ''),
+                'updated_at' => now(),
             ]);
 
             $invId = $existingInvoice->id;
@@ -264,28 +269,30 @@ class InvoiceMutationService extends InvoiceBaseService
                 DB::table('invoice_breakdown')->where('invoice_id', $invId)->delete();
 
                 foreach ((array) $request->input('breakdown', []) as $i => $line) {
-                    if (!is_array($line)) {
+                    if (! is_array($line)) {
                         continue;
                     }
-                    $qty   = (float) ($line['quantity'] ?? 0);
+                    $qty = (float) ($line['quantity'] ?? 0);
                     $price = (float) ($line['unit_price'] ?? 0);
                     DB::table('invoice_breakdown')->insert([
-                        'invoice_id'       => $invId,
+                        'invoice_id' => $invId,
                         'item_description' => $line['item_description'] ?? '',
-                        'description'      => $line['description'] ?? null,
-                        'unit'             => $line['unit'] ?? 'Lot',
-                        'quantity'         => $qty,
-                        'unit_price'       => $price,
-                        'subtotal'         => round($qty * $price, 2),
-                        'sort_order'       => $i + 1,
+                        'description' => $line['description'] ?? null,
+                        'unit' => $line['unit'] ?? 'Lot',
+                        'quantity' => $qty,
+                        'unit_price' => $price,
+                        'subtotal' => round($qty * $price, 2),
+                        'sort_order' => $i + 1,
                     ]);
                 }
             }
 
             $this->auditLog->log($request, "Updated invoice {$invoiceRef}");
+
             return response()->json(['status' => 'success', 'message' => 'Invoice updated successfully.']);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -339,6 +346,7 @@ class InvoiceMutationService extends InvoiceBaseService
     private function normalizePaymentTermsSource(mixed $value): string
     {
         $source = trim((string) $value);
+
         return in_array($source, [
             self::PAYMENT_TERMS_SOURCE_SYSTEM_DEFAULT,
             self::PAYMENT_TERMS_SOURCE_CLIENT,
@@ -362,6 +370,54 @@ class InvoiceMutationService extends InvoiceBaseService
         }
     }
 
+    private function markClientOldIfEligible(mixed $clientId): void
+    {
+        $clientId = (int) ($clientId ?? 0);
+        if ($clientId <= 0) {
+            return;
+        }
+
+        $query = DB::table('client_company')
+            ->where('company_id', $clientId)
+            ->where(function ($statusQuery): void {
+                $statusQuery
+                    ->whereNull('client_status')
+                    ->orWhereRaw("TRIM(COALESCE(client_status, '')) = ''")
+                    ->orWhereRaw("LOWER(TRIM(client_status)) = 'new'");
+            });
+
+        if (Schema::hasColumn('client_company', 'deleted_at')) {
+            $query->whereNull('deleted_at');
+        }
+
+        $update = ['client_status' => 'Old'];
+        if (Schema::hasColumn('client_company', 'updated_at')) {
+            $update['updated_at'] = now();
+        }
+
+        $query->update($update);
+    }
+
+    private function acquireInvoiceYearLock(string $lockName): bool
+    {
+        if (DB::connection()->getDriverName() !== 'mysql') {
+            return false;
+        }
+
+        DB::statement('SELECT GET_LOCK(?, 10)', [$lockName]);
+
+        return true;
+    }
+
+    private function releaseInvoiceYearLock(string $lockName, bool $lockAcquired): void
+    {
+        if (! $lockAcquired || DB::connection()->getDriverName() !== 'mysql') {
+            return;
+        }
+
+        DB::statement('DO RELEASE_LOCK(?)', [$lockName]);
+    }
+
     public function destroy(Request $request): JsonResponse
     {
         $invoiceRef = trim((string) $request->input('invoice_ref_no', ''));
@@ -373,7 +429,7 @@ class InvoiceMutationService extends InvoiceBaseService
             ->where('invoice_ref_no', $invoiceRef)
             ->first(['id', 'status', 'project_id']);
 
-        if (!$invoice) {
+        if (! $invoice) {
             return response()->json(['status' => 'error', 'message' => 'Invoice not found'], 404);
         }
 
@@ -402,6 +458,7 @@ class InvoiceMutationService extends InvoiceBaseService
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }

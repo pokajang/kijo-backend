@@ -49,4 +49,22 @@ return [
         'key' => env('GOOGLE_PLACES_API_KEY'),
     ],
 
+    'openai' => [
+        'key' => env('OPENAI_API_KEY'),
+        'responses_endpoint' => env('OPENAI_RESPONSES_ENDPOINT', 'https://api.openai.com/v1/responses'),
+        'timeout_ms' => (int) env('OPENAI_TIMEOUT_MS', 30000),
+    ],
+
+    'workload_ai_classification' => [
+        'enabled' => (bool) env('WORKLOAD_AI_CLASSIFICATION_ENABLED', false),
+        'model' => env('WORKLOAD_AI_CLASSIFICATION_MODEL', 'gpt-5-nano'),
+        'timeout_ms' => (int) env('WORKLOAD_AI_CLASSIFICATION_TIMEOUT_MS', 30000),
+    ],
+
+    'knowledge_assistant' => [
+        'model' => env('KNOWLEDGE_ASSISTANT_MODEL', env('OPENAI_MODEL', 'gpt-5-nano')),
+        'timeout_ms' => (int) env('KNOWLEDGE_ASSISTANT_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', 30000)),
+        'live_cache_ttl_minutes' => (int) env('KNOWLEDGE_ASSISTANT_LIVE_CACHE_TTL_MINUTES', 5),
+    ],
+
 ];

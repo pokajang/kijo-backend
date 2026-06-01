@@ -2,13 +2,19 @@
 
 namespace App\Mail;
 
+use App\Services\Mail\SystemEmailUrlBuilder;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 
 class DefaultPasswordNoticeMail extends Mailable
 {
-    public function __construct(public string $recipientName) {}
+    public string $loginUrl;
+
+    public function __construct(public string $recipientName, ?string $loginUrl = null)
+    {
+        $this->loginUrl = $loginUrl ?? app(SystemEmailUrlBuilder::class)->frontendUrl('/login');
+    }
 
     public function envelope(): Envelope
     {

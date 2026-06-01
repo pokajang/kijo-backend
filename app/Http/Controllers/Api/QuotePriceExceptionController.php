@@ -5,6 +5,9 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
+use App\Services\Mail\SystemEmailBodyBuilder;
+use App\Services\Mail\SystemEmailUrlBuilder;
+use App\Services\Workflows\WorkflowService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -44,9 +47,15 @@ class QuotePriceExceptionController extends Controller
             $query->where('requested_by_id', (int) $request->session()->get('staff_id', 0));
         }
 
+        $canDecide = $this->isApprover($request);
+
         return response()->json([
             'status' => 'success',
-            'data' => $query->limit(500)->get(),
+            'data' => $query->limit(500)->get()->map(function (object $row) use ($canDecide): object {
+                $row->can_decide = $canDecide && (string) $row->status === 'pending';
+
+                return $row;
+            }),
         ]);
     }
 
@@ -61,6 +70,8 @@ class QuotePriceExceptionController extends Controller
         if (!$row) {
             return response()->json(['status' => 'error', 'message' => 'Request not found.'], 404);
         }
+
+        $row->can_decide = $this->isApprover($request) && (string) $row->status === 'pending';
 
         return response()->json(['status' => 'success', 'data' => $row]);
     }
@@ -168,6 +179,10 @@ class QuotePriceExceptionController extends Controller
 
     public function approve(Request $request, int $id): JsonResponse
     {
+        if (! $this->isApprover($request)) {
+            return response()->json(['status' => 'error', 'message' => 'You are not assigned to approve quote negotiations.'], 403);
+        }
+
         $data = $request->validate([
             'approved_discount_amount' => ['nullable', 'numeric', 'min:0'],
             'approval_remarks' => ['nullable', 'string', 'max:3000'],
@@ -238,6 +253,10 @@ class QuotePriceExceptionController extends Controller
 
     public function reject(Request $request, int $id): JsonResponse
     {
+        if (! $this->isApprover($request)) {
+            return response()->json(['status' => 'error', 'message' => 'You are not assigned to reject quote negotiations.'], 403);
+        }
+
         $data = $request->validate([
             'approval_remarks' => ['required', 'string', 'max:3000'],
         ]);
@@ -398,21 +417,33 @@ class QuotePriceExceptionController extends Controller
     private function notifyApprovers(object $row): void
     {
         $sent = false;
+        $subject = "Quote negotiation request {$row->quote_ref_no}";
+        $body = $this->emailBody()->render([
+            'intro' => 'A quote negotiation request is pending approval.',
+            'status' => ['label' => 'Pending Approval', 'tone' => 'warning'],
+            'detailsHeading' => 'Negotiation Details',
+            'details' => [
+                'Service' => (string) $row->service_group,
+                'Reference' => (string) ($row->quote_ref_no ?: 'Pre-quote'),
+                'Requested by' => (string) $row->requested_by_name,
+                'Requested discount' => 'RM '.number_format((float) $row->requested_discount_amount, 2),
+                'Reason' => (string) $row->client_negotiation_reason,
+            ],
+            'actionUrl' => $this->frontendUrl("/crm/price-exceptions/{$row->id}"),
+            'actionLabel' => 'Open in KIJO',
+        ]);
+        $presentation = $this->emailBody()->presentation('Quote Negotiation', 'Quote Negotiation Pending Approval', 'Approval required', $subject);
         foreach ($this->approverRecipients() as $recipient) {
             try {
                 SendHtmlMailJob::dispatchSync(
                     $recipient['email'],
                     $recipient['name'],
-                    "Quote negotiation request {$row->quote_ref_no}",
-                    "<p>A quote negotiation request is pending approval.</p>"
-                        . "<p><strong>Service:</strong> " . e((string) $row->service_group) . "</p>"
-                        . "<p><strong>Reference:</strong> " . e((string) ($row->quote_ref_no ?: 'Pre-quote')) . "</p>"
-                        . "<p><strong>Requested by:</strong> " . e((string) $row->requested_by_name) . "</p>"
-                        . "<p><strong>Requested discount:</strong> RM " . number_format((float) $row->requested_discount_amount, 2) . "</p>"
-                        . "<p><strong>Reason:</strong><br>" . nl2br(e((string) $row->client_negotiation_reason)) . "</p>",
+                    $subject,
+                    $body,
                     [],
                     self::SYSTEM_MAIL_ADDRESS,
-                    self::SYSTEM_MAIL_NAME
+                    self::SYSTEM_MAIL_NAME,
+                    $presentation,
                 );
                 $sent = true;
             } catch (\Throwable) {
@@ -435,20 +466,39 @@ class QuotePriceExceptionController extends Controller
         }
 
         try {
+            $subject = "Quote negotiation request {$decision}";
+            $details = [
+                'Reference' => (string) ($row->quote_ref_no ?: 'Pre-quote'),
+            ];
+            if ($decision === 'approved') {
+                $details['Approved discount'] = 'RM '.number_format((float) ($row->approved_discount_amount ?? 0), 2);
+            }
+            $details['Remarks'] = (string) ($row->approval_remarks ?? '-');
+
             SendHtmlMailJob::dispatchSync(
                 $recipient['email'],
                 $recipient['name'],
-                "Quote negotiation request {$decision}",
-                "<p>Your quote negotiation request has been <strong>" . e($decision) . "</strong>.</p>"
-                    . "<p><strong>Reference:</strong> " . e((string) ($row->quote_ref_no ?: 'Pre-quote')) . "</p>"
-                    . ($decision === 'approved'
-                        ? "<p><strong>Approved discount:</strong> RM " . number_format((float) ($row->approved_discount_amount ?? 0), 2) . "</p>"
-                            . "<p>This approval has not changed the quotation yet. Open Negotiations, choose Apply, review the quote revision, then save it.</p>"
-                        : '')
-                    . "<p><strong>Remarks:</strong><br>" . nl2br(e((string) ($row->approval_remarks ?? '-'))) . "</p>",
+                $subject,
+                $this->emailBody()->render([
+                    'intro' => "Your quote negotiation request has been {$decision}.",
+                    'status' => [
+                        'label' => ucfirst($decision),
+                        'tone' => $decision === 'approved' ? 'success' : 'danger',
+                    ],
+                    'detailsHeading' => 'Negotiation Details',
+                    'details' => $details,
+                    'notice' => $decision === 'approved' ? [
+                        'label' => 'Note',
+                        'body' => 'This approval has not changed the quotation yet. Open Negotiations, choose Apply, review the quote revision, then save it.',
+                        'tone' => 'warning',
+                    ] : null,
+                    'actionUrl' => $this->frontendUrl("/crm/price-exceptions/{$row->id}"),
+                    'actionLabel' => 'Open in KIJO',
+                ]),
                 [],
                 self::SYSTEM_MAIL_ADDRESS,
-                self::SYSTEM_MAIL_NAME
+                self::SYSTEM_MAIL_NAME,
+                $this->emailBody()->presentation('Quote Negotiation', "Quote Negotiation {$decision}", 'Workflow decision', $subject),
             );
         } catch (\Throwable) {
             return;
@@ -461,31 +511,20 @@ class QuotePriceExceptionController extends Controller
 
     private function approverRecipients(): array
     {
-        return DB::table('system_users as su')
-            ->leftJoin('staff_general as sg', 'sg.staff_id', '=', 'su.staff_id')
-            ->where('su.is_active', 1)
-            ->selectRaw('COALESCE(sg.full_name, su.email) as name, su.email, su.role')
-            ->get()
-            ->filter(fn ($row) => trim((string) $row->email) !== '')
-            ->filter(fn ($row) => $this->hasApproverRole($row->role ?? null))
-            ->map(fn ($row) => ['name' => (string) $row->name, 'email' => (string) $row->email])
+        return collect(app(WorkflowService::class)
+            ->effectiveStepRecipients(
+                WorkflowService::NEGOTIATION_TEMPLATE_KEY,
+                'approve',
+                1,
+                ['Manager', 'System Admin'],
+            ))
+            ->map(fn (array $row): array => [
+                'name' => (string) (($row['full_name'] ?? '') ?: ($row['name_code'] ?? '') ?: ($row['email'] ?? 'Recipient')),
+                'email' => (string) ($row['email'] ?? ''),
+            ])
+            ->filter(fn (array $row): bool => trim($row['email']) !== '')
             ->values()
             ->all();
-    }
-
-    private function hasApproverRole(mixed $rawRoles): bool
-    {
-        $decoded = is_string($rawRoles) ? json_decode($rawRoles, true) : null;
-        $roles = is_array($decoded) ? $decoded : [$rawRoles];
-
-        foreach ($roles as $role) {
-            $normalized = strtolower(trim((string) $role));
-            if ($normalized === 'manager' || $normalized === 'system admin') {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private function requesterRecipient(object $row): ?array
@@ -507,18 +546,22 @@ class QuotePriceExceptionController extends Controller
 
     private function isApprover(Request $request): bool
     {
-        $roles = $request->session()->get('roles', []);
-        if (!is_array($roles)) {
-            $roles = [$roles];
-        }
+        return app(WorkflowService::class)->canActOnTemplateStep(
+            $request,
+            WorkflowService::NEGOTIATION_TEMPLATE_KEY,
+            'approve',
+            1,
+            ['Manager', 'System Admin'],
+        );
+    }
 
-        foreach ($roles as $role) {
-            $normalized = strtolower(trim((string) $role));
-            if ($normalized === 'manager' || $normalized === 'system admin') {
-                return true;
-            }
-        }
+    private function emailBody(): SystemEmailBodyBuilder
+    {
+        return app(SystemEmailBodyBuilder::class);
+    }
 
-        return false;
+    private function frontendUrl(string $route): string
+    {
+        return app(SystemEmailUrlBuilder::class)->frontendUrl($route);
     }
 }

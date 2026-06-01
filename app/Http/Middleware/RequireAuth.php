@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Services\RememberMeService;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -13,12 +14,17 @@ class RequireAuth
 {
     private const UNAUTHORIZED_MESSAGE = 'Unauthorized. Please log in to continue.';
 
+    public function __construct(private RememberMeService $rememberMe) {}
+
     public function handle(Request $request, Closure $next): Response
     {
         $user = $this->resolveAuthenticatedUser($request);
 
         if ($user === null) {
-            return $this->unauthorizedResponse();
+            $response = $this->unauthorizedResponse();
+            $this->rememberMe->clear($response, $request);
+
+            return $response;
         }
 
         $this->syncSessionAndRequest($request, $user);
@@ -30,7 +36,10 @@ class RequireAuth
             ], 419);
         }
 
-        return $next($request);
+        $response = $next($request);
+        $this->rememberMe->rotate($response, $request);
+
+        return $response;
     }
 
     public function resolveAuthenticatedUser(Request $request): ?array
@@ -38,22 +47,35 @@ class RequireAuth
         $userId = (int) $request->session()->get('user_id', 0);
         $staffId = (int) $request->session()->get('staff_id', 0);
 
-        if ($userId <= 0 || $staffId <= 0 || ! Schema::hasTable('system_users')) {
+        if (($userId <= 0 || $staffId <= 0) && Schema::hasTable('system_users')) {
+            $remembered = $this->rememberMe->resolveUser($request);
+            if ($remembered !== null) {
+                $userId = $remembered['id'];
+            }
+        }
+
+        if ($userId <= 0 || ! Schema::hasTable('system_users')) {
             return null;
         }
 
-        $user = DB::table('system_users')
+        $query = DB::table('system_users')
             ->select($this->systemUserColumns())
-            ->where('id', $userId)
-            ->first();
+            ->where('system_users.id', $userId);
+
+        if (Schema::hasTable('staff_general')) {
+            $query->leftJoin('staff_general', 'staff_general.staff_id', '=', 'system_users.staff_id');
+        }
+
+        $user = $query->first();
 
         if (
             ! $user ||
-            (int) ($user->staff_id ?? 0) !== $staffId ||
+            ($staffId > 0 && (int) ($user->staff_id ?? 0) !== $staffId) ||
             ! (bool) ($user->is_active ?? false) ||
             $this->isLocked($user)
         ) {
             $this->invalidateSession($request);
+
             return null;
         }
 
@@ -62,6 +84,8 @@ class RequireAuth
             'staff_id' => (int) $user->staff_id,
             'email' => (string) ($user->email ?? ''),
             'roles' => self::decodeRoles($user->role ?? null),
+            'full_name' => (string) ($user->full_name ?? ''),
+            'name_code' => (string) ($user->name_code ?? ''),
         ];
     }
 
@@ -116,6 +140,8 @@ class RequireAuth
             'staff_id' => $user['staff_id'],
             'roles' => $user['roles'],
             'email' => $user['email'],
+            'full_name' => $user['full_name'],
+            'name_code' => $user['name_code'],
         ]);
 
         $request->attributes->set('auth.user', $user);
@@ -124,12 +150,17 @@ class RequireAuth
 
     private function systemUserColumns(): array
     {
-        $columns = ['id', 'staff_id', 'email', 'role', 'is_active'];
+        $columns = ['system_users.id', 'system_users.staff_id', 'system_users.email', 'system_users.role', 'system_users.is_active'];
 
         foreach (['total_lock', 'account_locked_until'] as $column) {
             if (Schema::hasColumn('system_users', $column)) {
-                $columns[] = $column;
+                $columns[] = 'system_users.'.$column;
             }
+        }
+
+        if (Schema::hasTable('staff_general')) {
+            $columns[] = 'staff_general.full_name';
+            $columns[] = 'staff_general.name_code';
         }
 
         return $columns;

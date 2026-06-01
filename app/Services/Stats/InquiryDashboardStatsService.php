@@ -2,25 +2,24 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class InquiryDashboardStatsService
 {
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -63,13 +62,15 @@ class InquiryDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
+            $rows = $query->get()->map(fn ($r) => [
                 'source' => $r->source,
-                'count'  => (int) $r->count,
+                'count' => (int) $r->count,
             ]);
+
             return response()->json(['status' => 'success', 'inquiryStats' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -85,13 +86,15 @@ class InquiryDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'source'     => $r->source,
+            $rows = $query->get()->map(fn ($r) => [
+                'source' => $r->source,
                 'totalValue' => (float) $r->total_value,
             ]);
+
             return response()->json(['status' => 'success', 'inquiryStatsByValues' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -102,7 +105,7 @@ class InquiryDashboardStatsService
         // source rows exist. Normalize first so every downstream KPI aggregates on
         // one quote fact instead of raw joined rows.
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -115,7 +118,7 @@ class InquiryDashboardStatsService
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');

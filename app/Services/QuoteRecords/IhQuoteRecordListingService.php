@@ -17,7 +17,7 @@ class IhQuoteRecordListingService
             SELECT
                 id, quote_running_no, quote_ref_no, revision_no, price_exception_request_id, created_at, updated_at, status,
                 award_date, client_award_ref_no, status_remarks, created_by_id, created_by_name,
-                created_by_code, attach_proposal, service_group,
+                created_by_code, attach_proposal, proposal_language, service_group,
                 client_id, client_name, client_ssm, client_address, client_city, client_state, client_zip,
                 pic_name, pic_email, pic_phone, pic_position,
                 service_id, service_title, service_code, site_address,
@@ -81,6 +81,7 @@ class IhQuoteRecordListingService
         ", $ids);
 
         ProjectOutcomeSummary::attach($quotes, $awardHistory);
+        QuoteRecordProposalPayload::attach($quotes, 'ih');
 
         return response()->json([
             'status' => 'success',

@@ -2,13 +2,12 @@
 
 namespace App\Services\QuoteRecords;
 
-use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
 use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
-use App\Http\Requests\QuoteRecord\SpecialLineItemsByServiceRequest;
-use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\Projects\ProjectCollaboratorAssignmentService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,9 +19,9 @@ class SpecialQuoteRecordAwardWorkflowService
 
     public function awardSpecial(AwardQuoteRequest $request): JsonResponse
     {
-        $quoteId     = (int) $request->input('quote_id');
-        $remarks     = $request->input('remarks', '');
-        $awardDate   = $request->input('award_date', now()->format('Y-m-d'));
+        $quoteId = (int) $request->input('quote_id');
+        $remarks = $request->input('remarks', '');
+        $awardDate = $request->input('award_date', now()->format('Y-m-d'));
         $description = $request->input('description', '');
         $clientRefNo = $request->input('client_award_ref_no');
 
@@ -31,15 +30,15 @@ class SpecialQuoteRecordAwardWorkflowService
             DB::table('quotes_special')
                 ->where('id', $quoteId)
                 ->update([
-                    'status'              => 'Awarded',
-                    'status_remarks'      => $remarks,
-                    'award_date'          => $awardDate,
+                    'status' => 'Awarded',
+                    'status_remarks' => $remarks,
+                    'award_date' => $awardDate,
                     'client_award_ref_no' => $clientRefNo,
-                    'updated_at'          => now(),
+                    'updated_at' => now(),
                 ]);
 
             $quote = DB::table('quotes_special')->where('id', $quoteId)->first($this->specialQuoteAwardColumns());
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Special quotation not found.');
             }
 
@@ -52,37 +51,40 @@ class SpecialQuoteRecordAwardWorkflowService
             }
 
             DB::table('projects_main')->insert($this->withProjectProposalLanguage([
-                'client_id'    => $quote->client_id,
-                'quote_id'     => $quoteId,
+                'client_id' => $quote->client_id,
+                'quote_id' => $quoteId,
                 'project_name' => $quote->service_title,
                 'project_type' => 'Special Service',
-                'quote_type'   => 'special',
-                'po_loa_number'=> $clientRefNo,
-                'description'  => $description,
-                'status'       => 'Active',
-                'quote_value'  => $quote->grand_total,
-                'award_date'   => $awardDate,
-                'created_at'   => now(),
+                'quote_type' => 'special',
+                'po_loa_number' => $clientRefNo,
+                'description' => $description,
+                'status' => 'Active',
+                'quote_value' => $quote->grand_total,
+                'award_date' => $awardDate,
+                'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
             $newProjectId = (int) DB::getPdo()->lastInsertId();
-            if (!$newProjectId) {
+            if (! $newProjectId) {
                 $newProjectId = (int) DB::table('projects_main')->orderByDesc('id')->value('id');
             }
 
             $this->insertProgress($newProjectId, 'Special quotation marked as Awarded. Project started.', $request);
+            app(ProjectCollaboratorAssignmentService::class)
+                ->assignInitialCollaborators($newProjectId, $request);
 
             DB::commit();
 
             $this->auditLog->log($request, "Marked Special quotation ID #{$quoteId} as Awarded and created project ID #{$newProjectId}");
 
             return response()->json([
-                'status'     => 'success',
-                'message'    => 'Special quotation awarded and project created successfully.',
+                'status' => 'success',
+                'message' => 'Special quotation awarded and project created successfully.',
                 'project_id' => $newProjectId,
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
         }
     }
@@ -93,7 +95,7 @@ class SpecialQuoteRecordAwardWorkflowService
         $remarks = $request->input('remarks');
 
         $row = DB::table('quotes_special')->where('id', $quoteId)->first(['status']);
-        if (!$row) {
+        if (! $row) {
             return response()->json(['status' => 'error', 'message' => 'Special quotation not found.'], 404);
         }
 
@@ -104,9 +106,9 @@ class SpecialQuoteRecordAwardWorkflowService
         DB::table('quotes_special')
             ->where('id', $quoteId)
             ->update([
-                'status'         => 'Failed',
+                'status' => 'Failed',
                 'status_remarks' => $remarks,
-                'updated_at'     => now(),
+                'updated_at' => now(),
             ]);
 
         $this->auditLog->log($request, "Marked Special quotation ID #{$quoteId} as Failed");
@@ -116,16 +118,16 @@ class SpecialQuoteRecordAwardWorkflowService
 
     public function reAwardSpecial(AwardQuoteRequest $request): JsonResponse
     {
-        $quoteId     = (int) $request->input('quote_id');
-        $remarks     = trim($request->input('remarks', ''));
-        $awardDate   = $request->input('award_date', now()->format('Y-m-d'));
+        $quoteId = (int) $request->input('quote_id');
+        $remarks = trim($request->input('remarks', ''));
+        $awardDate = $request->input('award_date', now()->format('Y-m-d'));
         $description = trim($request->input('description', 'Re-awarded project from existing awarded quotation.'));
         $clientRefNo = $request->input('client_award_ref_no');
 
         DB::beginTransaction();
         try {
             $quote = DB::table('quotes_special')->where('id', $quoteId)->first($this->specialQuoteAwardColumns(['status']));
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Special quotation not found.');
             }
             if (strtolower(trim((string) $quote->status)) !== 'awarded') {
@@ -133,24 +135,27 @@ class SpecialQuoteRecordAwardWorkflowService
             }
 
             DB::table('projects_main')->insert($this->withProjectProposalLanguage([
-                'client_id'    => $quote->client_id,
-                'quote_id'     => $quoteId,
+                'client_id' => $quote->client_id,
+                'quote_id' => $quoteId,
                 'project_name' => $quote->service_title,
                 'project_type' => 'Special Service',
-                'quote_type'   => 'special',
-                'description'  => $description,
-                'status'       => 'Active',
-                'quote_value'  => $quote->grand_total,
-                'award_date'   => $awardDate,
-                'created_at'   => now(),
+                'quote_type' => 'special',
+                'po_loa_number' => $clientRefNo,
+                'description' => $description,
+                'status' => 'Active',
+                'quote_value' => $quote->grand_total,
+                'award_date' => $awardDate,
+                'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
             $newProjectId = (int) DB::getPdo()->lastInsertId();
-            if (!$newProjectId) {
+            if (! $newProjectId) {
                 $newProjectId = (int) DB::table('projects_main')->orderByDesc('id')->value('id');
             }
 
             $this->insertProgress($newProjectId, 'New project created from Re-Award (existing quote).', $request);
+            app(ProjectCollaboratorAssignmentService::class)
+                ->assignInitialCollaborators($newProjectId, $request);
 
             $awardCount = (int) DB::table('projects_main')
                 ->where('quote_id', $quoteId)
@@ -163,11 +168,11 @@ class SpecialQuoteRecordAwardWorkflowService
             DB::table('quotes_special')
                 ->where('id', $quoteId)
                 ->update([
-                    'status'              => 'Awarded',
-                    'status_remarks'      => $statusRemark,
-                    'award_date'          => $awardDate,
+                    'status' => 'Awarded',
+                    'status_remarks' => $statusRemark,
+                    'award_date' => $awardDate,
                     'client_award_ref_no' => $clientRefNo,
-                    'updated_at'          => now(),
+                    'updated_at' => now(),
                 ]);
 
             DB::commit();
@@ -175,14 +180,15 @@ class SpecialQuoteRecordAwardWorkflowService
             $this->auditLog->log($request, "Re-awarded special quote ID #{$quoteId} and created project ID #{$newProjectId}");
 
             return response()->json([
-                'status'         => 'success',
-                'message'        => 'Re-awarded successfully. Project created.',
-                'award_count'    => $awardCount,
+                'status' => 'success',
+                'message' => 'Re-awarded successfully. Project created.',
+                'award_count' => $awardCount,
                 'status_remarks' => $statusRemark,
-                'project_id'     => $newProjectId,
+                'project_id' => $newProjectId,
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
         }
     }
@@ -198,7 +204,7 @@ class SpecialQuoteRecordAwardWorkflowService
                 ->lockForUpdate()
                 ->first(['id', 'status']);
 
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Special quotation not found.');
             }
             if (strtolower(trim((string) $quote->status)) !== 'awarded') {
@@ -213,7 +219,7 @@ class SpecialQuoteRecordAwardWorkflowService
                 ORDER BY COALESCE(created_at, '1970-01-01') DESC, id DESC
             ", [$quoteId]);
 
-            $linkedCount     = count($projects);
+            $linkedCount = count($projects);
             $targetProjectId = $linkedCount > 0 ? (int) $projects[0]->id : null;
 
             if ($targetProjectId) {
@@ -260,20 +266,20 @@ class SpecialQuoteRecordAwardWorkflowService
                 DB::table('quotes_special')
                     ->where('id', $quoteId)
                     ->update([
-                        'status'         => 'Awarded',
+                        'status' => 'Awarded',
                         'status_remarks' => $remainingProjects > 1 ? 'Re-Awarded' : 'Awarded',
-                        'award_date'     => $latestRemaining->award_date ?? null,
-                        'updated_at'     => now(),
+                        'award_date' => $latestRemaining->award_date ?? null,
+                        'updated_at' => now(),
                     ]);
             } else {
                 DB::table('quotes_special')
                     ->where('id', $quoteId)
                     ->update([
-                        'status'              => 'Open',
-                        'status_remarks'      => 'Un-awarded by user.',
-                        'award_date'          => null,
+                        'status' => 'Open',
+                        'status_remarks' => 'Un-awarded by user.',
+                        'award_date' => null,
                         'client_award_ref_no' => null,
-                        'updated_at'          => now(),
+                        'updated_at' => now(),
                     ]);
             }
 
@@ -282,7 +288,7 @@ class SpecialQuoteRecordAwardWorkflowService
             $deletedCount = $targetProjectId ? 1 : 0;
             $this->auditLog->log($request, "Un-awarded Special quotation ID #{$quoteId}; removed {$deletedCount} latest linked project(s), remaining {$remainingProjects}");
 
-            if (!$targetProjectId) {
+            if (! $targetProjectId) {
                 $message = 'No linked project found. Quotation reset to Open.';
             } elseif ($remainingProjects > 0) {
                 $message = "Latest award removed. Quotation remains Awarded with {$remainingProjects} linked project(s).";
@@ -291,32 +297,33 @@ class SpecialQuoteRecordAwardWorkflowService
             }
 
             return response()->json([
-                'status'             => 'success',
-                'message'            => $message,
-                'deleted_projects'   => $deletedCount,
+                'status' => 'success',
+                'message' => $message,
+                'deleted_projects' => $deletedCount,
                 'remaining_projects' => $remainingProjects,
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            $code = $e instanceof \Illuminate\Database\QueryException ? 500 : 422;
+            $code = $e instanceof QueryException ? 500 : 422;
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], $code);
         }
     }
 
     private function insertProgress(int $projectId, string $activity, Request $request): void
     {
-        if (!$projectId || !$activity) {
+        if (! $projectId || ! $activity) {
             return;
         }
 
         $staffId = (int) $request->session()->get('staff_id', 0);
 
         DB::table('project_progress')->insert([
-            'project_id'    => $projectId,
+            'project_id' => $projectId,
             'progress_date' => now()->format('Y-m-d'),
             'progress_text' => $activity,
-            'updated_by'    => $staffId ?: null,
-            'updated_on'    => now(),
+            'updated_by' => $staffId ?: null,
+            'updated_on' => now(),
         ]);
     }
 

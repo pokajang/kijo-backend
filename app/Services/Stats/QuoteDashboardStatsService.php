@@ -2,25 +2,24 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class QuoteDashboardStatsService
 {
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -63,14 +62,16 @@ class QuoteDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'staffCode'  => $r->staff_code,
-                'staffName'  => $r->staff_name,
+            $rows = $query->get()->map(fn ($r) => [
+                'staffCode' => $r->staff_code,
+                'staffName' => $r->staff_name,
                 'totalValue' => (float) $r->total_value,
             ]);
+
             return response()->json(['status' => 'success', 'quoteValueByPerson' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -86,13 +87,15 @@ class QuoteDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
+            $rows = $query->get()->map(fn ($r) => [
                 'serviceGroup' => $r->service_group,
-                'totalValue'   => (float) $r->total_value,
+                'totalValue' => (float) $r->total_value,
             ]);
+
             return response()->json(['status' => 'success', 'quoteValueByService' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -108,14 +111,16 @@ class QuoteDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'staffCode'  => $r->staff_code,
-                'staffName'  => $r->staff_name,
+            $rows = $query->get()->map(fn ($r) => [
+                'staffCode' => $r->staff_code,
+                'staffName' => $r->staff_name,
                 'quoteCount' => (int) $r->quote_count,
             ]);
+
             return response()->json(['status' => 'success', 'quoteCountByPerson' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -126,8 +131,8 @@ class QuoteDashboardStatsService
         try {
             $query = $this->baseQuoteFactsQuery()
                 ->selectRaw("service_group, DATE_FORMAT(created_at, '%Y-%m') AS month_key, SUM(value) AS total_value")
-                ->groupByRaw("service_group, month_key")
-                ->orderByRaw("month_key, service_group");
+                ->groupByRaw('service_group, month_key')
+                ->orderByRaw('month_key, service_group');
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
@@ -152,9 +157,9 @@ class QuoteDashboardStatsService
                     $totalValue += $v;
                 }
                 $monthlyStats[] = [
-                    'serviceGroup'  => $grp,
+                    'serviceGroup' => $grp,
                     'monthlyValues' => $monthlyValues,
-                    'totalValue'    => $totalValue,
+                    'totalValue' => $totalValue,
                 ];
             }
 
@@ -165,6 +170,7 @@ class QuoteDashboardStatsService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -180,13 +186,15 @@ class QuoteDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
-                'month'  => $r->month,
+            $rows = $query->get()->map(fn ($r) => [
+                'month' => $r->month,
                 'amount' => (float) $r->amount,
             ]);
+
             return response()->json(['status' => 'success', 'monthlyQuoteValue' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -202,13 +210,15 @@ class QuoteDashboardStatsService
             if ($start && $end) {
                 $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn($r) => [
+            $rows = $query->get()->map(fn ($r) => [
                 'month' => $r->month,
                 'count' => (int) $r->count,
             ]);
+
             return response()->json(['status' => 'success', 'monthlyQuoteCount' => $rows]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -219,7 +229,7 @@ class QuoteDashboardStatsService
         // source rows exist. Normalize first so every downstream KPI aggregates on
         // one quote fact instead of raw joined rows.
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -232,7 +242,7 @@ class QuoteDashboardStatsService
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');
@@ -252,7 +262,9 @@ class QuoteDashboardStatsService
     private function periodDates(Request $request): array
     {
         [$start, $end] = $this->parseDates($request);
-        if ($start && $end) return [$start, $end];
+        if ($start && $end) {
+            return [$start, $end];
+        }
 
         $period = (string) $request->input('period', 'currentYear');
 
@@ -261,12 +273,12 @@ class QuoteDashboardStatsService
                 now()->subMonthNoOverflow()->startOfMonth()->format('Y-m-d'),
                 now()->subMonthNoOverflow()->endOfMonth()->format('Y-m-d'),
             ],
-            'currentMonth'  => [now()->format('Y-m-01'), now()->format('Y-m-d')],
-            '3months'       => [now()->subMonths(2)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
-            '6months'       => [now()->subMonths(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
-            '5years'        => [now()->subYears(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
-            'allTime'       => [null, null],
-            default         => [now()->format('Y-01-01'), now()->format('Y-m-d')], // currentYear
+            'currentMonth' => [now()->format('Y-m-01'), now()->format('Y-m-d')],
+            '3months' => [now()->subMonths(2)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
+            '6months' => [now()->subMonths(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
+            '5years' => [now()->subYears(5)->startOfMonth()->format('Y-m-d'), now()->format('Y-m-d')],
+            'allTime' => [null, null],
+            default => [now()->format('Y-01-01'), now()->format('Y-m-d')], // currentYear
         };
     }
 

@@ -2,22 +2,11 @@
 
 namespace App\Services\Projects;
 
-use App\Http\Requests\Project\AddCollaboratorRequest;
-use App\Http\Requests\Project\AddExpenseRequest;
-use App\Http\Requests\Project\AddProgressRequest;
-use App\Http\Requests\Project\AssignVendorRequest;
 use App\Http\Requests\Project\CloseProjectRequest;
 use App\Http\Requests\Project\StoreProjectRequest;
-use App\Http\Requests\Project\UpdateProgressRequest;
 use App\Http\Requests\Project\UpdateProjectRequest;
-use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 
 class ProjectCoreService
 {
@@ -34,6 +23,11 @@ class ProjectCoreService
     public function index(Request $request): JsonResponse
     {
         return $this->projectListService()->index($request);
+    }
+
+    public function options(Request $request): JsonResponse
+    {
+        return $this->projectListService()->options($request);
     }
 
     public function store(StoreProjectRequest $request): JsonResponse

@@ -20,7 +20,7 @@ class QuoteRecordListingService
 
         try {
             $quotes = DB::table($cfg['table'])
-                ->orderByRaw("FIELD(status, 'Open', 'Failed', 'Awarded')")
+                ->orderByRaw("CASE status WHEN 'Open' THEN 0 WHEN 'Failed' THEN 1 WHEN 'Awarded' THEN 2 ELSE 3 END")
                 ->orderByDesc('created_at')
                 ->get();
 

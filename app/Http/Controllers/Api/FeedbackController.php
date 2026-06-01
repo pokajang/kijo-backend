@@ -7,6 +7,8 @@ use App\Http\Requests\Feedback\StoreFeedbackRequest;
 use App\Http\Requests\Feedback\UpdateFeedbackRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
+use App\Services\Mail\SystemEmailBodyBuilder;
+use App\Services\Mail\SystemEmailUrlBuilder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -70,10 +72,22 @@ class FeedbackController extends Controller
             'azam@amiosh.com',
             'System Admin',
             'New System Ticket Submitted',
-            "<p>A new system ticket has been submitted in KIJO.</p>
-             <p><strong>Submitted By:</strong> {$nameCode} (ID: {$staffId})</p>
-             <p><strong>Feedback:</strong></p>
-             <p>" . nl2br(htmlspecialchars($feedback)) . '</p>',
+            $this->emailBody()->render([
+                'intro' => 'A new system ticket has been submitted in KIJO.',
+                'status' => ['label' => 'New Ticket', 'tone' => 'warning'],
+                'detailsHeading' => 'Ticket Details',
+                'details' => [
+                    'Submitted By' => "{$nameCode} (ID: {$staffId})",
+                    'Feedback' => $feedback,
+                ],
+                'actionUrl' => $this->emailUrls()->frontendUrl("/support/feedback/{$feedbackId}"),
+                'actionLabel' => 'Open system ticket',
+                'signOff' => false,
+            ]),
+            [],
+            null,
+            null,
+            $this->emailBody()->presentation('System Ticket', 'New System Ticket Submitted', 'Action required', 'A new system ticket has been submitted in KIJO.'),
         );
 
         return response()->json(['status' => 'success', 'message' => 'Feedback submitted successfully.']);
@@ -149,5 +163,15 @@ class FeedbackController extends Controller
         DB::table('system_feedbacks')->where('id', $id)->delete();
         $this->auditLog->log($request, "Deleted feedback ticket #{$id}");
         return response()->json(['status' => 'success', 'message' => 'Feedback deleted']);
+    }
+
+    private function emailBody(): SystemEmailBodyBuilder
+    {
+        return app(SystemEmailBodyBuilder::class);
+    }
+
+    private function emailUrls(): SystemEmailUrlBuilder
+    {
+        return app(SystemEmailUrlBuilder::class);
     }
 }

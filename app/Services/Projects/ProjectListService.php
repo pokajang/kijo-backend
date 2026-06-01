@@ -2,25 +2,16 @@
 
 namespace App\Services\Projects;
 
-use App\Http\Requests\Project\AddCollaboratorRequest;
-use App\Http\Requests\Project\AddExpenseRequest;
-use App\Http\Requests\Project\AddProgressRequest;
-use App\Http\Requests\Project\AssignVendorRequest;
-use App\Http\Requests\Project\CloseProjectRequest;
-use App\Http\Requests\Project\StoreProjectRequest;
-use App\Http\Requests\Project\UpdateProgressRequest;
-use App\Http\Requests\Project\UpdateProjectRequest;
 use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Schema;
 
 class ProjectListService
 {
+    private const STAFF_PROJECT_ROLES = ['leader', 'pic', 'owner', 'assistant', 'collaborator'];
+
     private static bool $dompdfAutoloaderRegistered = false;
 
     public function __construct(private AuditLogService $auditLog) {}
@@ -110,8 +101,8 @@ class ProjectListService
         $staffByProject = [];
         foreach ($staffRows as $row) {
             $staffByProject[$row->project_id][] = [
-                'full_name'    => $row->full_name,
-                'name_code'    => $row->name_code,
+                'full_name' => $row->full_name,
+                'name_code' => $row->name_code,
                 'project_role' => $row->project_role,
             ];
         }
@@ -141,9 +132,9 @@ class ProjectListService
         foreach ($closingRows as $row) {
             $closingByProject[$row->project_id] = [
                 'close_date' => $row->close_date,
-                'reason'     => $row->reason,
-                'closed_at'  => $row->closed_at,
-                'closed_by'  => $row->closed_by,
+                'reason' => $row->reason,
+                'closed_at' => $row->closed_at,
+                'closed_by' => $row->closed_by,
             ];
         }
 
@@ -154,21 +145,21 @@ class ProjectListService
         $clientPicsByCompany = [];
         foreach ($clientPicRows as $row) {
             $clientPicsByCompany[$row->company_id][] = [
-                'full_name'     => $row->full_name,
-                'email'         => $row->email,
+                'full_name' => $row->full_name,
+                'email' => $row->email,
                 'mobile_number' => $row->mobile_number,
-                'position'      => $row->position,
+                'position' => $row->position,
             ];
         }
 
         $equipmentQuoteIds = [];
         foreach ($projects as $p) {
-            if ($p['project_type'] === 'Equipment Supply' && !empty($p['quote_id'])) {
+            if ($p['project_type'] === 'Equipment Supply' && ! empty($p['quote_id'])) {
                 $equipmentQuoteIds[] = $p['quote_id'];
             }
         }
         $equipmentItemsByQuote = [];
-        if (!empty($equipmentQuoteIds)) {
+        if (! empty($equipmentQuoteIds)) {
             $eqPlaceholders = implode(',', array_fill(0, count($equipmentQuoteIds), '?'));
             $eqRows = DB::select(
                 "SELECT qi.quote_id, qi.id, qi.item_id, qi.quantity, qi.unit_price,
@@ -184,34 +175,34 @@ class ProjectListService
         }
 
         foreach ($projects as &$project) {
-            $id       = $project['id'];
+            $id = $project['id'];
             $clientId = $project['client_id'];
 
             $addressParts = array_filter([
                 $project['client_address'] ?? '',
-                $project['client_city']    ?? '',
-                $project['client_state']   ?? '',
-                $project['client_zip']     ?? '',
+                $project['client_city'] ?? '',
+                $project['client_state'] ?? '',
+                $project['client_zip'] ?? '',
             ]);
             $project['client_full_address'] = implode(', ', $addressParts);
 
             $project['progress_updates'] = $progressByProject[$id] ?? [];
-            $project['assigned_staff']   = $staffByProject[$id]    ?? [];
-            $project['vendors']          = $vendorsByProject[$id]   ?? [];
-            $project['closing_details']  = $closingByProject[$id]   ?? null;
+            $project['assigned_staff'] = $staffByProject[$id] ?? [];
+            $project['vendors'] = $vendorsByProject[$id] ?? [];
+            $project['closing_details'] = $closingByProject[$id] ?? null;
 
-            if (!empty($project['quote_pic_name']) || !empty($project['quote_pic_email'])) {
+            if (! empty($project['quote_pic_name']) || ! empty($project['quote_pic_email'])) {
                 $project['client_pics'] = [[
-                    'full_name'     => $project['quote_pic_name']     ?? '',
-                    'email'         => $project['quote_pic_email']    ?? '',
-                    'mobile_number' => $project['quote_pic_phone']    ?? '',
-                    'position'      => $project['quote_pic_position'] ?? '',
+                    'full_name' => $project['quote_pic_name'] ?? '',
+                    'email' => $project['quote_pic_email'] ?? '',
+                    'mobile_number' => $project['quote_pic_phone'] ?? '',
+                    'position' => $project['quote_pic_position'] ?? '',
                 ]];
             } else {
                 $project['client_pics'] = $clientPicsByCompany[$clientId] ?? [];
             }
 
-            if ($project['project_type'] === 'Equipment Supply' && !empty($project['quote_id'])) {
+            if ($project['project_type'] === 'Equipment Supply' && ! empty($project['quote_id'])) {
                 $project['equipment_items'] = $equipmentItemsByQuote[$project['quote_id']] ?? [];
             } else {
                 $project['equipment_items'] = [];
@@ -228,6 +219,101 @@ class ProjectListService
         unset($project);
 
         return response()->json($projects);
+    }
+
+    public function options(Request $request): JsonResponse
+    {
+        $status = trim((string) $request->query('status', 'active'));
+        $status = $status !== '' ? $status : 'active';
+        $scope = strtolower(trim((string) $request->query('scope', '')));
+        $hasProjectType = Schema::hasColumn('projects_main', 'project_type');
+        $hasQuoteId = Schema::hasColumn('projects_main', 'quote_id');
+        $hasQuoteValue = Schema::hasColumn('projects_main', 'quote_value');
+        $hasClientId = Schema::hasColumn('projects_main', 'client_id');
+
+        $select = [
+            'projects_main.id',
+            'projects_main.project_name as projectName',
+            'projects_main.status',
+            'projects_main.service_start_date as startDate',
+            'projects_main.service_end_date as endDate',
+        ];
+
+        $select[] = $hasProjectType
+            ? 'projects_main.project_type as projectType'
+            : DB::raw('NULL as projectType');
+        $select[] = $hasQuoteValue
+            ? 'projects_main.quote_value as quoteValue'
+            : DB::raw('NULL as quoteValue');
+
+        $query = DB::table('projects_main')
+            ->select($select)
+            ->when(strtolower($status) !== 'all', function ($query) use ($status) {
+                $query->whereRaw('LOWER(TRIM(projects_main.status)) = ?', [strtolower($status)]);
+            });
+
+        $clientNameExpressions = [];
+        if ($hasProjectType && $hasQuoteId) {
+            $quoteTables = [
+                ['table' => 'quotes_training', 'alias' => 'qt', 'type' => 'Training'],
+                ['table' => 'quotes_ih', 'alias' => 'qh', 'type' => 'Industrial Hygiene'],
+                ['table' => 'quotes_manpower', 'alias' => 'qm', 'type' => 'Manpower Supply'],
+                ['table' => 'quotes_special', 'alias' => 'qs', 'type' => 'Special Service'],
+                ['table' => 'quotes_equipment', 'alias' => 'qe', 'type' => 'Equipment Supply'],
+            ];
+
+            foreach ($quoteTables as $quoteTable) {
+                if (! Schema::hasTable($quoteTable['table'])) {
+                    continue;
+                }
+
+                $query->leftJoin("{$quoteTable['table']} as {$quoteTable['alias']}", function ($join) use ($quoteTable): void {
+                    $join
+                        ->on("{$quoteTable['alias']}.id", '=', 'projects_main.quote_id')
+                        ->where('projects_main.project_type', '=', $quoteTable['type']);
+                });
+                $clientNameExpressions[] = "{$quoteTable['alias']}.client_name";
+            }
+        }
+
+        if ($hasClientId && Schema::hasTable('client_company')) {
+            $query->leftJoin('client_company as cc', 'cc.company_id', '=', 'projects_main.client_id');
+            $clientNameExpressions[] = 'cc.company_name';
+        }
+
+        if (empty($clientNameExpressions)) {
+            $query->selectRaw('NULL as clientName');
+        } elseif (count($clientNameExpressions) === 1) {
+            $query->selectRaw($clientNameExpressions[0].' as clientName');
+        } else {
+            $query->selectRaw('COALESCE('.implode(', ', $clientNameExpressions).') as clientName');
+        }
+
+        if ($scope === 'mine') {
+            $staffId = (int) $request->session()->get('staff_id', 0);
+            if ($staffId <= 0) {
+                return response()->json(['status' => 'error', 'message' => 'Not authenticated'], 401);
+            }
+
+            if (! Schema::hasTable('project_collaborators')) {
+                return response()->json(['status' => 'success', 'data' => []]);
+            }
+
+            $query
+                ->join('project_collaborators as pc', 'pc.project_id', '=', 'projects_main.id')
+                ->where('pc.staff_id', $staffId)
+                ->whereIn(DB::raw("LOWER(TRIM(COALESCE(pc.project_role, '')))"), self::STAFF_PROJECT_ROLES)
+                ->distinct();
+        }
+
+        $projects = $query
+            ->orderBy('projects_main.project_name')
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $projects,
+        ]);
     }
 
     public function show(Request $request, int $id): JsonResponse
@@ -281,27 +367,27 @@ class ProjectListService
 
         $addressParts = array_filter([
             $project['client_address'] ?? '',
-            $project['client_city']    ?? '',
-            $project['client_state']   ?? '',
-            $project['client_zip']     ?? '',
+            $project['client_city'] ?? '',
+            $project['client_state'] ?? '',
+            $project['client_zip'] ?? '',
         ]);
         $project['client_full_address'] = implode(', ', $addressParts);
 
         $project['progress_updates'] = array_map(
             fn ($row) => (array) $row,
             DB::select(
-                "SELECT project_id, progress_date, progress_text, updated_by, updated_on
+                'SELECT project_id, progress_date, progress_text, updated_by, updated_on
                  FROM project_progress
                  WHERE project_id = ?
-                 ORDER BY progress_date DESC",
+                 ORDER BY progress_date DESC',
                 [$projectId]
             )
         );
 
         $project['assigned_staff'] = array_map(
             fn ($row) => [
-                'full_name'    => $row->full_name,
-                'name_code'    => $row->name_code,
+                'full_name' => $row->full_name,
+                'name_code' => $row->name_code,
                 'project_role' => $row->project_role,
             ],
             DB::select(
@@ -318,46 +404,46 @@ class ProjectListService
         $project['vendors'] = array_map(
             fn ($row) => (array) $row,
             DB::select(
-                "SELECT pv.project_id, v.vendor_id, v.vendor_name, v.contact_person_name,
+                'SELECT pv.project_id, v.vendor_id, v.vendor_name, v.contact_person_name,
                         v.mobile_number, v.email, pv.award_value, pv.position, pv.remarks,
                         pv.services_description, pv.venue_details, pv.fee_breakdown, pv.payment_terms
                  FROM project_vendors pv
                  JOIN vendor_main_details v ON v.vendor_id = pv.vendor_id
-                 WHERE pv.project_id = ?",
+                 WHERE pv.project_id = ?',
                 [$projectId]
             )
         );
 
         $closing = DB::selectOne(
-            "SELECT pcd.project_id, pcd.close_date, pcd.reason, pcd.closed_at, sg.name_code AS closed_by
+            'SELECT pcd.project_id, pcd.close_date, pcd.reason, pcd.closed_at, sg.name_code AS closed_by
              FROM project_closing_details pcd
              LEFT JOIN staff_general sg ON sg.staff_id = pcd.closed_by
              WHERE pcd.project_id = ?
              ORDER BY pcd.closed_at DESC
-             LIMIT 1",
+             LIMIT 1',
             [$projectId]
         );
         $project['closing_details'] = $closing ? [
             'close_date' => $closing->close_date,
-            'reason'     => $closing->reason,
-            'closed_at'  => $closing->closed_at,
-            'closed_by'  => $closing->closed_by,
+            'reason' => $closing->reason,
+            'closed_at' => $closing->closed_at,
+            'closed_by' => $closing->closed_by,
         ] : null;
 
-        if (!empty($project['quote_pic_name']) || !empty($project['quote_pic_email'])) {
+        if (! empty($project['quote_pic_name']) || ! empty($project['quote_pic_email'])) {
             $project['client_pics'] = [[
-                'full_name'     => $project['quote_pic_name']     ?? '',
-                'email'         => $project['quote_pic_email']    ?? '',
-                'mobile_number' => $project['quote_pic_phone']    ?? '',
-                'position'      => $project['quote_pic_position'] ?? '',
+                'full_name' => $project['quote_pic_name'] ?? '',
+                'email' => $project['quote_pic_email'] ?? '',
+                'mobile_number' => $project['quote_pic_phone'] ?? '',
+                'position' => $project['quote_pic_position'] ?? '',
             ]];
         } else {
             $project['client_pics'] = array_map(
                 fn ($row) => [
-                    'full_name'     => $row->full_name,
-                    'email'         => $row->email,
+                    'full_name' => $row->full_name,
+                    'email' => $row->email,
                     'mobile_number' => $row->mobile_number,
-                    'position'      => $row->position,
+                    'position' => $row->position,
                 ],
                 DB::select(
                     "SELECT company_id, full_name, email, mobile_number, position
@@ -369,15 +455,15 @@ class ProjectListService
             );
         }
 
-        if ($project['project_type'] === 'Equipment Supply' && !empty($project['quote_id'])) {
+        if ($project['project_type'] === 'Equipment Supply' && ! empty($project['quote_id'])) {
             $project['equipment_items'] = array_map(
                 fn ($row) => (array) $row,
                 DB::select(
-                    "SELECT qi.quote_id, qi.id, qi.item_id, qi.quantity, qi.unit_price,
+                    'SELECT qi.quote_id, qi.id, qi.item_id, qi.quantity, qi.unit_price,
                              qi.marked_up_price, qi.line_total, ci.item_name, ci.description, ci.unit
                      FROM quotes_equipment_items qi
                      JOIN catalog_items ci ON ci.id = qi.item_id
-                     WHERE qi.quote_id = ?",
+                     WHERE qi.quote_id = ?',
                     [(int) $project['quote_id']]
                 )
             );
@@ -408,23 +494,23 @@ class ProjectListService
             ->where('id', $projectId)
             ->first();
 
-        if (!$project || empty($project->quote_id) || empty($project->project_type)) {
+        if (! $project || empty($project->quote_id) || empty($project->project_type)) {
             return response()->json([
-                'status'  => 'error',
+                'status' => 'error',
                 'message' => 'Missing official quotation data. This project may have been created without official quotation records.',
             ]);
         }
 
         $typeMap = [
-            'training'          => 'quotes_training',
-            'equipment supply'  => 'quotes_equipment',
-            'industrial hygiene'=> 'quotes_ih',
-            'manpower supply'   => 'quotes_manpower',
-            'special service'   => 'quotes_special',
+            'training' => 'quotes_training',
+            'equipment supply' => 'quotes_equipment',
+            'industrial hygiene' => 'quotes_ih',
+            'manpower supply' => 'quotes_manpower',
+            'special service' => 'quotes_special',
         ];
 
         $typeLower = strtolower(trim($project->project_type));
-        if (!isset($typeMap[$typeLower])) {
+        if (! isset($typeMap[$typeLower])) {
             return response()->json(['status' => 'error', 'message' => 'Unrecognized project type.']);
         }
 
@@ -433,7 +519,7 @@ class ProjectListService
             ->where('id', $project->quote_id)
             ->first();
 
-        if (!$crm) {
+        if (! $crm) {
             return response()->json(['status' => 'error', 'message' => 'No CRM details found for the linked quote.']);
         }
 

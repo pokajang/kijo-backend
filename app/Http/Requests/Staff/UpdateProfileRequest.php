@@ -2,29 +2,34 @@
 
 namespace App\Http\Requests\Staff;
 
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Http\Exceptions\HttpResponseException;
 
 class UpdateProfileRequest extends FormRequest
 {
-    public function authorize(): bool { return true; }
+    public function authorize(): bool
+    {
+        return true;
+    }
 
     public function rules(): array
     {
         return [
-            'fullName' => ['sometimes', 'string', 'max:255'],
-            'email' => ['sometimes', 'email', 'max:255'],
-            'mobileNumber' => ['sometimes', 'nullable', 'string', 'max:30'],
-            'nameCode' => ['sometimes', 'nullable', 'string', 'size:3', 'regex:/^[A-Z]{3}$/'],
+            'fullName' => ['required', 'string', 'max:255'],
+            'email' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'mobileNumber' => ['required', 'string', 'max:30'],
+            'nameCode' => ['sometimes', 'nullable', 'string', 'max:50'],
             'crmPosition' => ['sometimes', 'nullable', 'string', 'max:150'],
 
-            'birthDate' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
-            'nric' => ['sometimes', 'nullable', 'string', 'max:40'],
-            'currentAddress' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'birthDate' => ['required', 'date_format:Y-m-d'],
+            'nric' => ['required', 'string', 'max:40'],
+            'currentAddress' => ['required', 'string', 'max:1000'],
 
-            'emergencyName1' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'emergencyRelationship1' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'emergencyPhone1' => ['sometimes', 'nullable', 'string', 'max:30'],
-            'emergencyAddress1' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'emergencyName1' => ['required', 'string', 'max:255'],
+            'emergencyRelationship1' => ['required', 'string', 'max:255'],
+            'emergencyPhone1' => ['required', 'string', 'max:30'],
+            'emergencyAddress1' => ['required', 'string', 'max:1000'],
 
             'emergencyName2' => ['sometimes', 'nullable', 'string', 'max:255'],
             'emergencyRelationship2' => ['sometimes', 'nullable', 'string', 'max:255'],
@@ -46,5 +51,14 @@ class UpdateProfileRequest extends FormRequest
         if ($nameCode !== null && trim((string) $nameCode) !== '') {
             $this->merge(['nameCode' => strtoupper(trim((string) $nameCode))]);
         }
+    }
+
+    protected function failedValidation(Validator $validator): void
+    {
+        throw new HttpResponseException(response()->json([
+            'status' => 'error',
+            'message' => 'Review the highlighted fields before saving.',
+            'errors' => $validator->errors(),
+        ], 422));
     }
 }

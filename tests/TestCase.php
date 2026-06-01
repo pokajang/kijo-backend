@@ -13,6 +13,8 @@ abstract class TestCase extends BaseTestCase
         $app = require dirname(__DIR__).'/bootstrap/app.php';
         $app->make(Kernel::class)->bootstrap();
         $app['config']->set('app.url', 'http://localhost');
+        $app['config']->set('services.openai.key', null);
+        $app['config']->set('services.workload_ai_classification.enabled', false);
 
         return $app;
     }

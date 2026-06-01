@@ -2,10 +2,15 @@
 
 namespace Tests\Feature;
 
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
+use App\Mail\MonthlyDashboardReportMail;
+use App\Services\Stats\WorkloadSnapshotHealthService;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class DashboardStatsControllerTest extends TestCase
@@ -73,6 +78,150 @@ class DashboardStatsControllerTest extends TestCase
             'segment_type' => 'individual',
             'service_category' => 'training',
         ]);
+    }
+
+    public function test_monitoring_revenue_uses_realized_project_value_and_proposal_value_stays_quote_based(): void
+    {
+        DB::table('quotes_training')->where('id', 1)->update([
+            'quote_ref_no' => 'TR-Q-001',
+            'training_title' => 'Training A',
+            'client_name' => 'Client A',
+            'created_at' => '2026-05-01 10:00:00',
+            'award_date' => '2026-05-05',
+            'status' => 'Awarded',
+            'grand_total' => 3500,
+        ]);
+        DB::table('quotes_ih')->where('id', 2)->update([
+            'quote_ref_no' => 'IH-Q-002',
+            'service_title' => 'IH Service B',
+            'client_name' => 'Client B',
+            'created_at' => '2026-05-02 10:00:00',
+            'award_date' => '2026-05-06',
+            'status' => 'WON',
+            'grand_total' => 2500,
+        ]);
+        DB::table('quotes_training')->insert([
+            'id' => 20,
+            'quote_ref_no' => 'TR-Q-ORPHAN',
+            'training_title' => 'Awarded Quote Without Project',
+            'client_name' => 'Quote Only Client',
+            'created_by_code' => 'AZA',
+            'created_by_name' => 'Azam Bin Husain',
+            'created_at' => '2026-05-03 10:00:00',
+            'award_date' => '2026-05-07',
+            'status' => 'Awarded',
+            'grand_total' => 9000,
+        ]);
+        DB::table('quotes_training')->insert([
+            'id' => 21,
+            'quote_ref_no' => 'TR-Q-TERM',
+            'training_title' => 'Terminated Project Quote',
+            'client_name' => 'Terminated Client',
+            'created_by_code' => 'AZA',
+            'created_by_name' => 'Azam Bin Husain',
+            'created_at' => '2026-05-04 10:00:00',
+            'award_date' => '2026-05-08',
+            'status' => 'Awarded',
+            'grand_total' => 700,
+        ]);
+        DB::table('projects_main')->insert([
+            'id' => 121,
+            'project_name' => 'Terminated Project',
+            'quote_id' => 21,
+            'project_type' => 'Training',
+            'quote_value' => 700,
+            'award_date' => '2026-05-08',
+            'status' => 'terminated',
+            'created_by' => 1,
+        ]);
+
+        $statusResponse = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+        $statusResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $this->assertSame(6200.0, (float) $statusResponse->json('totals.totalRm'));
+        $this->assertSame(6200.0, (float) $statusResponse->json('companyTotalRm'));
+        $this->assertSame(7500.0, (float) $statusResponse->json('yearToDateCompanyTotalRm'));
+
+        $training = collect($statusResponse->json('rows'))->firstWhere('label', 'TRAINING');
+        $this->assertSame(4200.0, (float) $training['totalRm']);
+        $this->assertSame(['manual', 'project'], collect($training['details']['total']['rm']['items'])->pluck('sourceType')->sort()->values()->all());
+
+        $salesResponse = $this->authenticatedPost('/stats/monthly-sales', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+        $salesResponse->assertOk()->assertJsonPath('status', 'success');
+        $salesMay = collect($salesResponse->json('monthlySales'))->firstWhere('month', '2026-05');
+
+        $this->assertSame(5000.0, (float) $salesMay['systemAmount']);
+        $this->assertSame(1200.0, (float) $salesMay['manualAmount']);
+        $this->assertSame(6200.0, (float) $salesMay['amount']);
+
+        $toolsResponse = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+        $toolsResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $this->assertSame(6200.0, (float) $toolsResponse->json('companyTotalRm'));
+        $this->assertSame(6200.0, (float) $toolsResponse->json('currentTotalRm'));
+
+        $trendResponse = $this->authenticatedPost('/stats/monitoring-trends', [
+            'end_date' => '2026-05-31',
+            'trend_period' => 'last6',
+        ]);
+        $trendResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $may = collect($trendResponse->json('series'))->firstWhere('month', '2026-05');
+
+        $this->assertSame(16700.0, (float) $may['proposalRm']);
+        $this->assertSame(6200.0, (float) $may['revenueRm']);
+    }
+
+    public function test_monitoring_ytd_current_month_cuts_off_at_today(): void
+    {
+        DB::table('quotes_training')->insert([
+            'id' => 30,
+            'quote_ref_no' => 'TR-Q-FUTURE',
+            'training_title' => 'Future Current Month Project',
+            'client_name' => 'Future Client',
+            'created_by_code' => 'AZA',
+            'created_by_name' => 'Azam Bin Husain',
+            'created_at' => '2026-05-10 10:00:00',
+            'award_date' => '2026-05-20',
+            'status' => 'Awarded',
+            'grand_total' => 1111,
+        ]);
+        DB::table('projects_main')->insert([
+            'id' => 130,
+            'project_name' => 'Future Current Month Project',
+            'quote_id' => 30,
+            'project_type' => 'Training',
+            'quote_value' => 1111,
+            'award_date' => '2026-05-20',
+            'status' => 'active',
+            'created_by' => 1,
+        ]);
+
+        $currentMonthResponse = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+        $currentMonthResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $this->assertSame(7311.0, (float) $currentMonthResponse->json('totals.totalRm'));
+        $this->assertSame(7500.0, (float) $currentMonthResponse->json('yearToDateCompanyTotalRm'));
+
+        $historicalResponse = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'start_date' => '2026-04-01',
+            'end_date' => '2026-04-30',
+        ]);
+        $historicalResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $this->assertSame(1300.0, (float) $historicalResponse->json('yearToDateCompanyTotalRm'));
     }
 
     public function test_conversion_uses_quote_created_cohort_and_awarded_or_won_status(): void
@@ -347,7 +496,7 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertContains('BOB', collect($staffResponse->json('staffOptions'))->pluck('value')->all());
 
         $detailResponse = $this->authenticatedGet(
-            '/stats/monitoring-manual-pipeline-entry/' . rawurlencode((string) $record['id'])
+            '/stats/monitoring-manual-pipeline-entry/'.rawurlencode((string) $record['id'])
         );
 
         $detailResponse->assertOk()->assertJsonPath('status', 'success');
@@ -375,6 +524,133 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(['INV-OPEN-001'], collect($debtorsResponse->json('debtors'))->pluck('invoice_ref_no')->all());
         $this->assertSame(30, (int) $debtorsResponse->json('debtors.0.payment_terms_days'));
         $this->assertSame('system_default', $debtorsResponse->json('debtors.0.payment_terms_source'));
+    }
+
+    public function test_financial_awarded_not_invoiced_uses_remaining_project_value_as_of_date(): void
+    {
+        DB::table('invoices')->delete();
+        DB::table('projects_main')->delete();
+
+        DB::table('projects_main')->insert([
+            [
+                'id' => 201,
+                'project_name' => 'Uninvoiced Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 1000,
+                'award_date' => '2026-05-01',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 202,
+                'project_name' => 'Partially Invoiced Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 2000,
+                'award_date' => '2026-05-02',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 203,
+                'project_name' => 'Fully Invoiced Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 3000,
+                'award_date' => '2026-05-03',
+                'status' => 'completed',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 204,
+                'project_name' => 'Over Invoiced Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 400,
+                'award_date' => '2026-05-04',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 205,
+                'project_name' => 'Future Invoice Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 1500,
+                'award_date' => '2026-05-05',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 206,
+                'project_name' => 'Cancelled Invoice Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 800,
+                'award_date' => '2026-05-06',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 207,
+                'project_name' => 'Future Awarded Project',
+                'quote_id' => null,
+                'project_type' => 'Training',
+                'quote_value' => 900,
+                'award_date' => '2026-05-12',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+        ]);
+
+        DB::table('invoices')->insert([
+            [
+                'invoice_ref_no' => 'INV-PARTIAL-001',
+                'invoice_date' => '2026-05-07',
+                'grand_total' => 750,
+                'status' => 'Pending',
+                'project_id' => 202,
+            ],
+            [
+                'invoice_ref_no' => 'INV-FULL-001',
+                'invoice_date' => '2026-05-08',
+                'grand_total' => 3000,
+                'status' => 'Pending',
+                'project_id' => 203,
+            ],
+            [
+                'invoice_ref_no' => 'INV-OVER-001',
+                'invoice_date' => '2026-05-09',
+                'grand_total' => 500,
+                'status' => 'Pending',
+                'project_id' => 204,
+            ],
+            [
+                'invoice_ref_no' => 'INV-FUTURE-REDUCTION-001',
+                'invoice_date' => '2026-05-12',
+                'grand_total' => 1500,
+                'status' => 'Pending',
+                'project_id' => 205,
+            ],
+            [
+                'invoice_ref_no' => 'INV-CANCELLED-001',
+                'invoice_date' => '2026-05-10',
+                'grand_total' => 800,
+                'status' => 'Cancelled',
+                'project_id' => 206,
+            ],
+        ]);
+
+        $response = $this->authenticatedPost('/stats/monthly-income-statement', [
+            'start_date' => '2026-01-01',
+            'end_date' => '2026-05-11',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $this->assertSame(4550.0, (float) $response->json('uninvoicedAwardedAmount'));
+        $this->assertSame(4, (int) $response->json('uninvoicedAwardedCount'));
     }
 
     public function test_financial_monthly_invoiced_received_trend_uses_invoice_and_paid_dates(): void
@@ -408,6 +684,1961 @@ class DashboardStatsControllerTest extends TestCase
         ]);
     }
 
+    public function test_monitoring_one_month_range_returns_weekly_period_columns(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $columns = collect($response->json('periodColumns'));
+
+        $this->assertSame(['W1', 'W2', 'W3', 'W4', 'W5'], $columns->pluck('key')->all());
+        $this->assertSame(['week'], $columns->pluck('type')->unique()->values()->all());
+        $this->assertSame(['May 2026'], $columns->pluck('groupLabel')->unique()->values()->all());
+    }
+
+    public function test_monitoring_two_month_range_returns_weekly_columns_for_both_months(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-04-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $columns = collect($response->json('periodColumns'));
+
+        $this->assertCount(10, $columns);
+        $this->assertSame(['week'], $columns->pluck('type')->unique()->values()->all());
+        $this->assertSame(
+            ['Apr 2026', 'May 2026'],
+            $columns->pluck('groupLabel')->unique()->values()->all()
+        );
+        $this->assertTrue($columns->pluck('key')->contains('2026-04-W1'));
+        $this->assertTrue($columns->pluck('key')->contains('2026-05-W5'));
+    }
+
+    public function test_monitoring_long_range_compacts_previous_months_and_keeps_anchor_month_weekly(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'period' => 'currentYear',
+            'start_date' => '2026-01-01',
+            'end_date' => '2026-05-11',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $columns = collect($response->json('periodColumns'));
+
+        $this->assertSame(
+            ['month-2026-01', 'month-2026-02', 'month-2026-03', 'month-2026-04', '2026-05-W1', '2026-05-W2'],
+            $columns->pluck('key')->all()
+        );
+        $this->assertSame('Current Year', $response->json('rangeLabel'));
+        $this->assertSame('2026-05-11', $columns->last()['end']);
+
+        $totalRmFromColumns = collect($response->json('totals.periodic'))->sum('rm');
+        $this->assertSame((float) $response->json('totals.totalRm'), (float) $totalRmFromColumns);
+    }
+
+    public function test_monitoring_custom_partial_range_clips_first_and_last_columns(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'period' => 'custom',
+            'start_date' => '2026-03-10',
+            'end_date' => '2026-05-11',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $columns = collect($response->json('periodColumns'));
+
+        $this->assertSame('month-2026-03', $columns->first()['key']);
+        $this->assertSame('2026-03-10', $columns->first()['start']);
+        $this->assertSame('2026-03-31', $columns->first()['end']);
+        $this->assertSame('2026-05-W2', $columns->last()['key']);
+        $this->assertSame('2026-05-11', $columns->last()['end']);
+    }
+
+    public function test_monitoring_all_time_derives_available_range_without_cap(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'period' => 'allTime',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $columns = collect($response->json('periodColumns'));
+
+        $this->assertSame('All Time', $response->json('rangeLabel'));
+        $this->assertSame('2025-12-03', $response->json('rangeStart'));
+        $this->assertSame('2026-05-08', $response->json('rangeEnd'));
+        $this->assertSame('month-2025-12', $columns->first()['key']);
+        $this->assertSame('2025-12-03', $columns->first()['start']);
+        $this->assertSame('2026-05-W2', $columns->last()['key']);
+        $this->assertSame('2026-05-08', $columns->last()['end']);
+    }
+
+    public function test_workload_stats_groups_project_progress_by_updater_and_keeps_other_tasks_untagged(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 501,
+            'project_name' => 'Workload Project',
+            'client_id' => 501,
+            'status' => 'Active',
+            'created_by' => 1,
+        ]);
+        DB::table('client_company')->insert([
+            'company_id' => 501,
+            'company_name' => 'Workload Client',
+        ]);
+        DB::table('project_collaborators')->insert([
+            'project_id' => 501,
+            'staff_id' => 1,
+            'project_role' => 'Leader ',
+            'role_description' => 'Project owner',
+        ]);
+
+        $projectTaskId = DB::table('tasks')->insertGetId([
+            'staff_id' => 1,
+            'project_id' => 501,
+            'project_progress_id' => 1,
+            'title' => 'Project tagged overdue task',
+            'task_category' => 'real_effort',
+            'effort_score' => 3,
+            'classification_confidence' => 'high',
+            'classification_source' => 'system',
+            'user_override' => false,
+            'matched_pattern' => 'prepare report',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-08',
+            'created_at' => '2026-05-01 09:00:00',
+            'completed_at' => null,
+        ]);
+
+        $completedProjectTaskId = DB::table('tasks')->insertGetId([
+            'staff_id' => 1,
+            'project_id' => 501,
+            'project_progress_id' => 5,
+            'title' => 'Completed tagged task',
+            'status' => 'Completed',
+            'due_date' => '2026-05-09',
+            'created_at' => '2026-05-02 09:00:00',
+            'completed_at' => '2026-05-10',
+        ]);
+
+        DB::table('tasks')->insert([
+            [
+                'staff_id' => 2,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Untagged due soon task',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-13',
+                'created_at' => '2026-05-10 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 2,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Untagged completed task',
+                'status' => 'Completed',
+                'due_date' => '2026-05-05',
+                'created_at' => '2026-04-30 09:00:00',
+                'completed_at' => '2026-05-10',
+            ],
+            [
+                'staff_id' => 2,
+                'project_id' => 501,
+                'project_progress_id' => null,
+                'title' => 'Non collaborator tagged task',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-20',
+                'created_at' => '2026-05-11 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Old active task outside period',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-20',
+                'created_at' => '2026-04-15 09:00:00',
+                'completed_at' => null,
+            ],
+        ]);
+
+        DB::table('project_progress')->insert([
+            [
+                'id' => 1,
+                'project_id' => 501,
+                'progress_date' => '2026-05-01',
+                'progress_text' => 'Ongoing task: Project tagged overdue task',
+                'updated_by' => 1,
+                'updated_on' => '2026-05-01 09:00:00',
+                'source_type' => 'task',
+                'source_task_id' => $projectTaskId,
+            ],
+            [
+                'id' => 5,
+                'project_id' => 501,
+                'progress_date' => '2026-05-10',
+                'progress_text' => 'Completed task: Completed tagged task',
+                'updated_by' => 1,
+                'updated_on' => '2026-05-10 09:00:00',
+                'source_type' => 'task',
+                'source_task_id' => $completedProjectTaskId,
+            ],
+            [
+                'id' => 2,
+                'project_id' => 501,
+                'progress_date' => '2026-05-09',
+                'progress_text' => 'Manual project update',
+                'updated_by' => 1,
+                'updated_on' => '2026-05-09 09:00:00',
+                'source_type' => null,
+                'source_task_id' => null,
+            ],
+            [
+                'id' => 3,
+                'project_id' => 501,
+                'progress_date' => '2026-05-08',
+                'progress_text' => 'Bob project update',
+                'updated_by' => 2,
+                'updated_on' => '2026-05-08 09:00:00',
+                'source_type' => null,
+                'source_task_id' => null,
+            ],
+            [
+                'id' => 4,
+                'project_id' => 501,
+                'progress_date' => '2026-04-30',
+                'progress_text' => 'Outside period update',
+                'updated_by' => 1,
+                'updated_on' => '2026-04-30 09:00:00',
+                'source_type' => null,
+                'source_task_id' => null,
+            ],
+        ]);
+
+        $response = $this->authenticatedGet('/stats/workload?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+        $response
+            ->assertJsonPath('asOfDate', '2026-05-31')
+            ->assertJsonPath('completedWindow.startDate', '2026-05-01')
+            ->assertJsonPath('completedWindow.endDate', '2026-05-31');
+
+        $rows = collect($response->json('staff'));
+        $this->assertSame(['AZA', 'BOB'], $rows->pluck('staffCode')->values()->all());
+
+        $aza = $rows->firstWhere('staffCode', 'AZA');
+        $this->assertSame(8.35, (float) $aza['score']);
+        $this->assertSame(
+            [
+                ['label' => 'Non-project tasks', 'points' => 1],
+                ['label' => 'Project responsibility', 'points' => 5],
+                ['label' => 'Deadline pressure', 'points' => 2],
+                ['label' => 'Completed work', 'points' => 0.35],
+            ],
+            $aza['scoreBreakdown']
+        );
+        $this->assertSame(2, (int) $aza['activeTasks']);
+        $this->assertSame(2, (int) $aza['overdueTasks']);
+        $this->assertSame(1, (int) $aza['projectTaggedActiveTasks']);
+        $this->assertSame(1, (int) $aza['projectGroupCount']);
+        $this->assertSame(['Old active task outside period'], collect($aza['otherTasks'])->pluck('title')->all());
+        $this->assertSame('Workload Client', $aza['projectGroups'][0]['clientName']);
+        $this->assertSame('leader', $aza['projectGroups'][0]['projectRole']);
+        $this->assertSame(1.0, (float) $aza['projectGroups'][0]['roleWeight']);
+        $this->assertSame(0, (int) $aza['projectGroups'][0]['valueBand']);
+        $this->assertSame(1, (int) $aza['projectGroups'][0]['scoreableProgressCount']);
+        $this->assertSame(3.0, (float) $aza['projectGroups'][0]['projectTaskPoints']);
+        $this->assertSame(1.0, (float) $aza['projectGroups'][0]['projectBasePoints']);
+        $this->assertSame(1.0, (float) $aza['projectGroups'][0]['projectProgressPoints']);
+        $this->assertSame(0.0, (float) $aza['projectGroups'][0]['projectValuePoints']);
+        $this->assertSame(2.0, (float) $aza['projectGroups'][0]['projectOverheadPoints']);
+        $this->assertSame(5.0, (float) $aza['projectGroups'][0]['scoreContribution']);
+        $this->assertSame(['Project tagged overdue task'], collect($aza['projectGroups'][0]['activeTasks'])->pluck('title')->all());
+        $this->assertSame(['Completed tagged task'], collect($aza['projectGroups'][0]['completedTasks'])->pluck('title')->all());
+        $this->assertSame('real_effort', $aza['projectGroups'][0]['activeTasks'][0]['taskCategory']);
+        $this->assertSame(3.0, (float) $aza['projectGroups'][0]['activeTasks'][0]['effortScore']);
+        $this->assertSame('high', $aza['projectGroups'][0]['activeTasks'][0]['classificationConfidence']);
+        $this->assertSame(
+            ['Completed task: Completed tagged task', 'Manual project update'],
+            collect($aza['projectGroups'][0]['progressUpdates'])->pluck('progressText')->all()
+        );
+
+        $bob = $rows->firstWhere('staffCode', 'BOB');
+        $this->assertSame(3.05, (float) $bob['score']);
+        $this->assertSame(2, (int) $bob['activeTasks']);
+        $this->assertSame(2, (int) $bob['overdueTasks']);
+        $this->assertSame(0, (int) $bob['dueSoonTasks']);
+        $this->assertSame(0, (int) $bob['projectTaggedActiveTasks']);
+        $this->assertSame(0, (int) $bob['projectGroupCount']);
+        $this->assertSame([], $bob['projectGroups']);
+        $this->assertSame(['Untagged completed task'], collect($bob['completedTasks'])->pluck('title')->all());
+        $this->assertEqualsCanonicalizing(
+            ['Non collaborator tagged task', 'Untagged due soon task', 'Untagged completed task'],
+            collect($bob['otherTasks'])->pluck('title')->all()
+        );
+        $this->assertSame(
+            'Non collaborator tagged task',
+            collect($bob['otherTasks'])->pluck('title')->first()
+        );
+        $this->assertNotContains(
+            'Bob project update',
+            collect($rows)->flatMap(fn ($row) => collect($row['projectGroups'])->flatMap(fn ($group) => collect($group['progressUpdates'])->pluck('progressText')))->all()
+        );
+    }
+
+    public function test_workload_payload_exposes_displayed_project_group_count_separately_from_tagged_task_count(): void
+    {
+        DB::table('client_company')->insert([
+            ['company_id' => 701, 'company_name' => 'Count Client A'],
+            ['company_id' => 702, 'company_name' => 'Count Client B'],
+        ]);
+        DB::table('projects_main')->insert([
+            [
+                'id' => 701,
+                'project_name' => 'Tagged Task Project',
+                'client_id' => 701,
+                'status' => 'Active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 702,
+                'project_name' => 'Manual Progress Project',
+                'client_id' => 702,
+                'status' => 'Active',
+                'created_by' => 1,
+            ],
+        ]);
+        DB::table('project_collaborators')->insert([
+            ['project_id' => 701, 'staff_id' => 1, 'project_role' => 'Leader'],
+            ['project_id' => 702, 'staff_id' => 1, 'project_role' => 'Leader'],
+        ]);
+        DB::table('tasks')->insert([
+            'staff_id' => 1,
+            'project_id' => 701,
+            'project_progress_id' => null,
+            'title' => 'Prepare tagged project report',
+            'task_category' => 'real_effort',
+            'effort_score' => 3,
+            'classification_confidence' => 'high',
+            'classification_source' => 'system',
+            'user_override' => false,
+            'matched_pattern' => 'report writing',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-20',
+            'created_at' => '2026-05-10 09:00:00',
+            'completed_at' => null,
+        ]);
+        DB::table('project_progress')->insert([
+            'project_id' => 702,
+            'progress_date' => '2026-05-12',
+            'progress_text' => 'Manual update for second displayed project',
+            'updated_by' => 1,
+            'updated_on' => '2026-05-12 09:00:00',
+            'source_type' => null,
+            'source_task_id' => null,
+        ]);
+
+        $response = $this->authenticatedGet('/stats/workload?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+        $aza = collect($response->json('staff'))->firstWhere('staffCode', 'AZA');
+        $this->assertSame(1, (int) $aza['projectTaggedActiveTasks']);
+        $this->assertSame(2, (int) $aza['projectGroupCount']);
+        $this->assertEqualsCanonicalizing(
+            ['Tagged Task Project', 'Manual Progress Project'],
+            collect($aza['projectGroups'])->pluck('projectName')->all()
+        );
+    }
+
+    public function test_workload_pdf_exports_the_selected_snapshot(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 990,
+            'project_name' => 'PDF Workload Project',
+            'quote_value' => 12345,
+            'client_id' => 990,
+            'status' => 'Active',
+            'created_by' => 1,
+        ]);
+
+        DB::table('project_collaborators')->insert([
+            'project_id' => 990,
+            'staff_id' => 1,
+            'project_role' => 'Leader',
+        ]);
+
+        DB::table('tasks')->insert([
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'PDF workload task',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-15',
+                'created_at' => '2026-05-10 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => 990,
+                'project_progress_id' => null,
+                'title' => 'PDF project workload task',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-20',
+                'created_at' => '2026-05-09 09:00:00',
+                'completed_at' => null,
+            ],
+        ]);
+
+        DB::table('project_progress')->insert([
+            'id' => 990,
+            'project_id' => 990,
+            'progress_date' => '2026-05-12',
+            'progress_text' => 'PDF project progress update',
+            'updated_by' => 1,
+            'updated_on' => '2026-05-12 09:00:00',
+            'source_type' => null,
+            'source_task_id' => null,
+        ]);
+
+        $response = $this
+            ->withSession([
+                '_token' => 'test-csrf-token',
+                'user_id' => 1,
+                'staff_id' => 1,
+                'name_code' => 'AZA',
+                'full_name' => 'Azam Bin Husain',
+                'roles' => ['System Admin'],
+            ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->get('/stats/workload/pdf?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk();
+        $this->assertStringStartsWith('application/pdf', (string) $response->headers->get('Content-Type'));
+        $this->assertSame(
+            'inline; filename="workload-report-2026-05-31.pdf"',
+            $response->headers->get('Content-Disposition')
+        );
+        $this->assertStringStartsWith('%PDF', $response->getContent());
+    }
+
+    public function test_monthly_dashboard_report_route_requires_management_role(): void
+    {
+        DB::table('system_users')->insert([
+            'id' => 2,
+            'staff_id' => 2,
+            'email' => 'staff-dashboard@example.test',
+            'role' => json_encode(['Staff']),
+            'is_active' => 1,
+        ]);
+
+        $this->authenticatedGetAs('/stats/monthly-dashboard-report/pdf?month=2026-05', ['Staff'], 2, 2)
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Unauthorized: required role missing.');
+    }
+
+    public function test_monthly_dashboard_report_generates_missing_pdf_and_is_idempotent(): void
+    {
+        Storage::fake('private');
+
+        $this->authenticatedGet('/stats/monthly-dashboard-report/pdf?month=2026-13')
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Invalid report month. Use YYYY-MM.');
+
+        $response = $this->authenticatedGet('/stats/monthly-dashboard-report/pdf?month=2026-05');
+
+        $response->assertOk();
+        $this->assertStringStartsWith('application/pdf', (string) $response->headers->get('Content-Type'));
+        $this->assertSame(
+            'inline; filename="monthly-dashboard-management-report-2026-05.pdf"',
+            $response->headers->get('Content-Disposition')
+        );
+        $this->assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
+        $this->assertStringStartsWith('%PDF', $response->getContent());
+        Storage::disk('private')->assertExists('dashboard-monthly-reports/2026-05.pdf');
+        $this->assertDatabaseHas('dashboard_monthly_reports', [
+            'report_month' => '2026-05',
+            'start_date' => '2026-01-01',
+            'end_date' => '2026-05-31',
+            'status' => 'generated',
+        ]);
+        $report = DB::table('dashboard_monthly_reports')->where('report_month', '2026-05')->first();
+        $this->assertNotEmpty($report->payload_json);
+        $this->assertSame(hash('sha256', (string) $report->payload_json), $report->payload_hash);
+        $this->assertGreaterThanOrEqual(0, (int) $report->generation_duration_ms);
+        $payload = json_decode((string) $report->payload_json, true);
+        $this->assertIsArray($payload['decisionSummary'] ?? null);
+        $this->assertArrayHasKey('cashSignals', $payload['decisionSummary']);
+        $this->assertArrayHasKey('pipelineSignals', $payload['decisionSummary']);
+        $this->assertArrayHasKey('driverSignals', $payload['decisionSummary']);
+        $this->assertArrayHasKey('decisionPoints', $payload['decisionSummary']);
+
+        $this->authenticatedGet('/stats/monthly-dashboard-report/pdf?month=2026-05')->assertOk();
+        $this->assertSame(1, DB::table('dashboard_monthly_reports')->where('report_month', '2026-05')->count());
+    }
+
+    public function test_monthly_dashboard_report_view_uses_management_semantics_and_empty_states(): void
+    {
+        $html = view('pdf.monthly-dashboard-report', [
+            'title' => 'Year-to-Date Dashboard Management Report',
+            'reportMonth' => '2026-05',
+            'periodLabel' => '01 Jan 2026 to 31 May 2026',
+            'generatedAtLabel' => '01 Jun 2026, 08:30 AM',
+            'summaryCards' => [
+                ['label' => 'YTD Awarded Sales Value', 'value' => 'RM 0.00', 'detail' => '0 awarded sales items'],
+                ['label' => 'YTD Quotation Value', 'value' => 'RM 0.00', 'detail' => '0 quotations issued'],
+                ['label' => 'YTD Payment Received', 'value' => 'RM 0.00', 'detail' => 'RM 0.00 invoiced'],
+                ['label' => 'Outstanding Receivables', 'value' => 'RM 0.00', 'detail' => '0 outstanding invoices'],
+                ['label' => 'Active Workload Items', 'value' => '0', 'detail' => '0 overdue items'],
+            ],
+            'decisionSummary' => [
+                'cashSignals' => [
+                    ['label' => 'Collection rate', 'value' => '0.0%', 'detail' => 'RM 0.00 received from RM 0.00 invoiced'],
+                ],
+                'pipelineSignals' => [
+                    ['label' => 'Quotation pipeline', 'value' => 'RM 0.00', 'detail' => '0 quotations issued YTD'],
+                ],
+                'driverSignals' => [
+                    ['label' => 'Top awarded service', 'value' => '-', 'detail' => 'RM 0.00'],
+                ],
+                'decisionPoints' => ['Collections: no outstanding receivable exposure is shown for the period.'],
+                'opportunities' => ['Build quotation activity so service-line demand can be compared.'],
+            ],
+            'staffPerformanceRows' => [],
+            'sales' => [
+                'byService' => [],
+                'byPerson' => [],
+                'bySource' => [],
+                'conversionStaff' => [],
+                'conversionSource' => [],
+                'conversionService' => [],
+            ],
+            'crm' => [
+                'monthlyQuoteTrend' => [],
+                'quoteActivityByStaff' => [],
+                'quoteValueByService' => [],
+                'monthlyQuoteServiceRows' => [],
+                'inquirySourceMix' => [],
+            ],
+            'financial' => [
+                'totalInvoiced' => 0,
+                'totalReceived' => 0,
+                'outstandingAmount' => 0,
+                'outstandingCount' => 0,
+                'uninvoicedAwardedAmount' => 0,
+                'uninvoicedAwardedCount' => 0,
+                'outstandingSummary' => 'RM 0.00 across 0 invoices',
+                'uninvoicedAwardedSummary' => 'RM 0.00 across 0 items',
+                'trend' => [],
+                'debtors' => [],
+            ],
+            'monitoring' => ['trendRows' => [], 'pipelineStages' => [], 'serviceRevenue' => [], 'staffMatrix' => []],
+            'workload' => ['asOfDate' => '', 'topStaff' => [], 'historyRows' => []],
+            'logoDataUri' => null,
+            'fontFaceCss' => '',
+        ])->render();
+
+        $this->assertStringContainsString('Year-to-Date Dashboard Management Report', $html);
+        $this->assertStringContainsString('Executive Decision Summary', $html);
+        $this->assertStringContainsString('Grow Profitably', $html);
+        $this->assertStringContainsString('Pipeline Strength', $html);
+        $this->assertStringContainsString('Performance Drivers', $html);
+        $this->assertStringContainsString('Decision Points', $html);
+        $this->assertStringContainsString('Opportunities to Develop', $html);
+        $this->assertStringContainsString('Company-Wide Snapshot', $html);
+        $this->assertStringContainsString('Staff-by-Staff YTD Performance Matrix', $html);
+        $this->assertStringContainsString('YTD Awarded Sales Value', $html);
+        $this->assertStringContainsString('Conversion by Source', $html);
+        $this->assertStringContainsString('Conversion by Service', $html);
+        $this->assertStringContainsString('Monthly Quotation Trend', $html);
+        $this->assertStringContainsString('Service Mix Over Time', $html);
+        $this->assertStringContainsString('Top Outstanding Debtors', $html);
+        $this->assertStringContainsString('Monthly Monitoring Trend', $html);
+        $this->assertStringContainsString('Staff Pipeline Stage Matrix', $html);
+        $this->assertStringContainsString('Staff Segment Revenue Matrix', $html);
+        $this->assertStringContainsString('Workload Pressure by Staff', $html);
+        $this->assertStringContainsString('Workload Score Trend', $html);
+        $this->assertStringContainsString('No records for this reporting period.', $html);
+        $this->assertStringNotContainsString('Management Attention Summary', $html);
+        $this->assertStringNotContainsString('Recommended Review Focus', $html);
+        $this->assertStringNotContainsString('Requires management attention', $html);
+        $this->assertStringNotContainsString('No data for this period.', $html);
+    }
+
+    public function test_system_admin_monthly_report_test_trigger_sends_only_ui_recipients(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+        config()->set('dashboard_reports.monthly_recipients', 'prod@example.test');
+
+        $this->authenticatedGet('/admin/monthly-dashboard-report-test/status')
+            ->assertOk()
+            ->assertJsonPath('data.configuredRecipientCount', 1)
+            ->assertJsonPath('data.previousMonth', '2026-04')
+            ->assertJsonPath('data.logs', []);
+
+        $response = $this->authenticatedPost('/admin/monthly-dashboard-report-test/trigger', [
+            'month' => '2026-05',
+            'recipients' => 'Tester One <test-one@example.test>, test-two@example.test',
+            'force' => true,
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.sent', 2)
+            ->assertJsonPath('data.recipientCount', 2)
+            ->assertJsonPath('data.reportMonth', '2026-05');
+        $this->assertStringContainsString('/stats/monthly-dashboard-report/public/', (string) $response->json('data.url'));
+
+        Mail::assertSent(MonthlyDashboardReportMail::class, 2);
+        Mail::assertSent(MonthlyDashboardReportMail::class, fn ($mail) => $mail->hasTo('test-one@example.test'));
+        Mail::assertSent(MonthlyDashboardReportMail::class, fn ($mail) => $mail->hasTo('test-two@example.test'));
+        Mail::assertNotSent(MonthlyDashboardReportMail::class, fn ($mail) => $mail->hasTo('prod@example.test'));
+        $this->assertDatabaseHas('dashboard_monthly_reports', [
+            'report_month' => '2026-05',
+            'status' => 'emailed',
+        ]);
+        $this->assertDatabaseHas('dashboard_monthly_report_test_logs', [
+            'report_month' => '2026-05',
+            'recipient_email' => 'test-one@example.test, test-two@example.test',
+            'status' => 'sent',
+            'response_message' => 'Year-to-date dashboard report test email sent.',
+        ]);
+        $this->assertDatabaseHas('dashboard_monthly_report_email_logs', [
+            'report_month' => '2026-05',
+            'recipient_email' => 'test-one@example.test',
+            'recipient_name' => 'Tester One',
+            'send_type' => 'test',
+            'status' => 'sent',
+        ]);
+        $this->assertDatabaseHas('dashboard_monthly_report_email_logs', [
+            'report_month' => '2026-05',
+            'recipient_email' => 'test-two@example.test',
+            'send_type' => 'test',
+            'status' => 'sent',
+        ]);
+
+        $this->authenticatedGet('/admin/monthly-dashboard-report-test/status')
+            ->assertOk()
+            ->assertJsonPath('data.logs.0.reportMonth', '2026-05')
+            ->assertJsonPath('data.logs.0.recipient', 'test-one@example.test, test-two@example.test')
+            ->assertJsonPath('data.logs.0.status', 'sent');
+    }
+
+    public function test_system_admin_monthly_report_test_trigger_validates_recipients_and_role(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+        DB::table('system_users')->insert([
+            'id' => 3,
+            'staff_id' => 3,
+            'email' => 'manager-dashboard@example.test',
+            'role' => json_encode(['Manager']),
+            'is_active' => 1,
+        ]);
+
+        $this->authenticatedGetAs('/admin/monthly-dashboard-report-test/status', ['Manager'], 3, 3)
+            ->assertForbidden();
+
+        $this->authenticatedPost('/admin/monthly-dashboard-report-test/trigger', [
+            'month' => '2026-05',
+            'recipients' => '',
+            'force' => false,
+        ])->assertStatus(422);
+
+        $this->authenticatedPost('/admin/monthly-dashboard-report-test/trigger', [
+            'month' => '2026-05',
+            'recipients' => 'not-an-email',
+            'force' => false,
+        ])->assertStatus(422);
+
+        Mail::assertNothingSent();
+    }
+
+    public function test_system_admin_monthly_report_test_trigger_accepts_single_email_recipient(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+
+        $this->authenticatedPost('/admin/monthly-dashboard-report-test/trigger', [
+            'month' => '2026-05',
+            'recipients' => 'single@example.test',
+            'force' => true,
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.sent', 1)
+            ->assertJsonPath('data.recipientCount', 1)
+            ->assertJsonPath('data.reportMonth', '2026-05');
+
+        Mail::assertSent(MonthlyDashboardReportMail::class, 1);
+        Mail::assertSent(MonthlyDashboardReportMail::class, fn ($mail) => $mail->hasTo('single@example.test'));
+        $this->assertDatabaseHas('dashboard_monthly_report_email_logs', [
+            'report_month' => '2026-05',
+            'recipient_email' => 'single@example.test',
+            'send_type' => 'test',
+            'status' => 'sent',
+        ]);
+    }
+
+    public function test_system_admin_monthly_report_test_trigger_records_send_failure(): void
+    {
+        Storage::fake('private');
+        Mail::shouldReceive('to')
+            ->once()
+            ->andThrow(new \RuntimeException('SMTP down'));
+
+        $this->authenticatedPost('/admin/monthly-dashboard-report-test/trigger', [
+            'month' => '2026-05',
+            'recipients' => 'test@example.test',
+            'force' => true,
+        ])
+            ->assertStatus(500)
+            ->assertJsonPath('status', 'error');
+
+        $this->assertDatabaseHas('dashboard_monthly_reports', [
+            'report_month' => '2026-05',
+            'status' => 'failed',
+            'error_message' => 'SMTP down',
+        ]);
+        $this->assertDatabaseHas('dashboard_monthly_report_test_logs', [
+            'report_month' => '2026-05',
+            'recipient_email' => 'test@example.test',
+            'status' => 'failed',
+            'response_message' => 'SMTP down',
+        ]);
+        $this->assertDatabaseHas('dashboard_monthly_report_email_logs', [
+            'report_month' => '2026-05',
+            'recipient_email' => 'test@example.test',
+            'send_type' => 'test',
+            'status' => 'failed',
+            'error_message' => 'SMTP down',
+        ]);
+    }
+
+    public function test_system_admin_can_update_monthly_report_email_schedule(): void
+    {
+        $response = $this->authenticatedPut('/admin/monthly-dashboard-report-test/schedule', [
+            'enabled' => true,
+            'intervalValue' => 2,
+            'intervalUnit' => 'months',
+            'startDate' => '2026-05-01',
+            'sendTime' => '08:45',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.schedule.enabled', true)
+            ->assertJsonPath('data.schedule.intervalValue', 2)
+            ->assertJsonPath('data.schedule.intervalUnit', 'months')
+            ->assertJsonPath('data.schedule.startDate', '2026-05-01')
+            ->assertJsonPath('data.schedule.sendTime', '08:45')
+            ->assertJsonPath('data.schedule.nextSendAt', '2026-07-01 08:45:00');
+
+        $this->assertDatabaseHas('dashboard_monthly_report_schedule_settings', [
+            'id' => 1,
+            'interval_value' => 2,
+            'interval_unit' => 'months',
+            'start_date' => '2026-05-01',
+            'send_time' => '08:45',
+        ]);
+    }
+
+    public function test_scheduled_monthly_report_command_sends_when_due_and_reschedules(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+        config()->set('dashboard_reports.monthly_recipients', 'ops@example.test');
+
+        DB::table('dashboard_monthly_report_schedule_settings')->insert([
+            'id' => 1,
+            'enabled' => true,
+            'interval_value' => 1,
+            'interval_unit' => 'days',
+            'start_date' => '2026-05-10',
+            'send_time' => '08:30',
+            'next_send_at' => '2026-05-11 08:30:00',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->artisan('dashboard:monthly-report', ['--scheduled' => true])
+            ->assertExitCode(0);
+
+        Mail::assertSent(MonthlyDashboardReportMail::class, 1);
+        Mail::assertSent(MonthlyDashboardReportMail::class, fn ($mail) => $mail->hasTo('ops@example.test'));
+        $this->assertDatabaseHas('dashboard_monthly_reports', [
+            'report_month' => '2026-04',
+            'status' => 'emailed',
+        ]);
+        $this->assertDatabaseHas('dashboard_monthly_report_email_logs', [
+            'report_month' => '2026-04',
+            'recipient_email' => 'ops@example.test',
+            'send_type' => 'production',
+            'status' => 'sent',
+        ]);
+
+        $settings = DB::table('dashboard_monthly_report_schedule_settings')->where('id', 1)->first();
+        $this->assertSame('sent', $settings->last_status);
+        $this->assertSame('2026-05-12 08:30:00', Carbon::parse($settings->next_send_at)->toDateTimeString());
+    }
+
+    public function test_scheduled_monthly_report_skips_when_schedule_lock_is_held(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+        config()->set('dashboard_reports.monthly_recipients', 'ops@example.test');
+
+        DB::table('dashboard_monthly_report_schedule_settings')->insert([
+            'id' => 1,
+            'enabled' => true,
+            'interval_value' => 1,
+            'interval_unit' => 'days',
+            'start_date' => '2026-05-10',
+            'send_time' => '08:30',
+            'next_send_at' => '2026-05-11 08:30:00',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $lock = Cache::lock('dashboard-monthly-report:scheduled-send', 600);
+        $this->assertTrue($lock->get());
+
+        try {
+            $result = app(\App\Services\Stats\MonthlyDashboardReportService::class)->runScheduledSend();
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertFalse((bool) $result['due']);
+        $this->assertTrue((bool) $result['skipped']);
+        $this->assertSame('schedule_locked', $result['reason']);
+        Mail::assertNothingSent();
+        $this->assertDatabaseMissing('dashboard_monthly_reports', [
+            'report_month' => '2026-04',
+        ]);
+        $settings = DB::table('dashboard_monthly_report_schedule_settings')->where('id', 1)->first();
+        $this->assertNull($settings->last_status);
+        $this->assertSame('2026-05-11 08:30:00', Carbon::parse($settings->next_send_at)->toDateTimeString());
+    }
+
+    public function test_monthly_dashboard_report_command_emails_public_link_without_attachment(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+        config()->set('dashboard_reports.monthly_recipients', 'CEO <ceo@example.test>, ops@example.test');
+
+        $this->artisan('dashboard:monthly-report', ['--month' => '2026-05', '--send' => true])
+            ->assertExitCode(0);
+
+        $downloadUrl = '';
+        Mail::assertSent(MonthlyDashboardReportMail::class, 2);
+        Mail::assertSent(MonthlyDashboardReportMail::class, function (MonthlyDashboardReportMail $mail) use (&$downloadUrl) {
+            $downloadUrl = $mail->downloadUrl;
+
+            return str_contains($mail->downloadUrl, '/stats/monthly-dashboard-report/public/');
+        });
+
+        $path = parse_url($downloadUrl, PHP_URL_PATH);
+        $this->get($path)->assertOk();
+        $this->assertSame(2, DB::table('dashboard_monthly_report_email_logs')
+            ->where('report_month', '2026-05')
+            ->where('send_type', 'production')
+            ->where('status', 'sent')
+            ->count());
+
+        DB::table('dashboard_monthly_reports')
+            ->where('report_month', '2026-05')
+            ->update(['public_token_expires_at' => '2026-05-10 00:00:00']);
+
+        $this->get($path)
+            ->assertStatus(410)
+            ->assertJsonPath('message', 'Report link has expired.');
+    }
+
+    public function test_monthly_dashboard_report_send_with_empty_recipients_still_generates(): void
+    {
+        Storage::fake('private');
+        Mail::fake();
+        config()->set('dashboard_reports.monthly_recipients', '');
+
+        $this->artisan('dashboard:monthly-report', ['--month' => '2026-05', '--send' => true])
+            ->assertExitCode(0);
+
+        Mail::assertNothingSent();
+        Storage::disk('private')->assertExists('dashboard-monthly-reports/2026-05.pdf');
+        $this->assertDatabaseHas('dashboard_monthly_reports', [
+            'report_month' => '2026-05',
+            'status' => 'generated',
+        ]);
+        $this->assertSame(0, DB::table('dashboard_monthly_report_email_logs')->count());
+        $this->assertNull(DB::table('dashboard_monthly_reports')->where('report_month', '2026-05')->value('email_sent_at'));
+    }
+
+    public function test_monthly_dashboard_report_dry_run_uses_previous_month_across_year_boundary(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-01-15 10:00:00'));
+
+        $this->artisan('dashboard:monthly-report', ['--dry-run' => true])
+            ->expectsOutput('Year-to-date dashboard report dry run for 2025-12 (01 Jan 2025 to 31 Dec 2025).')
+            ->assertExitCode(0);
+    }
+
+    public function test_monthly_dashboard_report_ytd_range_handles_january_report_month(): void
+    {
+        $this->artisan('dashboard:monthly-report', ['--month' => '2026-01', '--dry-run' => true])
+            ->expectsOutput('Year-to-date dashboard report dry run for 2026-01 (01 Jan 2026 to 31 Jan 2026).')
+            ->assertExitCode(0);
+    }
+
+    public function test_workload_share_creates_public_expiring_snapshot(): void
+    {
+        $response = $this
+            ->withSession([
+                '_token' => 'test-csrf-token',
+                'user_id' => 1,
+                'staff_id' => 1,
+                'name_code' => 'AZA',
+                'full_name' => 'Azam Bin Husain',
+                'roles' => ['System Admin'],
+            ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->post('/stats/workload/share', [
+                'start_date' => '2026-05-01',
+                'end_date' => '2026-05-31',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('path', '/share/workload/'.$response->json('token'));
+
+        $token = (string) $response->json('token');
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{48}$/', $token);
+        $this->assertDatabaseHas('workload_dashboard_shares', [
+            'created_by_staff_id' => 1,
+            'created_by_code' => 'AZA',
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $publicResponse = $this->get('/stats/workload/share/'.$token);
+
+        $publicResponse->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('completedWindow.startDate', '2026-05-01')
+            ->assertJsonPath('completedWindow.endDate', '2026-05-31')
+            ->assertJsonStructure(['staff', 'share' => ['expiresAt', 'createdAt']]);
+        $this->assertStringContainsString('no-store', (string) $publicResponse->headers->get('Cache-Control'));
+
+        DB::table('workload_dashboard_shares')->update(['expires_at' => '2026-05-10 00:00:00']);
+
+        $this->get('/stats/workload/share/'.$token)
+            ->assertStatus(410)
+            ->assertJsonPath('message', 'This shared workload dashboard has expired.');
+    }
+
+    public function test_workload_capture_daily_command_writes_and_skips_existing_snapshot(): void
+    {
+        DB::table('tasks')->insert([
+            'staff_id' => 1,
+            'project_id' => null,
+            'project_progress_id' => null,
+            'title' => 'Daily captured workload',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-20',
+            'created_at' => '2026-05-10 09:00:00',
+            'completed_at' => null,
+        ]);
+
+        $this->artisan('workload:capture-daily', ['--date' => '2026-05-31'])
+            ->expectsOutput('Captured workload snapshot 2026-05-31 (1 staff row(s)).')
+            ->assertExitCode(0);
+
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-31',
+            'start_date' => '2026-05-31',
+            'end_date' => '2026-05-31',
+            'staff_count' => 1,
+            'capture_mode' => 'captured',
+        ]);
+        $this->assertDatabaseHas('workload_daily_staff_snapshots', [
+            'snapshot_date' => '2026-05-31',
+            'staff_id' => 1,
+            'staff_key' => '1',
+            'staff_code' => 'AZA',
+            'active_tasks' => 1,
+            'overdue_tasks' => 1,
+        ]);
+
+        $this->artisan('workload:capture-daily', ['--date' => '2026-05-31'])
+            ->expectsOutput('Workload snapshot 2026-05-31 already exists; skipped (1 staff row(s)).')
+            ->assertExitCode(0);
+
+        $this->assertSame(1, DB::table('workload_daily_snapshots')->where('snapshot_date', '2026-05-31')->count());
+        $this->assertSame(1, DB::table('workload_daily_staff_snapshots')->where('snapshot_date', '2026-05-31')->count());
+    }
+
+    public function test_workload_capture_daily_command_force_replaces_existing_snapshot(): void
+    {
+        DB::table('tasks')->insert([
+            'staff_id' => 1,
+            'project_id' => null,
+            'project_progress_id' => null,
+            'title' => 'Original daily captured workload',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-20',
+            'created_at' => '2026-05-10 09:00:00',
+            'completed_at' => null,
+        ]);
+
+        $this->artisan('workload:capture-daily', ['--date' => '2026-05-31'])->assertExitCode(0);
+
+        DB::table('tasks')->insert([
+            'staff_id' => 2,
+            'project_id' => null,
+            'project_progress_id' => null,
+            'title' => 'Force refreshed daily captured workload',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-20',
+            'created_at' => '2026-05-10 09:00:00',
+            'completed_at' => null,
+        ]);
+
+        $this->artisan('workload:capture-daily', ['--date' => '2026-05-31', '--force' => true])
+            ->expectsOutput('Captured workload snapshot 2026-05-31 (2 staff row(s)).')
+            ->assertExitCode(0);
+
+        $this->assertSame(1, DB::table('workload_daily_snapshots')->where('snapshot_date', '2026-05-31')->count());
+        $this->assertSame(2, DB::table('workload_daily_staff_snapshots')->where('snapshot_date', '2026-05-31')->count());
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-31',
+            'staff_count' => 2,
+            'capture_mode' => 'captured',
+        ]);
+    }
+
+    public function test_workload_capture_daily_command_replays_missing_range_as_reconstructed_and_skips_existing(): void
+    {
+        DB::table('tasks')->insert([
+            'staff_id' => 1,
+            'project_id' => null,
+            'project_progress_id' => null,
+            'title' => 'Replay range workload',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-08',
+            'created_at' => '2026-05-01 09:00:00',
+            'completed_at' => null,
+        ]);
+        DB::table('workload_daily_snapshots')->insert([
+            'snapshot_date' => '2026-05-10',
+            'start_date' => '2026-05-10',
+            'end_date' => '2026-05-10',
+            'staff_count' => 0,
+            'payload_json' => '{"status":"success","source":"existing"}',
+            'capture_mode' => 'captured',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->artisan('workload:capture-daily', [
+            '--start-date' => '2026-05-09',
+            '--end-date' => '2026-05-11',
+            '--repair-only' => true,
+        ])
+            ->expectsOutput('Replaying workload snapshots 2026-05-09 to 2026-05-11 (3 day(s)).')
+            ->expectsOutput('CAPTURED 2026-05-09 (1 staff row(s)).')
+            ->expectsOutput('SKIPPED 2026-05-10 (0 existing staff row(s)).')
+            ->expectsOutput('CAPTURED 2026-05-11 (1 staff row(s)).')
+            ->expectsOutput('Replay summary: captured 2, skipped 1, failed 0.')
+            ->assertExitCode(0);
+
+        $this->assertSame(3, DB::table('workload_daily_snapshots')->count());
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-09',
+            'capture_mode' => 'reconstructed',
+            'captured_by_command' => 'workload:capture-daily --repair-only',
+        ]);
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-10',
+            'capture_mode' => 'captured',
+            'staff_count' => 0,
+        ]);
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-11',
+            'capture_mode' => 'reconstructed',
+        ]);
+    }
+
+    public function test_workload_capture_daily_command_rejects_unsafe_range_replay_options(): void
+    {
+        $this->artisan('workload:capture-daily', [
+            '--start-date' => '2026-05-09',
+            '--end-date' => '2026-05-11',
+        ])
+            ->expectsOutput('Range replay requires --repair-only.')
+            ->assertExitCode(1);
+
+        $this->artisan('workload:capture-daily', [
+            '--start-date' => '2026-05-09',
+            '--end-date' => '2026-05-11',
+            '--repair-only' => true,
+            '--force' => true,
+        ])
+            ->expectsOutput('--force is not allowed with range replay.')
+            ->assertExitCode(1);
+
+        $this->artisan('workload:capture-daily', [
+            '--start-date' => '2026-04-10',
+            '--end-date' => '2026-05-10',
+            '--repair-only' => true,
+        ])
+            ->expectsOutput('Range replay is limited to the latest 31-day window.')
+            ->assertExitCode(1);
+
+        $this->artisan('workload:capture-daily', [
+            '--start-date' => '2026-04-10',
+            '--end-date' => '2026-05-11',
+            '--repair-only' => true,
+        ])
+            ->expectsOutput('Range replay is limited to 31 calendar days.')
+            ->assertExitCode(1);
+    }
+
+    public function test_workload_history_returns_only_snapshots_in_requested_range(): void
+    {
+        DB::table('workload_daily_snapshots')->insert([
+            [
+                'snapshot_date' => '2026-05-28',
+                'start_date' => '2026-05-28',
+                'end_date' => '2026-05-28',
+                'staff_count' => 1,
+                'payload_json' => '{"status":"success"}',
+                'capture_mode' => 'captured',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-29',
+                'start_date' => '2026-05-29',
+                'end_date' => '2026-05-29',
+                'staff_count' => 2,
+                'payload_json' => '{"status":"success"}',
+                'capture_mode' => 'reconstructed',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-30',
+                'start_date' => '2026-05-30',
+                'end_date' => '2026-05-30',
+                'staff_count' => 1,
+                'payload_json' => '{"status":"success"}',
+                'capture_mode' => 'captured',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+        DB::table('workload_daily_staff_snapshots')->insert([
+            [
+                'snapshot_date' => '2026-05-28',
+                'staff_id' => 1,
+                'staff_key' => '1',
+                'staff_code' => 'AZA',
+                'staff_name' => 'Azam Bin Husain',
+                'score' => 9,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-29',
+                'staff_id' => 1,
+                'staff_key' => '1',
+                'staff_code' => 'AZA',
+                'staff_name' => 'Azam Bin Husain',
+                'score' => 12,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-29',
+                'staff_id' => 2,
+                'staff_key' => '2',
+                'staff_code' => 'BOB',
+                'staff_name' => 'Bob Tester',
+                'score' => 15,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-30',
+                'staff_id' => 1,
+                'staff_key' => '1',
+                'staff_code' => 'AZA',
+                'staff_name' => 'Azam Bin Husain',
+                'score' => 18,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $response = $this->authenticatedGet('/stats/workload/history?start_date=2026-05-29&end_date=2026-05-30');
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('startDate', '2026-05-29')
+            ->assertJsonPath('endDate', '2026-05-30');
+
+        $staff = collect($response->json('staff'));
+        $this->assertSame(['AZA', 'BOB'], $staff->pluck('staffCode')->all());
+        $this->assertSame(
+            [
+                ['date' => '2026-05-29', 'score' => 12, 'captureMode' => 'reconstructed'],
+                ['date' => '2026-05-30', 'score' => 18, 'captureMode' => 'captured'],
+            ],
+            $staff->firstWhere('staffCode', 'AZA')['points']
+        );
+        $this->assertSame(
+            [
+                ['date' => '2026-05-29', 'score' => 15, 'captureMode' => 'reconstructed'],
+            ],
+            $staff->firstWhere('staffCode', 'BOB')['points']
+        );
+    }
+
+    public function test_workload_history_returns_empty_staff_when_no_snapshots_exist(): void
+    {
+        $response = $this->authenticatedGet('/stats/workload/history?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('staff', []);
+    }
+
+    public function test_workload_daily_capture_check_creates_one_check_and_notification_without_duplicates(): void
+    {
+        $this->artisan('workload:check-daily-capture', ['--date' => '2026-05-10'])
+            ->assertExitCode(0);
+
+        $this->assertSame(1, DB::table('workload_daily_snapshot_checks')->where([
+            'snapshot_date' => '2026-05-10',
+            'check_key' => 'missed_capture',
+        ])->count());
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 1,
+            'module_key' => 'system.admin.workload_snapshots',
+            'entity_type' => 'workload_daily_snapshot',
+            'entity_id' => 20260510,
+            'type' => 'workload_daily_snapshot_missing',
+            'severity' => 'danger',
+        ]);
+
+        $this->artisan('workload:check-daily-capture', ['--date' => '2026-05-10'])
+            ->assertExitCode(0);
+
+        $this->assertSame(1, DB::table('workload_daily_snapshot_checks')->where([
+            'snapshot_date' => '2026-05-10',
+            'check_key' => 'missed_capture',
+        ])->count());
+        $this->assertSame(1, DB::table('in_app_notifications')
+            ->where('module_key', 'system.admin.workload_snapshots')
+            ->where('entity_id', 20260510)
+            ->whereNull('resolved_at')
+            ->count());
+    }
+
+    public function test_workload_daily_capture_resolves_missed_capture_alert_when_snapshot_later_exists(): void
+    {
+        $this->artisan('workload:check-daily-capture', ['--date' => '2026-05-10'])
+            ->assertExitCode(0);
+
+        DB::table('tasks')->insert([
+            'staff_id' => 1,
+            'project_id' => null,
+            'project_progress_id' => null,
+            'title' => 'Recovered workload capture',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-10',
+            'created_at' => '2026-05-10 09:00:00',
+            'completed_at' => null,
+        ]);
+
+        $this->artisan('workload:capture-daily', ['--date' => '2026-05-10'])
+            ->assertExitCode(0);
+
+        $this->assertSame(0, DB::table('workload_daily_snapshot_checks')->where([
+            'snapshot_date' => '2026-05-10',
+            'check_key' => 'missed_capture',
+        ])->count());
+        $this->assertSame(1, DB::table('in_app_notifications')
+            ->where('module_key', 'system.admin.workload_snapshots')
+            ->where('entity_id', 20260510)
+            ->whereNotNull('resolved_at')
+            ->count());
+    }
+
+    public function test_workload_daily_capture_records_suspicious_snapshot_checks(): void
+    {
+        DB::table('tasks')->delete();
+
+        $this->artisan('workload:capture-daily', ['--date' => '2026-05-31'])
+            ->assertExitCode(0);
+
+        $this->assertDatabaseHas('workload_daily_snapshot_checks', [
+            'snapshot_date' => '2026-05-31',
+            'severity' => 'critical',
+            'check_key' => 'zero_staff',
+        ]);
+        $this->assertDatabaseHas('workload_daily_snapshot_checks', [
+            'snapshot_date' => '2026-05-31',
+            'severity' => 'warning',
+            'check_key' => 'active_tasks_zero',
+        ]);
+
+        DB::table('workload_daily_snapshot_checks')->delete();
+        DB::table('workload_daily_snapshots')->insert([
+            [
+                'snapshot_date' => '2026-06-01',
+                'start_date' => '2026-06-01',
+                'end_date' => '2026-06-01',
+                'staff_count' => 4,
+                'total_score' => 100,
+                'total_active_tasks' => 12,
+                'payload_json' => '{"status":"success"}',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-06-02',
+                'start_date' => '2026-06-02',
+                'end_date' => '2026-06-02',
+                'staff_count' => 2,
+                'total_score' => 170,
+                'total_active_tasks' => 12,
+                'payload_json' => '{"status":"success"}',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        app(WorkloadSnapshotHealthService::class)->recordCaptureChecks('2026-06-02');
+
+        $this->assertDatabaseHas('workload_daily_snapshot_checks', [
+            'snapshot_date' => '2026-06-02',
+            'severity' => 'warning',
+            'check_key' => 'score_jump',
+        ]);
+        $this->assertDatabaseHas('workload_daily_snapshot_checks', [
+            'snapshot_date' => '2026-06-02',
+            'severity' => 'warning',
+            'check_key' => 'staff_count_drop',
+        ]);
+    }
+
+    public function test_workload_snapshot_health_endpoint_requires_system_admin_and_reports_status(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-01 09:00:00'));
+        DB::table('workload_daily_snapshots')->insert([
+            [
+                'snapshot_date' => '2026-05-30',
+                'start_date' => '2026-05-30',
+                'end_date' => '2026-05-30',
+                'staff_count' => 1,
+                'total_score' => 21,
+                'avg_score' => 21,
+                'total_active_tasks' => 4,
+                'total_overdue_tasks' => 0,
+                'total_due_soon_tasks' => 0,
+                'payload_json' => '{"status":"success"}',
+                'capture_mode' => 'reconstructed',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-31',
+                'start_date' => '2026-05-31',
+                'end_date' => '2026-05-31',
+                'staff_count' => 2,
+                'total_score' => 41,
+                'avg_score' => 20.5,
+                'total_active_tasks' => 9,
+                'total_overdue_tasks' => 3,
+                'total_due_soon_tasks' => 1,
+                'payload_json' => '{"status":"success"}',
+                'capture_mode' => 'captured',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->authenticatedGet('/stats/workload/snapshot-health')
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.captureStatus', 'ok')
+            ->assertJsonPath('data.capturedSnapshotsLast31Days', 1)
+            ->assertJsonPath('data.reconstructedSnapshotsLast31Days', 1)
+            ->assertJsonPath('data.latestSnapshot.captureMode', 'captured')
+            ->assertJsonPath('data.latestSnapshot.staffCount', 2)
+            ->assertJsonPath('data.latestSnapshot.avgScore', 20.5);
+
+        DB::table('system_users')->insert([
+            'id' => 2,
+            'staff_id' => 2,
+            'email' => 'dashboard-staff@example.test',
+            'role' => json_encode(['Staff']),
+            'is_active' => 1,
+        ]);
+
+        $this->authenticatedGetAs('/stats/workload/snapshot-health', ['Staff'], 2, 2)
+            ->assertStatus(403);
+    }
+
+    public function test_workload_snapshot_health_reports_missing_and_warning_states(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-01 09:00:00'));
+
+        $this->authenticatedGet('/stats/workload/snapshot-health')
+            ->assertOk()
+            ->assertJsonPath('data.captureStatus', 'missing');
+
+        DB::table('workload_daily_snapshots')->insert([
+            'snapshot_date' => '2026-05-31',
+            'start_date' => '2026-05-31',
+            'end_date' => '2026-05-31',
+            'staff_count' => 2,
+            'total_score' => 41,
+            'avg_score' => 20.5,
+            'total_active_tasks' => 9,
+            'payload_json' => '{"status":"success"}',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('workload_daily_snapshot_checks')->insert([
+            'snapshot_date' => '2026-05-31',
+            'severity' => 'warning',
+            'check_key' => 'score_jump',
+            'message' => 'Score jumped.',
+            'metadata_json' => '{}',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->authenticatedGet('/stats/workload/snapshot-health')
+            ->assertOk()
+            ->assertJsonPath('data.captureStatus', 'warning')
+            ->assertJsonPath('data.checkCounts.warning', 1);
+    }
+
+    public function test_workload_snapshot_payload_prune_nulls_only_large_old_payloads(): void
+    {
+        DB::table('workload_daily_snapshots')->insert([
+            [
+                'snapshot_date' => '2025-10-01',
+                'start_date' => '2025-10-01',
+                'end_date' => '2025-10-01',
+                'staff_count' => 1,
+                'payload_json' => '{"large":"old"}',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-01',
+                'start_date' => '2026-05-01',
+                'end_date' => '2026-05-01',
+                'staff_count' => 1,
+                'payload_json' => '{"large":"recent"}',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+        DB::table('workload_daily_staff_snapshots')->insert([
+            [
+                'snapshot_date' => '2025-10-01',
+                'staff_id' => 1,
+                'staff_key' => '1',
+                'staff_code' => 'AZA',
+                'score' => 12,
+                'score_breakdown_json' => '{"kept":true}',
+                'work_type_breakdown_json' => '{"kept":true}',
+                'row_payload_json' => '{"large":"old"}',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-01',
+                'staff_id' => 1,
+                'staff_key' => '1',
+                'staff_code' => 'AZA',
+                'score' => 13,
+                'score_breakdown_json' => '{"kept":true}',
+                'work_type_breakdown_json' => '{"kept":true}',
+                'row_payload_json' => '{"large":"recent"}',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->artisan('workload:prune-snapshot-payloads', ['--older-than-days' => 180])
+            ->assertExitCode(0);
+
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2025-10-01',
+            'payload_json' => null,
+        ]);
+        $this->assertDatabaseHas('workload_daily_staff_snapshots', [
+            'snapshot_date' => '2025-10-01',
+            'staff_key' => '1',
+            'row_payload_json' => null,
+            'score_breakdown_json' => '{"kept":true}',
+            'work_type_breakdown_json' => '{"kept":true}',
+        ]);
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-01',
+            'payload_json' => '{"large":"recent"}',
+        ]);
+        $this->assertDatabaseHas('workload_daily_staff_snapshots', [
+            'snapshot_date' => '2026-05-01',
+            'staff_key' => '1',
+            'row_payload_json' => '{"large":"recent"}',
+        ]);
+    }
+
+    public function test_workload_stats_excludes_inactive_staff_even_when_they_have_open_work(): void
+    {
+        DB::table('staff_general')->insert([
+            [
+                'staff_id' => 3,
+                'name_code' => 'INA',
+                'full_name' => 'Inactive Staff',
+                'status' => 'Inactive',
+                'terminated_at' => null,
+                'deleted_at' => null,
+            ],
+            [
+                'staff_id' => 4,
+                'name_code' => 'TRM',
+                'full_name' => 'Terminated Staff',
+                'status' => 'Active',
+                'terminated_at' => '2026-05-01 00:00:00',
+                'deleted_at' => '2026-05-01 00:00:00',
+            ],
+        ]);
+
+        DB::table('projects_main')->insert([
+            'id' => 550,
+            'project_name' => 'Inactive Staff Project',
+            'client_id' => 550,
+            'status' => 'Active',
+            'created_by' => 1,
+        ]);
+
+        DB::table('project_collaborators')->insert([
+            ['project_id' => 550, 'staff_id' => 1, 'project_role' => 'Leader'],
+            ['project_id' => 550, 'staff_id' => 3, 'project_role' => 'Leader'],
+            ['project_id' => 550, 'staff_id' => 4, 'project_role' => 'Leader'],
+        ]);
+
+        DB::table('tasks')->insert([
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Active staff open workload',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-15',
+                'created_at' => '2026-05-10 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 3,
+                'project_id' => 550,
+                'project_progress_id' => null,
+                'title' => 'Inactive staff open workload',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-15',
+                'created_at' => '2026-05-10 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 4,
+                'project_id' => 550,
+                'project_progress_id' => null,
+                'title' => 'Terminated staff open workload',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-15',
+                'created_at' => '2026-05-10 09:00:00',
+                'completed_at' => null,
+            ],
+        ]);
+
+        DB::table('project_progress')->insert([
+            [
+                'project_id' => 550,
+                'progress_date' => '2026-05-20',
+                'progress_text' => 'Active staff progress',
+                'updated_by' => 1,
+                'updated_on' => '2026-05-20 09:00:00',
+                'source_type' => null,
+                'source_task_id' => null,
+            ],
+            [
+                'project_id' => 550,
+                'progress_date' => '2026-05-20',
+                'progress_text' => 'Inactive staff progress',
+                'updated_by' => 3,
+                'updated_on' => '2026-05-20 09:00:00',
+                'source_type' => null,
+                'source_task_id' => null,
+            ],
+        ]);
+
+        $response = $this->authenticatedGet('/stats/workload?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $rows = collect($response->json('staff'));
+        $this->assertContains('AZA', $rows->pluck('staffCode')->all());
+        $this->assertNotContains('INA', $rows->pluck('staffCode')->all());
+        $this->assertNotContains('TRM', $rows->pluck('staffCode')->all());
+
+        $allTaskTitles = $rows->flatMap(function (array $row): array {
+            return collect($row['otherTasks'])
+                ->pluck('title')
+                ->merge(
+                    collect($row['projectGroups'])
+                        ->flatMap(fn (array $group) => collect($group['activeTasks'])->pluck('title'))
+                )
+                ->all();
+        })->all();
+        $allProgressText = $rows->flatMap(fn (array $row) => collect($row['projectGroups'])
+            ->flatMap(fn (array $group) => collect($group['progressUpdates'])->pluck('progressText')))->all();
+
+        $this->assertContains('Active staff open workload', $allTaskTitles);
+        $this->assertNotContains('Inactive staff open workload', $allTaskTitles);
+        $this->assertNotContains('Terminated staff open workload', $allTaskTitles);
+        $this->assertContains('Active staff progress', $allProgressText);
+        $this->assertNotContains('Inactive staff progress', $allProgressText);
+    }
+
+    public function test_workload_score_counts_all_project_tasks_and_weights_role_and_value(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 3, 'name_code' => 'SPM', 'full_name' => 'Spam Tester', 'status' => 'Active'],
+            ['staff_id' => 4, 'name_code' => 'LEA', 'full_name' => 'Leader Tester', 'status' => 'Active'],
+            ['staff_id' => 5, 'name_code' => 'COL', 'full_name' => 'Collaborator Tester', 'status' => 'Active'],
+            ['staff_id' => 6, 'name_code' => 'HVL', 'full_name' => 'High Value Leader', 'status' => 'Active'],
+        ]);
+
+        DB::table('projects_main')->insert([
+            ['id' => 601, 'project_name' => 'Spam Project', 'quote_value' => 1000, 'status' => 'Active', 'created_by' => 3],
+            ['id' => 602, 'project_name' => 'Leader Project', 'quote_value' => 1000, 'status' => 'Active', 'created_by' => 4],
+            ['id' => 603, 'project_name' => 'Collaborator Project', 'quote_value' => 1000, 'status' => 'Active', 'created_by' => 5],
+            ['id' => 604, 'project_name' => 'High Value Project', 'quote_value' => 600000, 'status' => 'Active', 'created_by' => 6],
+        ]);
+
+        DB::table('project_collaborators')->insert([
+            ['project_id' => 601, 'staff_id' => 3, 'project_role' => 'Leader', 'role_description' => null],
+            ['project_id' => 602, 'staff_id' => 4, 'project_role' => 'Leader', 'role_description' => null],
+            ['project_id' => 603, 'staff_id' => 5, 'project_role' => 'Collaborator', 'role_description' => null],
+            ['project_id' => 604, 'staff_id' => 6, 'project_role' => 'Leader', 'role_description' => null],
+        ]);
+
+        $tasks = [];
+        for ($i = 1; $i <= 8; $i++) {
+            $tasks[] = [
+                'staff_id' => 3,
+                'project_id' => 601,
+                'project_progress_id' => null,
+                'title' => "Spam task {$i}",
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-30',
+                'created_at' => '2026-05-02 09:00:00',
+                'completed_at' => null,
+            ];
+        }
+        foreach ([[4, 602, 'Leader task'], [5, 603, 'Collaborator task'], [6, 604, 'High value task']] as [$staffId, $projectId, $title]) {
+            $tasks[] = [
+                'staff_id' => $staffId,
+                'project_id' => $projectId,
+                'project_progress_id' => null,
+                'title' => $title,
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-30',
+                'created_at' => '2026-05-02 09:00:00',
+                'completed_at' => null,
+            ];
+        }
+        DB::table('tasks')->insert($tasks);
+
+        for ($i = 1; $i <= 4; $i++) {
+            DB::table('project_progress')->insert([
+                'project_id' => 601,
+                'progress_date' => "2026-05-1{$i}",
+                'progress_text' => "Spam project progress {$i}",
+                'updated_by' => 3,
+                'updated_on' => "2026-05-1{$i} 09:00:00",
+                'source_type' => null,
+                'source_task_id' => null,
+            ]);
+        }
+
+        $response = $this->authenticatedGet('/stats/workload?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $rows = collect($response->json('staff'));
+        $spam = $rows->firstWhere('staffCode', 'SPM');
+        $leader = $rows->firstWhere('staffCode', 'LEA');
+        $collaborator = $rows->firstWhere('staffCode', 'COL');
+        $highValueLeader = $rows->firstWhere('staffCode', 'HVL');
+
+        $this->assertSame(8, (int) $spam['activeTasks']);
+        $this->assertSame(8, (int) $spam['projectTaggedActiveTasks']);
+        $this->assertSame(16.0, (float) $spam['score']);
+        $this->assertSame(12.0, (float) $spam['projectGroups'][0]['scoreContribution']);
+        $this->assertSame(8.0, (float) $spam['projectGroups'][0]['projectTaskPoints']);
+        $this->assertSame(1.0, (float) $spam['projectGroups'][0]['projectBasePoints']);
+        $this->assertSame(2.0, (float) $spam['projectGroups'][0]['projectProgressPoints']);
+        $this->assertSame(1.0, (float) $spam['projectGroups'][0]['projectValuePoints']);
+        $this->assertSame(4.0, (float) $spam['projectGroups'][0]['projectOverheadPoints']);
+        $this->assertCount(4, $spam['projectGroups'][0]['progressUpdates']);
+
+        $this->assertSame(3.5, (float) $leader['score']);
+        $this->assertSame(2.4, (float) $collaborator['score']);
+        $this->assertGreaterThan((float) $collaborator['score'], (float) $leader['score']);
+        $this->assertSame('collaborator', $collaborator['projectGroups'][0]['projectRole']);
+        $this->assertSame(0.45, (float) $collaborator['projectGroups'][0]['roleWeight']);
+        $this->assertSame(1.0, (float) $collaborator['projectGroups'][0]['projectTaskPoints']);
+
+        $this->assertSame(4.5, (float) $highValueLeader['score']);
+        $this->assertGreaterThan((float) $leader['score'], (float) $highValueLeader['score']);
+        $this->assertSame(5, (int) $highValueLeader['projectGroups'][0]['valueBand']);
+        $this->assertSame(2.0, (float) $highValueLeader['projectGroups'][0]['projectValuePoints']);
+        $this->assertLessThan(35, (float) $highValueLeader['score']);
+    }
+
+    public function test_workload_score_uses_effort_for_non_project_deadline_and_completed_work(): void
+    {
+        $activeEfforts = [4.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5];
+        foreach ($activeEfforts as $index => $effortScore) {
+            DB::table('tasks')->insert([
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => "Effort active task {$index}",
+                'task_category' => $effortScore >= 4 ? 'critical_escalation' : ($effortScore >= 3 ? 'real_effort' : 'administrative'),
+                'effort_score' => $effortScore,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Ongoing',
+                'due_date' => '2026-05-08',
+                'created_at' => '2026-05-02 09:00:00',
+                'completed_at' => null,
+            ]);
+        }
+
+        for ($i = 1; $i <= 30; $i++) {
+            DB::table('tasks')->insert([
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => "Completed effort task {$i}",
+                'task_category' => 'critical_escalation',
+                'effort_score' => 4,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Completed',
+                'due_date' => '2026-05-08',
+                'created_at' => '2026-05-01 09:00:00',
+                'completed_at' => '2026-05-10',
+            ]);
+        }
+
+        $response = $this->authenticatedGet('/stats/workload?start_date=2026-05-01&end_date=2026-05-31');
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $aza = collect($response->json('staff'))->firstWhere('staffCode', 'AZA');
+
+        $this->assertSame(60.5, (float) $aza['score']);
+        $this->assertSame(
+            [
+                ['label' => 'Non-project tasks', 'points' => 14.5],
+                ['label' => 'Project responsibility', 'points' => 0],
+                ['label' => 'Deadline pressure', 'points' => 4],
+                ['label' => 'Completed work', 'points' => 42],
+            ],
+            $aza['scoreBreakdown']
+        );
+        $this->assertSame(9, (int) $aza['activeTasks']);
+        $this->assertSame(30, (int) $aza['completedInPeriod']);
+        $this->assertCount(30, $aza['completedTasks']);
+        $this->assertSame(4.0, (float) collect($aza['otherTasks'])->firstWhere('title', 'Effort active task 0')['effortScore']);
+        $this->assertSame(3.0, (float) collect($aza['otherTasks'])->firstWhere('title', 'Effort active task 1')['effortScore']);
+    }
+
+    public function test_workload_uses_period_end_as_snapshot_and_period_range_for_completed_credit(): void
+    {
+        DB::table('tasks')->insert([
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Past year open overdue task',
+                'task_category' => 'real_effort',
+                'effort_score' => 3,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Ongoing',
+                'due_date' => '2026-01-15',
+                'created_at' => '2025-12-01 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Completed after snapshot task',
+                'task_category' => 'coordination_follow_up',
+                'effort_score' => 2,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Completed',
+                'due_date' => '2026-03-20',
+                'created_at' => '2026-02-01 09:00:00',
+                'completed_at' => '2026-04-05',
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Same day completed snapshot task',
+                'task_category' => 'critical_escalation',
+                'effort_score' => 4,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Completed',
+                'due_date' => '2026-03-31',
+                'created_at' => '2026-03-01 09:00:00',
+                'completed_at' => '2026-03-31',
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Completed inside snapshot window task',
+                'task_category' => 'administrative',
+                'effort_score' => 1,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Completed',
+                'due_date' => '2026-02-10',
+                'created_at' => '2026-02-01 09:00:00',
+                'completed_at' => '2026-02-15',
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Completed before snapshot window task',
+                'task_category' => 'critical_escalation',
+                'effort_score' => 4,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Completed',
+                'due_date' => '2025-12-10',
+                'created_at' => '2025-12-01 09:00:00',
+                'completed_at' => '2025-12-20',
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
+                'title' => 'Future created task',
+                'task_category' => 'critical_escalation',
+                'effort_score' => 4,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Ongoing',
+                'due_date' => '2026-04-10',
+                'created_at' => '2026-04-01 09:00:00',
+                'completed_at' => null,
+            ],
+        ]);
+
+        $response = $this->authenticatedGet('/stats/workload?start_date=2026-01-01&end_date=2026-03-31');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('asOfDate', '2026-03-31')
+            ->assertJsonPath('completedWindow.startDate', '2026-01-01')
+            ->assertJsonPath('completedWindow.endDate', '2026-03-31');
+
+        $aza = collect($response->json('staff'))->firstWhere('staffCode', 'AZA');
+        $otherTasks = collect($aza['otherTasks']);
+        $completedTasks = collect($aza['completedTasks']);
+
+        $this->assertSame(9.1, (float) $aza['score']);
+        $this->assertSame(2, (int) $aza['activeTasks']);
+        $this->assertSame(2, (int) $aza['overdueTasks']);
+        $this->assertSame(2, (int) $aza['completedInPeriod']);
+        $this->assertSame(
+            [
+                ['label' => 'Non-project tasks', 'points' => 5],
+                ['label' => 'Project responsibility', 'points' => 0],
+                ['label' => 'Deadline pressure', 'points' => 1.75],
+                ['label' => 'Completed work', 'points' => 2.35],
+            ],
+            $aza['scoreBreakdown']
+        );
+        $this->assertEqualsCanonicalizing(
+            [
+                'Past year open overdue task',
+                'Completed after snapshot task',
+                'Same day completed snapshot task',
+                'Completed inside snapshot window task',
+            ],
+            $otherTasks->pluck('title')->all()
+        );
+        $completedAfterSnapshot = $otherTasks->firstWhere('title', 'Completed after snapshot task');
+        $this->assertSame('Ongoing', $completedAfterSnapshot['status']);
+        $this->assertSame('', $completedAfterSnapshot['completedAt']);
+        $this->assertSame(
+            ['Same day completed snapshot task', 'Completed inside snapshot window task'],
+            $completedTasks->pluck('title')->all()
+        );
+        $this->assertFalse($otherTasks->contains('title', 'Completed before snapshot window task'));
+        $this->assertFalse($otherTasks->contains('title', 'Future created task'));
+    }
+
     private function authenticatedPost(string $uri, array $payload)
     {
         return $this
@@ -421,6 +2652,21 @@ class DashboardStatsControllerTest extends TestCase
             ])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->postJson($uri, $payload);
+    }
+
+    private function authenticatedPut(string $uri, array $payload)
+    {
+        return $this
+            ->withSession([
+                '_token' => 'test-csrf-token',
+                'user_id' => 1,
+                'staff_id' => 1,
+                'name_code' => 'AZA',
+                'full_name' => 'Azam Bin Husain',
+                'roles' => ['Manager', 'System Admin'],
+            ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->putJson($uri, $payload);
     }
 
     private function authenticatedGet(string $uri)
@@ -438,6 +2684,21 @@ class DashboardStatsControllerTest extends TestCase
             ->getJson($uri);
     }
 
+    private function authenticatedGetAs(string $uri, array $roles, int $userId, int $staffId)
+    {
+        return $this
+            ->withSession([
+                '_token' => 'test-csrf-token',
+                'user_id' => $userId,
+                'staff_id' => $staffId,
+                'name_code' => $staffId === 1 ? 'AZA' : 'BOB',
+                'full_name' => $staffId === 1 ? 'Azam Bin Husain' : 'Bob Tester',
+                'roles' => $roles,
+            ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->getJson($uri);
+    }
+
     private function assertMonthlySalesMonths(array $expectedMonths, array $payload): void
     {
         $response = $this->authenticatedPost('/stats/monthly-sales', $payload);
@@ -449,12 +2710,12 @@ class DashboardStatsControllerTest extends TestCase
     private function registerSqliteDateFormat(): void
     {
         $pdo = DB::connection()->getPdo();
-        if (!method_exists($pdo, 'sqliteCreateFunction')) {
+        if (! method_exists($pdo, 'sqliteCreateFunction')) {
             return;
         }
 
         $pdo->sqliteCreateFunction('DATE_FORMAT', static function ($date, $format) {
-            if (!$date) {
+            if (! $date) {
                 return null;
             }
 
@@ -468,8 +2729,8 @@ class DashboardStatsControllerTest extends TestCase
                 default => date('Y-m-d', $timestamp),
             };
         }, 2);
-        $pdo->sqliteCreateFunction('CONCAT', static fn(...$parts) => implode('', array_map(
-            static fn($part) => (string) $part,
+        $pdo->sqliteCreateFunction('CONCAT', static fn (...$parts) => implode('', array_map(
+            static fn ($part) => (string) $part,
             $parts
         )), -1);
     }
@@ -488,10 +2749,22 @@ class DashboardStatsControllerTest extends TestCase
             'quotes_equipment',
             'quotes_special',
             'projects_main',
+            'project_collaborators',
             'staff_general',
             'system_users',
+            'in_app_notifications',
             'quote_price_exception_requests',
             'legal_compliance_assessments',
+            'workload_daily_snapshot_checks',
+            'workload_daily_staff_snapshots',
+            'workload_daily_snapshots',
+            'workload_dashboard_shares',
+            'dashboard_monthly_report_test_logs',
+            'dashboard_monthly_report_email_logs',
+            'dashboard_monthly_report_schedule_settings',
+            'dashboard_monthly_reports',
+            'project_progress',
+            'tasks',
         ] as $table) {
             Schema::dropIfExists($table);
         }
@@ -508,6 +2781,9 @@ class DashboardStatsControllerTest extends TestCase
             $table->integer('staff_id')->primary();
             $table->string('name_code')->nullable();
             $table->string('full_name')->nullable();
+            $table->string('status')->nullable();
+            $table->timestamp('terminated_at')->nullable();
+            $table->timestamp('deleted_at')->nullable();
         });
 
         DB::table('system_users')->insert([
@@ -517,6 +2793,25 @@ class DashboardStatsControllerTest extends TestCase
             'role' => json_encode(['System Admin']),
             'is_active' => 1,
         ]);
+
+        Schema::create('in_app_notifications', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedInteger('recipient_staff_id')->index();
+            $table->unsignedInteger('actor_staff_id')->nullable()->index();
+            $table->string('module_key', 80)->index();
+            $table->string('entity_type', 80)->index();
+            $table->unsignedBigInteger('entity_id')->index();
+            $table->string('type', 80)->index();
+            $table->string('title');
+            $table->text('message')->nullable();
+            $table->string('route')->nullable();
+            $table->string('severity', 40)->default('info');
+            $table->json('metadata_json')->nullable();
+            $table->timestamp('read_at')->nullable()->index();
+            $table->timestamp('consumed_at')->nullable()->index();
+            $table->timestamp('resolved_at')->nullable()->index();
+            $table->timestamps();
+        });
 
         Schema::create('all_quotes', function (Blueprint $table) {
             $table->string('service_group');
@@ -621,6 +2916,7 @@ class DashboardStatsControllerTest extends TestCase
 
         Schema::create('projects_main', function (Blueprint $table) {
             $table->integer('id')->primary();
+            $table->integer('client_id')->nullable();
             $table->string('project_name')->nullable();
             $table->integer('quote_id')->nullable();
             $table->string('project_type')->nullable();
@@ -628,6 +2924,177 @@ class DashboardStatsControllerTest extends TestCase
             $table->date('award_date')->nullable();
             $table->string('status')->nullable();
             $table->integer('created_by')->nullable();
+        });
+
+        Schema::create('project_collaborators', function (Blueprint $table) {
+            $table->increments('id');
+            $table->unsignedInteger('project_id');
+            $table->unsignedBigInteger('staff_id');
+            $table->string('project_role')->nullable();
+            $table->string('role_description')->nullable();
+        });
+
+        Schema::create('tasks', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('staff_id');
+            $table->unsignedInteger('project_id')->nullable();
+            $table->unsignedInteger('project_progress_id')->nullable();
+            $table->string('title');
+            $table->string('task_category')->default('uncategorised');
+            $table->decimal('effort_score', 4, 1)->default(1);
+            $table->string('classification_confidence')->nullable();
+            $table->string('classification_source')->default('system');
+            $table->boolean('user_override')->default(false);
+            $table->string('matched_pattern')->nullable();
+            $table->string('work_type')->default('unclear');
+            $table->string('work_type_confidence')->nullable();
+            $table->string('work_type_matched_pattern')->nullable();
+            $table->string('status');
+            $table->date('due_date');
+            $table->timestamp('created_at')->nullable();
+            $table->date('completed_at')->nullable();
+        });
+
+        Schema::create('project_progress', function (Blueprint $table) {
+            $table->increments('id');
+            $table->unsignedInteger('project_id');
+            $table->date('progress_date');
+            $table->longText('progress_text');
+            $table->unsignedBigInteger('updated_by')->nullable();
+            $table->timestamp('updated_on')->nullable();
+            $table->string('source_type')->nullable();
+            $table->unsignedBigInteger('source_task_id')->nullable();
+        });
+
+        Schema::create('workload_dashboard_shares', function (Blueprint $table) {
+            $table->id();
+            $table->string('token_hash', 64)->unique();
+            $table->unsignedBigInteger('created_by_staff_id')->nullable();
+            $table->string('created_by_code')->nullable();
+            $table->date('start_date')->nullable();
+            $table->date('end_date')->nullable();
+            $table->longText('payload_json');
+            $table->timestamp('expires_at');
+            $table->timestamps();
+        });
+
+        Schema::create('dashboard_monthly_reports', function (Blueprint $table) {
+            $table->id();
+            $table->string('report_month', 7)->unique();
+            $table->date('start_date');
+            $table->date('end_date');
+            $table->string('stored_path')->nullable();
+            $table->string('public_token_hash', 64)->nullable()->unique();
+            $table->timestamp('public_token_expires_at')->nullable();
+            $table->timestamp('generated_at')->nullable();
+            $table->timestamp('email_sent_at')->nullable();
+            $table->json('recipients_json')->nullable();
+            $table->longText('payload_json')->nullable();
+            $table->string('payload_hash', 64)->nullable();
+            $table->unsignedInteger('generation_duration_ms')->nullable();
+            $table->string('status', 40)->default('pending');
+            $table->text('error_message')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('dashboard_monthly_report_email_logs', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('report_id')->nullable()->index();
+            $table->string('report_month', 7)->index();
+            $table->string('recipient_email');
+            $table->string('recipient_name')->nullable();
+            $table->string('send_type', 20)->default('production')->index();
+            $table->string('status', 20)->default('pending')->index();
+            $table->text('public_url')->nullable();
+            $table->timestamp('public_token_expires_at')->nullable();
+            $table->text('error_message')->nullable();
+            $table->timestamp('sent_at')->nullable()->index();
+            $table->timestamps();
+        });
+
+        Schema::create('dashboard_monthly_report_test_logs', function (Blueprint $table) {
+            $table->id();
+            $table->string('report_month', 7);
+            $table->string('recipient_email');
+            $table->string('status', 20);
+            $table->text('response_message')->nullable();
+            $table->text('public_url')->nullable();
+            $table->timestamp('public_token_expires_at')->nullable();
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->string('name_code', 20)->nullable();
+            $table->string('ip_address', 45)->nullable();
+            $table->timestamp('completed_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('dashboard_monthly_report_schedule_settings', function (Blueprint $table) {
+            $table->id();
+            $table->boolean('enabled')->default(true);
+            $table->unsignedSmallInteger('interval_value')->default(1);
+            $table->string('interval_unit', 20)->default('months');
+            $table->date('start_date');
+            $table->string('send_time', 5)->default('08:30');
+            $table->timestamp('next_send_at')->nullable();
+            $table->timestamp('last_attempt_at')->nullable();
+            $table->timestamp('last_sent_at')->nullable();
+            $table->string('last_status', 20)->nullable();
+            $table->text('last_error')->nullable();
+            $table->unsignedBigInteger('updated_by_staff_id')->nullable();
+            $table->string('updated_by_code', 20)->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('workload_daily_snapshots', function (Blueprint $table) {
+            $table->id();
+            $table->date('snapshot_date')->unique();
+            $table->date('start_date')->nullable();
+            $table->date('end_date')->nullable();
+            $table->unsignedInteger('staff_count')->default(0);
+            $table->decimal('total_score', 12, 2)->default(0);
+            $table->decimal('avg_score', 12, 2)->default(0);
+            $table->unsignedInteger('total_active_tasks')->default(0);
+            $table->unsignedInteger('total_overdue_tasks')->default(0);
+            $table->unsignedInteger('total_due_soon_tasks')->default(0);
+            $table->unsignedInteger('total_completed_in_period')->default(0);
+            $table->longText('payload_json')->nullable();
+            $table->string('capture_mode', 40)->default('captured');
+            $table->string('captured_by_command', 120)->nullable();
+            $table->text('capture_note')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('workload_daily_snapshot_checks', function (Blueprint $table) {
+            $table->id();
+            $table->date('snapshot_date')->index();
+            $table->string('severity', 40)->index();
+            $table->string('check_key', 80);
+            $table->text('message')->nullable();
+            $table->longText('metadata_json')->nullable();
+            $table->timestamps();
+            $table->unique(['snapshot_date', 'check_key'], 'workload_daily_snapshot_checks_unique');
+        });
+
+        Schema::create('workload_daily_staff_snapshots', function (Blueprint $table) {
+            $table->id();
+            $table->date('snapshot_date')->index();
+            $table->unsignedBigInteger('staff_id')->nullable()->index();
+            $table->string('staff_key')->index();
+            $table->string('staff_code')->nullable();
+            $table->string('staff_name')->nullable();
+            $table->decimal('score', 12, 2)->default(0);
+            $table->unsignedInteger('active_tasks')->default(0);
+            $table->unsignedInteger('overdue_tasks')->default(0);
+            $table->unsignedInteger('due_soon_tasks')->default(0);
+            $table->unsignedInteger('project_tagged_active_tasks')->default(0);
+            $table->unsignedInteger('project_group_count')->default(0);
+            $table->unsignedInteger('completed_in_period')->default(0);
+            $table->unsignedInteger('late_completed_in_period')->default(0);
+            $table->integer('avg_days_lapsed')->default(0);
+            $table->longText('score_breakdown_json')->nullable();
+            $table->longText('work_type_breakdown_json')->nullable();
+            $table->longText('row_payload_json')->nullable();
+            $table->timestamps();
+            $table->unique(['snapshot_date', 'staff_key'], 'workload_daily_staff_snapshot_unique');
         });
 
         foreach (['quotes_training', 'quotes_ih', 'quotes_manpower', 'quotes_equipment', 'quotes_special'] as $quoteTable) {
@@ -776,11 +3243,17 @@ class DashboardStatsControllerTest extends TestCase
                 'staff_id' => 1,
                 'name_code' => 'AZA',
                 'full_name' => 'Azam Bin Husain',
+                'status' => 'Active',
+                'terminated_at' => null,
+                'deleted_at' => null,
             ],
             [
                 'staff_id' => 2,
                 'name_code' => 'BOB',
                 'full_name' => 'Bob Tester',
+                'status' => 'Active',
+                'terminated_at' => null,
+                'deleted_at' => null,
             ],
         ]);
 
@@ -1011,6 +3484,22 @@ class DashboardStatsControllerTest extends TestCase
                 'segment_type' => 'individual',
                 'service_category' => 'training',
                 'estimated_rm' => 0,
+                'owner_staff_id' => 1,
+                'owner_staff_code' => 'AZA',
+                'owner_staff_name' => 'Azam Bin Husain',
+                'created_by' => 1,
+                'created_by_code' => 'AZA',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'entry_type' => 'closed',
+                'prospect_name' => 'Manual Unknown Service',
+                'entry_date' => '2026-05-08',
+                'source' => 'Referral',
+                'segment_type' => 'individual',
+                'service_category' => 'unknown_service',
+                'estimated_rm' => 900,
                 'owner_staff_id' => 1,
                 'owner_staff_code' => 'AZA',
                 'owner_staff_name' => 'Azam Bin Husain',

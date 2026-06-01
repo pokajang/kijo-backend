@@ -2,12 +2,12 @@
 
 namespace App\Services\QuoteRecords;
 
-use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
 use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
-use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\Projects\ProjectCollaboratorAssignmentService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,29 +15,28 @@ use Illuminate\Support\Facades\Schema;
 
 class EquipmentQuoteRecordAwardWorkflowService
 {
-
     public function __construct(private AuditLogService $auditLog) {}
 
     public function awardEquipment(AwardQuoteRequest $request): JsonResponse
     {
-        $quoteId     = (int) $request->input('quote_id');
-        $remarks     = trim((string) $request->input('remarks', ''));
-        $awardDate   = $request->input('award_date') ?: now()->format('Y-m-d');
+        $quoteId = (int) $request->input('quote_id');
+        $remarks = trim((string) $request->input('remarks', ''));
+        $awardDate = $request->input('award_date') ?: now()->format('Y-m-d');
         $description = (string) $request->input('description', '');
         $clientRefNo = $request->input('client_award_ref_no');
 
         DB::beginTransaction();
         try {
             DB::table('quotes_equipment')->where('id', $quoteId)->update([
-                'status'              => 'Awarded',
-                'status_remarks'      => $remarks,
-                'award_date'          => $awardDate,
+                'status' => 'Awarded',
+                'status_remarks' => $remarks,
+                'award_date' => $awardDate,
                 'client_award_ref_no' => $clientRefNo,
-                'updated_at'          => now(),
+                'updated_at' => now(),
             ]);
 
             $quote = DB::table('quotes_equipment')->where('id', $quoteId)->first();
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Equipment quotation not found.');
             }
 
@@ -58,8 +57,8 @@ class EquipmentQuoteRecordAwardWorkflowService
                 ->toArray();
 
             $projectName = 'Equipment Supply';
-            if (!empty($names)) {
-                $projectName .= ' – ' . implode(', ', $names);
+            if (! empty($names)) {
+                $projectName .= ' – '.implode(', ', $names);
                 $totalCount = DB::table('quotes_equipment_items')->where('quote_id', $quoteId)->count();
                 if ($totalCount > 3) {
                     $projectName .= ', …';
@@ -67,32 +66,35 @@ class EquipmentQuoteRecordAwardWorkflowService
             }
 
             $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
-                'client_id'     => $quote->client_id,
-                'quote_id'      => $quoteId,
-                'project_name'  => $projectName,
-                'project_type'  => 'Equipment Supply',
-                'quote_type'    => 'equipment',
+                'client_id' => $quote->client_id,
+                'quote_id' => $quoteId,
+                'project_name' => $projectName,
+                'project_type' => 'Equipment Supply',
+                'quote_type' => 'equipment',
                 'po_loa_number' => $clientRefNo,
-                'description'   => $description,
-                'status'        => 'Active',
-                'quote_value'   => $quote->grand_total,
-                'award_date'    => $awardDate,
-                'created_at'    => now(),
+                'description' => $description,
+                'status' => 'Active',
+                'quote_value' => $quote->grand_total,
+                'award_date' => $awardDate,
+                'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'Equipment quotation marked as Awarded. Project started.', $request);
+            app(ProjectCollaboratorAssignmentService::class)
+                ->assignInitialCollaborators($newProjectId, $request);
 
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
         }
 
         $this->auditLog->log($request, "Marked Equipment quotation ID #{$quoteId} as Awarded and created project ID #{$newProjectId}");
 
         return response()->json([
-            'status'     => 'success',
-            'message'    => 'Equipment quotation awarded and project created successfully.',
+            'status' => 'success',
+            'message' => 'Equipment quotation awarded and project created successfully.',
             'project_id' => $newProjectId,
         ]);
     }
@@ -103,7 +105,7 @@ class EquipmentQuoteRecordAwardWorkflowService
         $remarks = trim((string) $request->input('remarks', ''));
 
         $row = DB::table('quotes_equipment')->where('id', $quoteId)->first();
-        if (!$row) {
+        if (! $row) {
             return response()->json(['status' => 'error', 'message' => 'Equipment quotation not found.'], 404);
         }
         if (strtolower(trim($row->status)) === 'failed') {
@@ -111,9 +113,9 @@ class EquipmentQuoteRecordAwardWorkflowService
         }
 
         DB::table('quotes_equipment')->where('id', $quoteId)->update([
-            'status'         => 'Failed',
+            'status' => 'Failed',
             'status_remarks' => $remarks,
-            'updated_at'     => now(),
+            'updated_at' => now(),
         ]);
 
         $this->auditLog->log($request, "Marked Equipment quotation ID #{$quoteId} as Failed");
@@ -123,16 +125,16 @@ class EquipmentQuoteRecordAwardWorkflowService
 
     public function reAwardEquipment(AwardQuoteRequest $request): JsonResponse
     {
-        $quoteId     = (int) $request->input('quote_id');
-        $remarks     = trim((string) $request->input('remarks', ''));
-        $awardDate   = $request->input('award_date') ?: now()->format('Y-m-d');
+        $quoteId = (int) $request->input('quote_id');
+        $remarks = trim((string) $request->input('remarks', ''));
+        $awardDate = $request->input('award_date') ?: now()->format('Y-m-d');
         $description = trim((string) $request->input('description', 'Re-awarded project from existing awarded quotation.'));
         $clientRefNo = $request->input('client_award_ref_no');
 
         DB::beginTransaction();
         try {
             $quote = DB::table('quotes_equipment')->where('id', $quoteId)->first();
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Equipment quotation not found.');
             }
             if (strtolower(trim((string) $quote->status)) !== 'awarded') {
@@ -148,8 +150,8 @@ class EquipmentQuoteRecordAwardWorkflowService
                 ->toArray();
 
             $projectName = 'Equipment Supply';
-            if (!empty($names)) {
-                $projectName .= ' - ' . implode(', ', $names);
+            if (! empty($names)) {
+                $projectName .= ' - '.implode(', ', $names);
                 $totalCount = DB::table('quotes_equipment_items')->where('quote_id', $quoteId)->count();
                 if ($totalCount > 3) {
                     $projectName .= ', ...';
@@ -157,19 +159,22 @@ class EquipmentQuoteRecordAwardWorkflowService
             }
 
             $newProjectId = DB::table('projects_main')->insertGetId($this->withProjectProposalLanguage([
-                'client_id'    => $quote->client_id,
-                'quote_id'     => $quoteId,
+                'client_id' => $quote->client_id,
+                'quote_id' => $quoteId,
                 'project_name' => $projectName,
                 'project_type' => 'Equipment Supply',
-                'quote_type'   => 'equipment',
-                'description'  => $description,
-                'status'       => 'Active',
-                'quote_value'  => $quote->grand_total,
-                'award_date'   => $awardDate,
-                'created_at'   => now(),
+                'quote_type' => 'equipment',
+                'po_loa_number' => $clientRefNo,
+                'description' => $description,
+                'status' => 'Active',
+                'quote_value' => $quote->grand_total,
+                'award_date' => $awardDate,
+                'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
             $this->insertProjectProgress($newProjectId, 'New project created from Re-Award (existing quote).', $request);
+            app(ProjectCollaboratorAssignmentService::class)
+                ->assignInitialCollaborators($newProjectId, $request);
 
             $awardCount = DB::table('projects_main')
                 ->where('quote_id', $quoteId)
@@ -180,25 +185,26 @@ class EquipmentQuoteRecordAwardWorkflowService
             $statusRemark = $remarks !== '' ? $remarks : 'Re-Awarded';
 
             DB::table('quotes_equipment')->where('id', $quoteId)->update([
-                'status'              => 'Awarded',
-                'status_remarks'      => $statusRemark,
-                'award_date'          => $awardDate,
+                'status' => 'Awarded',
+                'status_remarks' => $statusRemark,
+                'award_date' => $awardDate,
                 'client_award_ref_no' => $clientRefNo,
-                'updated_at'          => now(),
+                'updated_at' => now(),
             ]);
 
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 422);
         }
 
         $this->auditLog->log($request, "Re-awarded equipment quote ID #{$quoteId} and created project ID #{$newProjectId}");
 
         return response()->json([
-            'status'         => 'success',
-            'message'        => 'Re-awarded successfully. Project created.',
-            'award_count'    => $awardCount,
+            'status' => 'success',
+            'message' => 'Re-awarded successfully. Project created.',
+            'award_count' => $awardCount,
             'status_remarks' => $statusRemark,
         ]);
     }
@@ -214,7 +220,7 @@ class EquipmentQuoteRecordAwardWorkflowService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$quote) {
+            if (! $quote) {
                 throw new \Exception('Equipment quotation not found.');
             }
             if (strtolower(trim((string) $quote->status)) !== 'awarded') {
@@ -229,7 +235,7 @@ class EquipmentQuoteRecordAwardWorkflowService
                 ORDER BY COALESCE(created_at, '1970-01-01') DESC, id DESC
             ", [$quoteId]);
 
-            $linkedCount     = count($projects);
+            $linkedCount = count($projects);
             $targetProjectId = $linkedCount > 0 ? (int) $projects[0]->id : null;
 
             if ($targetProjectId) {
@@ -248,32 +254,33 @@ class EquipmentQuoteRecordAwardWorkflowService
                     ->first();
 
                 DB::table('quotes_equipment')->where('id', $quoteId)->update([
-                    'status'         => 'Awarded',
+                    'status' => 'Awarded',
                     'status_remarks' => $remainingProjects > 1 ? 'Re-Awarded' : 'Awarded',
-                    'award_date'     => $latest->award_date ?? null,
-                    'updated_at'     => now(),
+                    'award_date' => $latest->award_date ?? null,
+                    'updated_at' => now(),
                 ]);
             } else {
                 DB::table('quotes_equipment')->where('id', $quoteId)->update([
-                    'status'              => 'Open',
-                    'status_remarks'      => 'Un-awarded by user.',
-                    'award_date'          => null,
+                    'status' => 'Open',
+                    'status_remarks' => 'Un-awarded by user.',
+                    'award_date' => null,
                     'client_award_ref_no' => null,
-                    'updated_at'          => now(),
+                    'updated_at' => now(),
                 ]);
             }
 
             DB::commit();
         } catch (\Exception $e) {
             DB::rollBack();
-            $code = $e instanceof \Illuminate\Database\QueryException ? 500 : 400;
+            $code = $e instanceof QueryException ? 500 : 400;
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], $code);
         }
 
         $deletedCount = $targetProjectId ? 1 : 0;
         $this->auditLog->log($request, "Un-awarded Equipment quotation ID #{$quoteId}; removed {$deletedCount} latest linked project(s), remaining {$remainingProjects}");
 
-        if (!$targetProjectId) {
+        if (! $targetProjectId) {
             $message = 'No linked project found. Quotation reset to Open.';
         } elseif ($remainingProjects > 0) {
             $message = "Latest award removed. Quotation remains Awarded with {$remainingProjects} linked project(s).";
@@ -282,9 +289,9 @@ class EquipmentQuoteRecordAwardWorkflowService
         }
 
         return response()->json([
-            'status'             => 'success',
-            'message'            => $message,
-            'deleted_projects'   => $deletedCount,
+            'status' => 'success',
+            'message' => $message,
+            'deleted_projects' => $deletedCount,
             'remaining_projects' => $remainingProjects,
         ]);
     }
@@ -296,11 +303,11 @@ class EquipmentQuoteRecordAwardWorkflowService
         }
         try {
             DB::table('project_progress')->insert([
-                'project_id'    => $projectId,
+                'project_id' => $projectId,
                 'progress_date' => now()->format('Y-m-d'),
                 'progress_text' => $text,
-                'updated_by'    => (int) $request->session()->get('staff_id', 0) ?: null,
-                'updated_on'    => now(),
+                'updated_by' => (int) $request->session()->get('staff_id', 0) ?: null,
+                'updated_on' => now(),
             ]);
         } catch (\Throwable $e) {
             report($e);

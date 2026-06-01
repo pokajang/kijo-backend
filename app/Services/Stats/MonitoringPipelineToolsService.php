@@ -2,32 +2,30 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class MonitoringPipelineToolsService
 {
     use MonitoringStatsCoreHelpers;
+    use MonitoringStatsDetailHelpers;
+    use MonitoringStatsEventHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
     use MonitoringStatsManualHelpers;
     use MonitoringStatsStaffHelpers;
-    use MonitoringStatsEventHelpers;
-    use MonitoringStatsDetailHelpers;
-    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -64,14 +62,23 @@ class MonitoringPipelineToolsService
         try {
             $context = $this->monitoringMonthContext($request);
             $staffFilter = $this->monitoringStaffFilter($request);
-            if (!empty($staffFilter['forbidden'])) {
+            if (! empty($staffFilter['forbidden'])) {
                 return $this->monitoringStaffForbiddenResponse();
             }
             $quotesQuery = $this->baseQuoteLifecycleQuery()
-                ->whereBetween(DB::raw('DATE(created_at)'), [$context['monthStart'], $context['monthEnd']]);
-            $companyTotalRm = (float) (clone $quotesQuery)->sum('value');
+                ->whereBetween(DB::raw('DATE(created_at)'), [$context['rangeStart'], $context['rangeEnd']]);
+            $companyTotalRm = (float) $this->monitoringRealizedSalesProjectQuery(
+                $context['rangeStart'],
+                $context['rangeEnd'],
+                ['code' => null]
+            )->sum('value')
+                + $this->monitoringManualClosedRevenueTotal(
+                    $context['rangeStart'],
+                    $context['rangeEnd'],
+                    ['code' => null]
+                );
             $yearToDateTotals = $this->monitoringYearToDateTotals($context, $staffFilter);
-            if (!empty($staffFilter['code'])) {
+            if (! empty($staffFilter['code'])) {
                 $quotesQuery->whereRaw('UPPER(staff_code) = ?', [$staffFilter['code']]);
             }
             $quotes = $quotesQuery->get();
@@ -87,7 +94,7 @@ class MonitoringPipelineToolsService
                     $this->monitoringSystemLeadEvents($context, $staffFilter),
                     $manualEntries['events']['LEADS'] ?? []
                 ),
-                $context['weeks']
+                $context['periodColumns']
             );
 
             $rows[] = $this->monitoringToolsDistinctRow(
@@ -96,7 +103,7 @@ class MonitoringPipelineToolsService
                     $this->monitoringSystemQualifiedEvents($quotes),
                     $manualEntries['events']['QUALIFIED'] ?? []
                 ),
-                $context['weeks']
+                $context['periodColumns']
             );
 
             $rows[] = $this->monitoringToolsDistinctRow(
@@ -105,7 +112,7 @@ class MonitoringPipelineToolsService
                     $manualEntries['events']['MEETING/ PITCHING'] ?? [],
                     $legalComplianceEvents
                 ),
-                $context['weeks']
+                $context['periodColumns']
             );
 
             $rows[] = $this->monitoringToolsDistinctRow(
@@ -114,7 +121,7 @@ class MonitoringPipelineToolsService
                     $quoteIssuedEvents,
                     $manualEntries['events']['PROPOSAL'] ?? []
                 ),
-                $context['weeks']
+                $context['periodColumns']
             );
 
             $rows[] = $this->monitoringToolsDistinctRow(
@@ -123,7 +130,7 @@ class MonitoringPipelineToolsService
                     $this->monitoringQuoteNegotiationEvents($context, $staffFilter),
                     $manualEntries['events']['NEGOTIATION'] ?? []
                 ),
-                $context['weeks']
+                $context['periodColumns']
             );
 
             $rows[] = $this->monitoringToolsDistinctRow(
@@ -132,15 +139,27 @@ class MonitoringPipelineToolsService
                     $this->monitoringSystemClosedEvents($context, $staffFilter),
                     $manualEntries['events']['CLOSED'] ?? []
                 ),
-                $context['weeks']
+                $context['periodColumns']
             );
 
-            $totals = $this->monitoringToolsTotalRow($rows, $context['weeks']);
-            $currentTotalRm = (float) $quotes->sum(fn($quote) => (float) ($quote->value ?? 0));
+            $totals = $this->monitoringToolsTotalRow($rows, $context['periodColumns']);
+            $currentTotalRm = (float) $this->monitoringRealizedSalesProjectQuery(
+                $context['rangeStart'],
+                $context['rangeEnd'],
+                $staffFilter
+            )->sum('value')
+                + $this->monitoringManualClosedRevenueTotal(
+                    $context['rangeStart'],
+                    $context['rangeEnd'],
+                    $staffFilter
+                );
 
             return response()->json([
                 'status' => 'success',
                 'monthLabel' => $context['monthLabel'],
+                'rangeStart' => $context['rangeStart'],
+                'rangeEnd' => $context['rangeEnd'],
+                'rangeLabel' => $context['rangeLabel'],
                 'targets' => [
                     'yearly' => self::MONITORING_YEARLY_TARGET,
                     'individual' => self::MONITORING_INDIVIDUAL_TARGET,
@@ -148,19 +167,20 @@ class MonitoringPipelineToolsService
                 'staffOptions' => $this->buildMonitoringStaffOptions($request),
                 'selectedStaffCode' => $staffFilter['code'],
                 'weeks' => $context['weeks'],
+                'periodColumns' => $context['periodColumns'],
                 'rows' => $rows,
                 'totals' => $totals,
                 'companyTotalRm' => $companyTotalRm,
                 'currentTotalRm' => $currentTotalRm,
                 'yearToDateCompanyTotalRm' => $yearToDateTotals['companyTotalRm'],
                 'yearToDateTotalRm' => $yearToDateTotals['selectedTotalRm'],
-                'achievementPeriodLabel' => 'YTD to ' . $context['monthLabel'],
+                'achievementPeriodLabel' => 'YTD to '.$context['monthLabel'],
                 'manualEntries' => $manualEntries['rows'],
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
-
 }

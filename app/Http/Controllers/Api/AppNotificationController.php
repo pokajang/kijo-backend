@@ -17,6 +17,23 @@ class AppNotificationController extends Controller
         ]);
     }
 
+    public function list(Request $request, AppNotificationService $notifications): JsonResponse
+    {
+        $data = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'offset' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $notifications->list(
+                $request,
+                (int) ($data['limit'] ?? 20),
+                (int) ($data['offset'] ?? 0),
+            ),
+        ]);
+    }
+
     public function consumeEntity(Request $request, AppNotificationService $notifications): JsonResponse
     {
         $data = $request->validate([

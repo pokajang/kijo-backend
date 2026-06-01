@@ -37,6 +37,10 @@ class RequireRole
             $requiredRoles,
         );
 
+        if (in_array('system admin', $normalizedSessionRoles, true)) {
+            return $next($request);
+        }
+
         if (empty(array_intersect($normalizedRequiredRoles, $normalizedSessionRoles))) {
             return response()->json([
                 'status' => 'error',

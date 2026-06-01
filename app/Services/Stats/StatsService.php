@@ -2,13 +2,8 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class StatsService
 {
@@ -25,6 +20,11 @@ class StatsService
     private function monitoringManualStatsService(): MonitoringManualStatsService
     {
         return app(MonitoringManualStatsService::class);
+    }
+
+    private function monthlyDashboardReportService(): MonthlyDashboardReportService
+    {
+        return app(MonthlyDashboardReportService::class);
     }
 
     public function inquiryStats(Request $request): JsonResponse
@@ -115,6 +115,46 @@ class StatsService
     public function allDebtors(Request $request): JsonResponse
     {
         return $this->dashboardStatsService()->allDebtors($request);
+    }
+
+    public function workload(Request $request): JsonResponse
+    {
+        return $this->dashboardStatsService()->workload($request);
+    }
+
+    public function workloadHistory(Request $request): JsonResponse
+    {
+        return $this->dashboardStatsService()->workloadHistory($request);
+    }
+
+    public function workloadSnapshotHealth(Request $request): JsonResponse
+    {
+        return $this->dashboardStatsService()->workloadSnapshotHealth($request);
+    }
+
+    public function workloadPdf(Request $request)
+    {
+        return $this->dashboardStatsService()->workloadPdf($request);
+    }
+
+    public function createWorkloadShare(Request $request): JsonResponse
+    {
+        return $this->dashboardStatsService()->createWorkloadShare($request);
+    }
+
+    public function workloadShare(string $token): JsonResponse
+    {
+        return $this->dashboardStatsService()->workloadShare($token);
+    }
+
+    public function monthlyDashboardReportPdf(Request $request)
+    {
+        return $this->monthlyDashboardReportService()->export($request);
+    }
+
+    public function publicMonthlyDashboardReport(string $token)
+    {
+        return $this->monthlyDashboardReportService()->publicDownload($token);
     }
 
     public function monitoringPipelineTools(Request $request): JsonResponse

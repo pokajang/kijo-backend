@@ -12,7 +12,7 @@ class AwardedDashboardStatsService
 {
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
@@ -402,7 +402,7 @@ class AwardedDashboardStatsService
         $query = DB::table('monitoring_manual_pipeline_entries')
             ->where('entry_type', 'closed')
             ->whereNotNull('service_category')
-            ->where('service_category', '!=', '')
+            ->whereIn('service_category', array_keys(self::MONITORING_MANUAL_SERVICE_CATEGORIES))
             ->whereNotNull('estimated_rm')
             ->where('estimated_rm', '>', 0);
 

@@ -2,77 +2,82 @@
 
 namespace App\Services\Leaves;
 
-use App\Http\Requests\Leave\AssignEntitlementRequest;
 use App\Http\Requests\Leave\LeaveActionRequest;
 use App\Http\Requests\Leave\StoreLeaveRequest;
-use App\Http\Requests\Leave\UpdateEntitlementRequest;
 use App\Jobs\SendHtmlMailJob;
-use App\Services\AuditLogService;
 use App\Services\AppNotificationService;
+use App\Services\Mail\SystemEmailBodyBuilder;
+use App\Services\Mail\SystemEmailUrlBuilder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class LeaveRequestService extends LeaveBaseService
 {
     public function createLeave(StoreLeaveRequest $request): JsonResponse
     {
-        $data    = $request->validated();
+        $data = $request->validated();
         $staffId = (int) $request->session()->get('staff_id');
-        $name    = (string) $request->session()->get('full_name', $request->session()->get('name_code', 'Staff'));
+        $name = (string) $request->session()->get('full_name', $request->session()->get('name_code', 'Staff'));
 
         // Same-day time validation
         if ($data['start_date'] === $data['end_date'] && $data['start_time'] >= $data['end_time']) {
             return response()->json([
-                'status'  => 'error',
+                'status' => 'error',
                 'message' => 'For same-day leave, start_time must be earlier than end_time.',
             ], 422);
         }
 
         $leaveId = DB::table('hr_leaves_application')->insertGetId([
-            'staff_id'      => $staffId,
-            'type'          => $data['type'],
-            'reason'        => $data['reason'] ?? null,
-            'start_date'    => $data['start_date'],
-            'start_time'    => $data['start_time'],
-            'end_date'      => $data['end_date'],
-            'end_time'      => $data['end_time'],
+            'staff_id' => $staffId,
+            'type' => $data['type'],
+            'reason' => $data['reason'] ?? null,
+            'start_date' => $data['start_date'],
+            'start_time' => $data['start_time'],
+            'end_date' => $data['end_date'],
+            'end_time' => $data['end_time'],
             'duration_days' => $data['duration_days'],
-            'status'        => $data['status'],
-            'applied_at'    => now(),
+            'status' => $data['status'],
+            'applied_at' => now(),
         ]);
 
         $this->auditLog->log($request, "Created leave application #{$leaveId}");
         $this->notifyLeaveNeedsRecommendation($request, $leaveId, $staffId, $name, $data);
 
-        $reason      = htmlspecialchars($data['reason'] ?? 'N/A');
-        $applicantName = htmlspecialchars($name);
-        $body = "
-            <p>A new leave application has been submitted in KIJO.</p>
-            <table cellpadding='6' cellspacing='0' border='1' style='border-collapse:collapse;'>
-                <tr><th align='left'>Applicant</th><td>{$applicantName}</td></tr>
-                <tr><th align='left'>Leave Type</th><td>" . htmlspecialchars($data['type']) . "</td></tr>
-                <tr><th align='left'>Start</th><td>" . htmlspecialchars($data['start_date']) . " " . htmlspecialchars($data['start_time']) . "</td></tr>
-                <tr><th align='left'>End</th><td>" . htmlspecialchars($data['end_date']) . " " . htmlspecialchars($data['end_time']) . "</td></tr>
-                <tr><th align='left'>Duration</th><td>" . htmlspecialchars((string) $data['duration_days']) . " day(s)</td></tr>
-                <tr><th align='left'>Reason</th><td>{$reason}</td></tr>
-            </table>
-        ";
+        $applicantName = $name;
+        $subject = "New Leave Application by {$applicantName}";
+        $body = $this->emailBody()->render([
+            'intro' => 'A new leave application has been submitted in KIJO.',
+            'status' => ['label' => 'Submitted', 'tone' => 'warning'],
+            'detailsHeading' => 'Leave Details',
+            'details' => [
+                'Applicant' => $applicantName,
+                'Leave Type' => $data['type'],
+                'Start' => $data['start_date'].' '.$data['start_time'],
+                'End' => $data['end_date'].' '.$data['end_time'],
+                'Duration' => $data['duration_days'].' day(s)',
+                'Reason' => $data['reason'] ?? 'N/A',
+            ],
+            'actionUrl' => $this->emailUrls()->frontendUrl("/staff/leaves/records/{$leaveId}"),
+            'actionLabel' => 'Open in KIJO',
+        ]);
 
         $recipients = $this->workflowRecipients()->recipientsForStage(
             LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
-            ['HR'],
+            ['Manager', 'System Admin'],
         );
         $mailSent = $this->sendHtmlMailToRecipients(
             $recipients,
-            "New Leave Application by {$applicantName}",
+            $subject,
             $body,
+            $this->emailBody()->presentation('Leave', 'New Leave Application', 'Recommendation required', $subject),
         );
 
         return response()->json([
-            'status'    => 'success',
-            'message'   => 'Leave application submitted successfully.',
-            'leave_id'  => $leaveId,
+            'status' => 'success',
+            'message' => 'Leave application submitted successfully.',
+            'leave_id' => $leaveId,
             'mail_sent' => $mailSent,
             'mail_message' => $mailSent
                 ? 'Leave application submitted and notification email sent.'
@@ -82,7 +87,7 @@ class LeaveRequestService extends LeaveBaseService
 
     public function getAllLeavesData(Request $request): JsonResponse
     {
-        if (!$this->isPrivileged($request)) {
+        if (! $this->isPrivileged($request)) {
             return $this->unauthorizedResponse();
         }
 
@@ -114,7 +119,11 @@ class LeaveRequestService extends LeaveBaseService
             ->orderByDesc('hla.applied_at')
             ->get();
 
-        return response()->json(['status' => 'success', 'leaves' => $leaves]);
+        return response()->json([
+            'status' => 'success',
+            'leaves' => $leaves,
+            'action_permissions' => $this->leaveActionPermissions($request),
+        ]);
     }
 
     public function getPersonalLeavesRecord(Request $request): JsonResponse
@@ -134,13 +143,13 @@ class LeaveRequestService extends LeaveBaseService
 
     public function leaveAction(LeaveActionRequest $request): JsonResponse
     {
-        if (!$this->isPrivileged($request)) {
+        if (! $this->isPrivileged($request)) {
             return $this->unauthorizedResponse();
         }
 
-        $data    = $request->validated();
+        $data = $request->validated();
         $leaveId = (int) $data['id'];
-        $action  = $data['action'];
+        $action = $data['action'];
         $remarks = $data['remarks'] ?? null;
         $actorId = (int) $request->session()->get('staff_id');
         $actorName = (string) $request->session()->get('full_name', $request->session()->get('name_code', 'Staff'));
@@ -152,8 +161,9 @@ class LeaveRequestService extends LeaveBaseService
                 ->where('id', $leaveId)
                 ->first();
 
-            if (!$leave) {
+            if (! $leave) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Leave application not found.'], 404);
             }
 
@@ -162,64 +172,70 @@ class LeaveRequestService extends LeaveBaseService
             if ($action === 'recommend') {
                 if (in_array($status, ['cancelled', 'rejected', 'approved'], true)) {
                     DB::rollBack();
+
                     return response()->json([
-                        'status'  => 'error',
+                        'status' => 'error',
                         'message' => 'Leave cannot be recommended in its current state.',
                     ], 422);
                 }
-                if (!empty($leave->reviewed_by)) {
+                if (! empty($leave->reviewed_by)) {
                     DB::rollBack();
+
                     return response()->json([
-                        'status'  => 'error',
+                        'status' => 'error',
                         'message' => 'Leave has already been reviewed.',
                     ], 422);
                 }
-                if (!$this->canActForLeaveStage(
+                if (! $this->canActForLeaveStage(
                     $request,
                     LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
-                    ['HR'],
+                    ['Manager', 'System Admin'],
                 )) {
                     DB::rollBack();
+
                     return $this->unauthorizedLeaveActionResponse('recommend this leave');
                 }
 
                 DB::table('hr_leaves_application')->where('id', $leaveId)->update([
-                    'reviewed_by'      => $actorId,
-                    'reviewed_at'      => now(),
-                    'reviewed_status'  => 'Recommended',
+                    'reviewed_by' => $actorId,
+                    'reviewed_at' => now(),
+                    'reviewed_status' => 'Recommended',
                     'reviewed_remarks' => $remarks,
                 ]);
 
             } elseif ($action === 'approve') {
                 if (in_array($status, ['cancelled', 'rejected', 'approved'], true)) {
                     DB::rollBack();
+
                     return response()->json([
-                        'status'  => 'error',
+                        'status' => 'error',
                         'message' => 'Leave cannot be approved in its current state.',
                     ], 422);
                 }
                 if (empty($leave->reviewed_by)) {
                     DB::rollBack();
+
                     return response()->json([
-                        'status'  => 'error',
+                        'status' => 'error',
                         'message' => 'Leave must be reviewed/recommended before it can be approved.',
                     ], 422);
                 }
-                if (!$this->canActForLeaveStage(
+                if (! $this->canActForLeaveStage(
                     $request,
                     LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
-                    ['Manager', 'System Admin'],
+                    ['HR', 'System Admin'],
                 )) {
                     DB::rollBack();
+
                     return $this->unauthorizedLeaveActionResponse('approve this leave');
                 }
 
                 DB::table('hr_leaves_application')->where('id', $leaveId)->update([
-                    'approved_by'      => $actorId,
-                    'approved_at'      => now(),
-                    'approved_status'  => 'Approved',
+                    'approved_by' => $actorId,
+                    'approved_at' => now(),
+                    'approved_status' => 'Approved',
                     'approved_remarks' => $remarks,
-                    'status'           => 'Approved',
+                    'status' => 'Approved',
                 ]);
 
                 $this->adjustAllocationUsedDays($leave, (float) $leave->duration_days);
@@ -227,47 +243,50 @@ class LeaveRequestService extends LeaveBaseService
             } elseif ($action === 'reject') {
                 if (in_array($status, ['cancelled', 'rejected', 'approved'], true)) {
                     DB::rollBack();
+
                     return response()->json([
-                        'status'  => 'error',
+                        'status' => 'error',
                         'message' => 'Leave cannot be rejected in its current state.',
                     ], 422);
                 }
 
-                if (!empty($leave->reviewed_by)) {
-                    if (!$this->canActForLeaveStage(
+                if (! empty($leave->reviewed_by)) {
+                    if (! $this->canActForLeaveStage(
                         $request,
                         LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
-                        ['Manager', 'System Admin'],
+                        ['HR', 'System Admin'],
                     )) {
                         DB::rollBack();
+
                         return $this->unauthorizedLeaveActionResponse('reject this reviewed leave');
                     }
 
                     // Already reviewed - reject at approver level
                     DB::table('hr_leaves_application')->where('id', $leaveId)->update([
-                        'approved_by'      => $actorId,
-                        'approved_at'      => now(),
-                        'approved_status'  => 'Rejected',
+                        'approved_by' => $actorId,
+                        'approved_at' => now(),
+                        'approved_status' => 'Rejected',
                         'approved_remarks' => $remarks,
-                        'status'           => 'Rejected',
+                        'status' => 'Rejected',
                     ]);
                 } else {
-                    if (!$this->canActForLeaveStage(
+                    if (! $this->canActForLeaveStage(
                         $request,
                         LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
-                        ['HR'],
+                        ['Manager', 'System Admin'],
                     )) {
                         DB::rollBack();
+
                         return $this->unauthorizedLeaveActionResponse('reject this unreviewed leave');
                     }
 
                     // Not yet reviewed - reject at reviewer level
                     DB::table('hr_leaves_application')->where('id', $leaveId)->update([
-                        'reviewed_by'      => $actorId,
-                        'reviewed_at'      => now(),
-                        'reviewed_status'  => 'Rejected',
+                        'reviewed_by' => $actorId,
+                        'reviewed_at' => now(),
+                        'reviewed_status' => 'Rejected',
                         'reviewed_remarks' => $remarks,
-                        'status'           => 'Rejected',
+                        'status' => 'Rejected',
                     ]);
                 }
             }
@@ -276,16 +295,17 @@ class LeaveRequestService extends LeaveBaseService
 
         } catch (\Throwable $e) {
             DB::rollBack();
-            return response()->json(['status' => 'error', 'message' => 'An error occurred: ' . $e->getMessage()], 500);
+
+            return response()->json(['status' => 'error', 'message' => 'An error occurred: '.$e->getMessage()], 500);
         }
 
         $this->auditLog->log($request, "Leave action '{$action}' performed on leave #{$leaveId}");
 
         // Fetch applicant email for notification
         $applicant = DB::table('staff_general')->where('staff_id', $leave->staff_id)->first();
-        $applicantEmail     = $applicant->email ?? null;
-        $applicantNameStr   = htmlspecialchars($applicant->full_name ?? ('Staff #' . $leave->staff_id));
-        $actorNameSafe      = htmlspecialchars($actorName);
+        $applicantEmail = $applicant->email ?? null;
+        $applicantNameStr = (string) ($applicant->full_name ?? ('Staff #'.$leave->staff_id));
+        $actorNameSafe = $actorName;
 
         $this->handleLeaveActionNotifications(
             $request,
@@ -298,36 +318,59 @@ class LeaveRequestService extends LeaveBaseService
 
         // Dispatch emails asynchronously
         if ($action === 'recommend') {
-            $approverBody = "
-                <p>A leave application by <strong>{$applicantNameStr}</strong> has been recommended and is pending your approval.</p>
-                <p><strong>Leave Type:</strong> " . htmlspecialchars((string) $leave->type) . "</p>
-                <p><strong>Duration:</strong> " . htmlspecialchars((string) $leave->duration_days) . " day(s)
-                   (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
-                <p><strong>Recommended by:</strong> {$actorNameSafe}</p>
-            ";
+            $approverSubject = "Please Approve Leave Application by {$applicantNameStr}";
+            $approverBody = $this->emailBody()->render([
+                'intro' => "A leave application by {$applicantNameStr} has been recommended and is pending your approval.",
+                'status' => ['label' => 'Pending Approval', 'tone' => 'warning'],
+                'detailsHeading' => 'Leave Details',
+                'details' => [
+                    'Applicant' => $applicantNameStr,
+                    'Leave Type' => (string) $leave->type,
+                    'Duration' => (string) $leave->duration_days.' day(s) ('.(string) $leave->start_date.' to '.(string) $leave->end_date.')',
+                    'Recommended by' => $actorNameSafe,
+                ],
+                'actionUrl' => $this->emailUrls()->frontendUrl("/staff/leaves/records/{$leaveId}"),
+                'actionLabel' => 'Open in KIJO',
+            ]);
             $this->sendHtmlMailToRecipients(
                 $this->workflowRecipients()->recipientsForStage(
                     LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
-                    ['Manager', 'System Admin'],
+                    ['HR', 'System Admin'],
                 ),
-                "Please Approve Leave Application by {$applicantNameStr}",
+                $approverSubject,
                 $approverBody,
+                $this->emailBody()->presentation('Leave', 'Leave Application Pending Approval', 'Approval required', $approverSubject),
             );
         }
 
         $subjectMap = [
-            'recommend' => "Your Leave Application Has Been Recommended",
-            'approve'   => "Your Leave Application Has Been Approved",
-            'reject'    => "Your Leave Application Has Been Rejected",
+            'recommend' => 'Your Leave Application Has Been Recommended',
+            'approve' => 'Your Leave Application Has Been Approved',
+            'reject' => 'Your Leave Application Has Been Rejected',
         ];
-        $applicantBody = "
-            <p>Dear <strong>{$applicantNameStr}</strong>,</p>
-            <p>Your leave application has been <strong>" . htmlspecialchars(ucfirst($action) . 'd') . "</strong>.</p>
-            <p><strong>Leave Type:</strong> " . htmlspecialchars((string) $leave->type) . "</p>
-            <p><strong>Duration:</strong> " . htmlspecialchars((string) $leave->duration_days) . " day(s)
-               (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
-            <p><strong>Action by:</strong> {$actorNameSafe}</p>
-        ";
+        $actionLabel = match ($action) {
+            'recommend' => 'Recommended',
+            'approve' => 'Approved',
+            'reject' => 'Rejected',
+            default => ucfirst($action).'d',
+        };
+        $applicantBody = $this->leaveActionEmailBody(
+            "Dear {$applicantNameStr},",
+            "Your leave application has been {$actionLabel}.",
+            $leave,
+            $actionLabel,
+            $actorNameSafe,
+            $this->emailUrls()->frontendUrl("/my/leaves/records/{$leaveId}"),
+        );
+        $copyBody = $this->leaveActionEmailBody(
+            "A leave application by {$applicantNameStr} has been {$actionLabel}.",
+            null,
+            $leave,
+            $actionLabel,
+            $actorNameSafe,
+            $this->emailUrls()->frontendUrl("/staff/leaves/records/{$leaveId}"),
+        );
+        $actionPresentation = $this->emailBody()->presentation('Leave', $subjectMap[$action], 'Workflow update', $subjectMap[$action]);
 
         // Notify applicant on any action
         if ($this->isValidEmail($applicantEmail)) {
@@ -336,6 +379,8 @@ class LeaveRequestService extends LeaveBaseService
                 $applicantNameStr,
                 $subjectMap[$action],
                 $applicantBody,
+                [],
+                $actionPresentation,
             );
         }
 
@@ -352,7 +397,8 @@ class LeaveRequestService extends LeaveBaseService
             $this->sendHtmlMailToRecipients(
                 $stageRecipients,
                 $subjectMap[$action],
-                $applicantBody,
+                $copyBody,
+                $actionPresentation,
             );
         }
 
@@ -364,7 +410,7 @@ class LeaveRequestService extends LeaveBaseService
         $request->validate(['id' => ['required', 'integer', 'min:1']]);
 
         $staffId = (int) $request->session()->get('staff_id');
-        $name    = (string) $request->session()->get('full_name', $request->session()->get('name_code', 'Staff'));
+        $name = (string) $request->session()->get('full_name', $request->session()->get('name_code', 'Staff'));
         $leaveId = (int) $request->input('id');
 
         DB::beginTransaction();
@@ -373,16 +419,17 @@ class LeaveRequestService extends LeaveBaseService
                 ->lockForUpdate()
                 ->where('id', $leaveId);
 
-            if (!$this->isPrivileged($request)) {
+            if (! $this->isPrivileged($request)) {
                 $leaveQuery->where('staff_id', $staffId);
             }
 
             $leave = $leaveQuery->first();
 
-            if (!$leave) {
+            if (! $leave) {
                 DB::rollBack();
+
                 return response()->json([
-                    'status'  => 'error',
+                    'status' => 'error',
                     'message' => 'Leave application not found or you do not have permission to cancel it.',
                 ], 403);
             }
@@ -390,7 +437,7 @@ class LeaveRequestService extends LeaveBaseService
             $previousStatus = (string) $leave->status;
 
             DB::table('hr_leaves_application')->where('id', $leaveId)->update([
-                'status'       => 'Cancelled',
+                'status' => 'Cancelled',
                 'cancelled_by' => $staffId,
                 'cancelled_at' => now(),
             ]);
@@ -404,21 +451,29 @@ class LeaveRequestService extends LeaveBaseService
 
         } catch (\Throwable $e) {
             DB::rollBack();
-            return response()->json(['status' => 'error', 'message' => 'An error occurred: ' . $e->getMessage()], 500);
+
+            return response()->json(['status' => 'error', 'message' => 'An error occurred: '.$e->getMessage()], 500);
         }
 
         $this->auditLog->log($request, "Cancelled leave application #{$leaveId}");
         $activeRecipientIds = $this->handleLeaveCancellationNotifications($request, $leave, $leaveId, $staffId, $previousStatus);
 
-        $nameSafe = htmlspecialchars($name);
-        $body = "
-            <p>A leave application has been cancelled by <strong>{$nameSafe}</strong>.</p>
-            <p><strong>Leave Type:</strong> " . htmlspecialchars((string) $leave->type) . "</p>
-            <p><strong>Duration:</strong> " . htmlspecialchars((string) $leave->duration_days) . " day(s)
-               (" . htmlspecialchars((string) $leave->start_date) . " to " . htmlspecialchars((string) $leave->end_date) . ")</p>
-        ";
+        $nameSafe = $name;
 
         $isRevokedApprovedLeave = strtolower($previousStatus) === 'approved';
+        $statusLabel = $isRevokedApprovedLeave ? 'Revoked' : 'Cancelled';
+        $body = $this->emailBody()->render([
+            'intro' => "A leave application has been {$statusLabel} by {$nameSafe}.",
+            'status' => ['label' => $statusLabel, 'tone' => 'warning'],
+            'detailsHeading' => 'Leave Details',
+            'details' => [
+                'Leave Type' => (string) $leave->type,
+                'Duration' => (string) $leave->duration_days.' day(s) ('.(string) $leave->start_date.' to '.(string) $leave->end_date.')',
+                'Action by' => $nameSafe,
+            ],
+            'actionUrl' => $this->emailUrls()->frontendUrl("/staff/leaves/records/{$leaveId}"),
+            'actionLabel' => 'Open in KIJO',
+        ]);
         $stageKey = $isRevokedApprovedLeave
             ? LeaveWorkflowRecipientService::STAGE_REVOKED_NOTIFY
             : LeaveWorkflowRecipientService::STAGE_CANCELLED_NOTIFY;
@@ -428,38 +483,45 @@ class LeaveRequestService extends LeaveBaseService
             $activeRecipientIds,
             [(int) $leave->staff_id],
         );
+        $stageSubject = $isRevokedApprovedLeave
+            ? "Leave Application Revoked by {$nameSafe}"
+            : "Leave Application Cancelled by {$nameSafe}";
+        $stagePresentation = $this->emailBody()->presentation('Leave', $stageSubject, 'Workflow update', $stageSubject);
         $this->sendHtmlMailToRecipients(
             $stageRecipients,
-            $isRevokedApprovedLeave
-                ? "Leave Application Revoked by {$nameSafe}"
-                : "Leave Application Cancelled by {$nameSafe}",
+            $stageSubject,
             $body,
+            $stagePresentation,
         );
 
         if ($isRevokedApprovedLeave && (int) $leave->staff_id !== $staffId) {
             $applicant = DB::table('staff_general')->where('staff_id', $leave->staff_id)->first();
             $applicantEmail = $applicant->email ?? null;
             if ($this->isValidEmail($applicantEmail)) {
-                $applicantName = htmlspecialchars($applicant->full_name ?? ('Staff #' . $leave->staff_id));
+                $applicantName = (string) ($applicant->full_name ?? ('Staff #'.$leave->staff_id));
                 $this->sendHtmlMailNow(
                     $applicantEmail,
                     $applicantName,
-                    "Your Leave Application Has Been Revoked",
-                    "<p>Dear <strong>{$applicantName}</strong>,</p>{$body}",
+                    'Your Leave Application Has Been Revoked',
+                    $this->leaveCancellationApplicantBody($applicantName, $leave, $nameSafe, 'Revoked', $this->emailUrls()->frontendUrl("/my/leaves/records/{$leaveId}")),
+                    [],
+                    $this->emailBody()->presentation('Leave', 'Your Leave Application Has Been Revoked', 'Workflow update', 'Your Leave Application Has Been Revoked'),
                 );
             }
         }
 
-        if (!$isRevokedApprovedLeave && (int) $leave->staff_id !== $staffId) {
+        if (! $isRevokedApprovedLeave && (int) $leave->staff_id !== $staffId) {
             $applicant = DB::table('staff_general')->where('staff_id', $leave->staff_id)->first();
             $applicantEmail = $applicant->email ?? null;
             if ($this->isValidEmail($applicantEmail)) {
-                $applicantName = htmlspecialchars($applicant->full_name ?? ('Staff #' . $leave->staff_id));
+                $applicantName = (string) ($applicant->full_name ?? ('Staff #'.$leave->staff_id));
                 $this->sendHtmlMailNow(
                     $applicantEmail,
                     $applicantName,
-                    "Your Leave Application Has Been Cancelled",
-                    "<p>Dear <strong>{$applicantName}</strong>,</p>{$body}",
+                    'Your Leave Application Has Been Cancelled',
+                    $this->leaveCancellationApplicantBody($applicantName, $leave, $nameSafe, 'Cancelled', $this->emailUrls()->frontendUrl("/my/leaves/records/{$leaveId}")),
+                    [],
+                    $this->emailBody()->presentation('Leave', 'Your Leave Application Has Been Cancelled', 'Workflow update', 'Your Leave Application Has Been Cancelled'),
                 );
             }
         }
@@ -473,8 +535,9 @@ class LeaveRequestService extends LeaveBaseService
         string $subject,
         string $body,
         array $cc = [],
+        array $presentation = [],
     ): bool {
-        if (!$this->isValidEmail($to)) {
+        if (! $this->isValidEmail($to)) {
             return false;
         }
 
@@ -484,15 +547,30 @@ class LeaveRequestService extends LeaveBaseService
         ));
 
         try {
-            SendHtmlMailJob::dispatchSync($to, $toName, $subject, $body, $cc);
+            SendHtmlMailJob::dispatchSync($to, $toName, $subject, $body, $cc, null, null, $presentation);
+
+            Log::info('Leave notification email sent.', [
+                'subject' => $subject,
+                'recipient_count' => 1 + count($cc),
+                'success' => true,
+            ]);
+
             return true;
         } catch (\Throwable $e) {
             report($e);
+
+            Log::warning('Leave notification email failed.', [
+                'subject' => $subject,
+                'recipient_count' => 1 + count($cc),
+                'success' => false,
+                'error' => $e->getMessage(),
+            ]);
+
             return false;
         }
     }
 
-    private function sendHtmlMailToRecipients(array $recipients, string $subject, string $body): bool
+    private function sendHtmlMailToRecipients(array $recipients, string $subject, string $body, array $presentation = []): bool
     {
         $emails = $this->workflowRecipients()->emailAddresses($recipients);
         if (empty($emails)) {
@@ -500,7 +578,54 @@ class LeaveRequestService extends LeaveBaseService
         }
 
         $to = array_shift($emails);
-        return $this->sendHtmlMailNow($to, 'Human Resource', $subject, $body, $emails);
+
+        return $this->sendHtmlMailNow($to, 'Human Resource', $subject, $body, $emails, $presentation);
+    }
+
+    private function leaveActionEmailBody(
+        string $firstIntro,
+        ?string $secondIntro,
+        object $leave,
+        string $statusLabel,
+        string $actorName,
+        string $actionUrl,
+    ): string {
+        return $this->emailBody()->render([
+            'intro' => array_values(array_filter([$firstIntro, $secondIntro])),
+            'status' => ['label' => $statusLabel, 'tone' => $statusLabel === 'Rejected' ? 'danger' : 'success'],
+            'detailsHeading' => 'Leave Details',
+            'details' => [
+                'Leave Type' => (string) $leave->type,
+                'Duration' => (string) $leave->duration_days.' day(s) ('.(string) $leave->start_date.' to '.(string) $leave->end_date.')',
+                'Action by' => $actorName,
+            ],
+            'actionUrl' => $actionUrl,
+            'actionLabel' => 'Open in KIJO',
+        ]);
+    }
+
+    private function leaveCancellationApplicantBody(
+        string $applicantName,
+        object $leave,
+        string $actorName,
+        string $statusLabel,
+        string $actionUrl,
+    ): string {
+        return $this->emailBody()->render([
+            'intro' => [
+                "Dear {$applicantName},",
+                "Your leave application has been {$statusLabel}.",
+            ],
+            'status' => ['label' => $statusLabel, 'tone' => 'warning'],
+            'detailsHeading' => 'Leave Details',
+            'details' => [
+                'Leave Type' => (string) $leave->type,
+                'Duration' => (string) $leave->duration_days.' day(s) ('.(string) $leave->start_date.' to '.(string) $leave->end_date.')',
+                'Action by' => $actorName,
+            ],
+            'actionUrl' => $actionUrl,
+            'actionLabel' => 'Open in KIJO',
+        ]);
     }
 
     private function adjustAllocationUsedDays(object $leave, float $delta): void
@@ -514,7 +639,7 @@ class LeaveRequestService extends LeaveBaseService
             ->lockForUpdate()
             ->first(['id', 'used_days']);
 
-        if (!$allocation) {
+        if (! $allocation) {
             return;
         }
 
@@ -530,11 +655,24 @@ class LeaveRequestService extends LeaveBaseService
         return app(LeaveWorkflowRecipientService::class);
     }
 
+    private function emailBody(): SystemEmailBodyBuilder
+    {
+        return app(SystemEmailBodyBuilder::class);
+    }
+
+    private function emailUrls(): SystemEmailUrlBuilder
+    {
+        return app(SystemEmailUrlBuilder::class);
+    }
+
     private function canActForLeaveStage(Request $request, string $stageKey, array $fallbackRoles): bool
     {
         $staffId = (int) $request->session()->get('staff_id', 0);
         if ($staffId <= 0) {
             return false;
+        }
+        if ($this->hasAnyRole($request, ['System Admin'])) {
+            return true;
         }
 
         return in_array(
@@ -542,6 +680,22 @@ class LeaveRequestService extends LeaveBaseService
             $this->workflowRecipients()->stageStaffIds($stageKey, $fallbackRoles),
             true,
         );
+    }
+
+    private function leaveActionPermissions(Request $request): array
+    {
+        return [
+            'can_recommend' => $this->canActForLeaveStage(
+                $request,
+                LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
+                ['Manager', 'System Admin'],
+            ),
+            'can_approve' => $this->canActForLeaveStage(
+                $request,
+                LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
+                ['HR', 'System Admin'],
+            ),
+        ];
     }
 
     private function unauthorizedLeaveActionResponse(string $actionLabel): JsonResponse
@@ -561,10 +715,10 @@ class LeaveRequestService extends LeaveBaseService
         $configured = $this->workflowRecipients()->configuredRecipientsForStage($stageKey);
         $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
 
-        if (!empty($configured)) {
+        if (! empty($configured)) {
             return array_values(array_filter(
                 $configured,
-                fn (array $recipient): bool => !in_array((int) $recipient['staff_id'], $exclude, true),
+                fn (array $recipient): bool => ! in_array((int) $recipient['staff_id'], $exclude, true),
             ));
         }
 
@@ -597,7 +751,7 @@ class LeaveRequestService extends LeaveBaseService
     ): void {
         $recipientIds = $this->workflowRecipients()->stageStaffIds(
             LeaveWorkflowRecipientService::STAGE_SUBMITTED_RECOMMENDERS,
-            ['HR'],
+            ['Manager', 'System Admin'],
         );
         if (empty($recipientIds)) {
             return;
@@ -642,7 +796,7 @@ class LeaveRequestService extends LeaveBaseService
             );
             $notifications->createForStaff($this->workflowRecipients()->stageStaffIds(
                 LeaveWorkflowRecipientService::STAGE_RECOMMENDED_APPROVERS,
-                ['Manager', 'System Admin'],
+                ['HR', 'System Admin'],
             ), [
                 'actor_staff_id' => $actorId,
                 'module_key' => 'staff.leaves',
@@ -654,6 +808,7 @@ class LeaveRequestService extends LeaveBaseService
                 'route' => "/staff/leaves/records/{$leaveId}",
                 'severity' => 'warning',
             ]);
+
             return;
         }
 
@@ -686,7 +841,7 @@ class LeaveRequestService extends LeaveBaseService
                     [(int) $leave->staff_id],
                 ),
             );
-            if (!empty($copyRecipientIds)) {
+            if (! empty($copyRecipientIds)) {
                 $notifications->createForStaff($copyRecipientIds, [
                     'actor_staff_id' => $actorId,
                     'module_key' => 'staff.leaves',
@@ -699,6 +854,7 @@ class LeaveRequestService extends LeaveBaseService
                     'severity' => 'success',
                 ]);
             }
+
             return;
         }
 
@@ -708,7 +864,7 @@ class LeaveRequestService extends LeaveBaseService
                 'staff.leaves',
                 'leave_application',
                 $leaveId,
-                ['leave.needs_recommendation', 'leave.needs_approval'],
+                LeaveNotificationType::ACTION,
             );
             $notifications->createForStaff([(int) $leave->staff_id], [
                 'actor_staff_id' => $actorId,
@@ -731,7 +887,7 @@ class LeaveRequestService extends LeaveBaseService
                     [(int) $leave->staff_id],
                 ),
             );
-            if (!empty($copyRecipientIds)) {
+            if (! empty($copyRecipientIds)) {
                 $notifications->createForStaff($copyRecipientIds, [
                     'actor_staff_id' => $actorId,
                     'module_key' => 'staff.leaves',
@@ -759,7 +915,7 @@ class LeaveRequestService extends LeaveBaseService
             'staff.leaves',
             'leave_application',
             $leaveId,
-            ['leave.needs_recommendation', 'leave.needs_approval'],
+            LeaveNotificationType::ACTION,
         );
 
         if (strtolower($previousStatus) === 'approved') {
@@ -773,7 +929,7 @@ class LeaveRequestService extends LeaveBaseService
                 ),
             );
 
-            if (!empty($copyRecipientIds)) {
+            if (! empty($copyRecipientIds)) {
                 $notifications->createForStaff($copyRecipientIds, [
                     'actor_staff_id' => $actorId,
                     'module_key' => 'staff.leaves',
@@ -800,6 +956,7 @@ class LeaveRequestService extends LeaveBaseService
                     'severity' => 'warning',
                 ]);
             }
+
             return $activeRecipients;
         }
 
@@ -813,7 +970,7 @@ class LeaveRequestService extends LeaveBaseService
             ),
         );
         $recipientIds = array_values(array_diff($configuredCancelIds, [$actorId]));
-        if (!empty($recipientIds)) {
+        if (! empty($recipientIds)) {
             $notifications->createForStaff($recipientIds, [
                 'actor_staff_id' => $actorId,
                 'module_key' => 'staff.leaves',

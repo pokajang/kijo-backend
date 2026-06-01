@@ -5,12 +5,9 @@ namespace App\Services\Tasks;
 use App\Services\Pdf\PdfRenderer;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Validator;
 
 abstract class TaskBaseService extends PdfRenderer
 {
-    protected const TASK_GRACE_DAYS = 1;
-
     protected static bool $dompdfAutoloaderRegistered = false;
 
     protected function getCommentsByTaskIds(array $taskIds): array
@@ -29,7 +26,7 @@ abstract class TaskBaseService extends PdfRenderer
         foreach ($rows as $row) {
             $taskId = (int) $row->task_id;
             $commentsByTask[$taskId][] = [
-                'text'      => (string) $row->comment,
+                'text' => (string) $row->comment,
                 'timestamp' => (string) $row->created_at,
             ];
         }
@@ -91,6 +88,7 @@ abstract class TaskBaseService extends PdfRenderer
     protected function isStrictTaskDateFilter(string $value): bool
     {
         $dateText = trim($value);
+
         return preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateText) === 1
             && $this->taskDateOnly($dateText) !== null;
     }
@@ -98,11 +96,12 @@ abstract class TaskBaseService extends PdfRenderer
     protected function taskPeriodLabel(string $start, string $end, int $year = 0): string
     {
         if ($start !== '' || $end !== '') {
-            return 'Period: ' . ($start !== '' ? $start : '(all)') . ' to ' . ($end !== '' ? $end : '(all)');
+            return 'Period: '.($start !== '' ? $start : '(all)').' to '.($end !== '' ? $end : '(all)');
         }
         if ($year > 0) {
-            return 'Year: ' . $year;
+            return 'Year: '.$year;
         }
+
         return 'All records';
     }
 
@@ -117,75 +116,75 @@ abstract class TaskBaseService extends PdfRenderer
             if ($lateDays === null) {
                 return 'Completed';
             }
-            $lateDays = max(0, $lateDays - self::TASK_GRACE_DAYS);
+            $lateDays = max(0, $lateDays);
+
             return $lateDays > 0
-                ? 'Completed (Late by ' . $lateDays . ' day' . ($lateDays > 1 ? 's' : '') . ')'
+                ? 'Completed but late by '.$lateDays.' day'.($lateDays > 1 ? 's' : '')
                 : 'Completed (On time)';
         }
 
         $dueDate = $this->taskDateOnly((string) $task->due_date);
         $todayDate = $this->taskDateOnly($todayStr);
-        if ($dueDate !== null && $todayDate !== null && $todayDate > $dueDate->modify('+' . self::TASK_GRACE_DAYS . ' day')) {
-            return 'Overdue';
+        if ($dueDate !== null && $todayDate !== null && $todayDate > $dueDate) {
+            $overdueDays = $this->taskDaysBetween((string) $task->due_date, $todayStr);
+            $overdueDays = $overdueDays === null ? 0 : max(0, $overdueDays);
+
+            return $overdueDays > 0
+                ? 'Overdue by '.$overdueDays.' day'.($overdueDays > 1 ? 's' : '')
+                : 'Overdue';
         }
 
         return 'Ongoing';
     }
 
-    protected function taskDaysLapsed(string $dueDate, string $todayStr, string $completedAt = ''): string
+    protected function taskDaysLapsed(string $createdAt, string $todayStr, string $completedAt = ''): string
     {
-        $days = $this->taskDaysBetween($dueDate, $completedAt !== '' ? $completedAt : $todayStr);
-        return $days !== null ? (string) max(0, $days - self::TASK_GRACE_DAYS) : '0';
+        $days = $this->taskDaysBetween($createdAt, $completedAt !== '' ? $completedAt : $todayStr);
+
+        return $days !== null ? (string) max(0, $days) : '0';
     }
 
     protected function taskDaysLapsedInfo(object $task, string $todayStr): array
     {
         $isCompleted = (string) $task->status === 'Completed';
-        $dueDate = (string) ($task->due_date ?? '');
+        $createdAt = (string) ($task->created_at ?? '');
         $endDate = $isCompleted ? (string) ($task->completed_at ?? '') : $todayStr;
 
-        if ($dueDate === '' || $endDate === '') {
+        if ($createdAt === '' || $endDate === '') {
             return [
                 'value' => null,
                 'display' => '-',
-                'basis' => $isCompleted ? 'Completion date missing' : 'Due date missing',
+                'basis' => $isCompleted ? 'Completion date missing' : 'Creation date missing',
             ];
         }
 
-        $days = $this->taskDaysBetween($dueDate, $endDate);
+        $days = $this->taskDaysBetween($createdAt, $endDate);
         if ($days === null) {
             return ['value' => null, 'display' => '-', 'basis' => 'Invalid date'];
         }
 
-        $value = max(0, $days - self::TASK_GRACE_DAYS);
-        if (! $isCompleted && $this->taskStatusText($task, $todayStr) !== 'Overdue') {
-            return [
-                'value' => 0,
-                'display' => '0',
-                'basis' => 'Not overdue',
-            ];
-        }
+        $value = max(0, $days);
 
         if ($isCompleted && $value > 0) {
             return [
                 'value' => $value,
-                'display' => $value . ' day' . ($value === 1 ? '' : 's') . ' until completion',
-                'basis' => 'Until completion',
+                'display' => $value.' day'.($value === 1 ? '' : 's'),
+                'basis' => 'Completion duration',
             ];
         }
 
         if (! $isCompleted && $value > 0) {
             return [
                 'value' => $value,
-                'display' => $value . ' day' . ($value === 1 ? '' : 's'),
-                'basis' => 'Running',
+                'display' => $value.' day'.($value === 1 ? '' : 's'),
+                'basis' => 'Open duration',
             ];
         }
 
         return [
             'value' => $value,
             'display' => '0',
-            'basis' => $isCompleted ? 'Completed on time' : 'Not overdue',
+            'basis' => $isCompleted ? 'Completed same day' : 'Created today',
         ];
     }
 

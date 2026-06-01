@@ -3,7 +3,10 @@
 namespace Tests\Feature;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -14,8 +17,8 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         parent::setUp();
 
         $this->withoutMiddleware([
-            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
-            \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+            ValidateCsrfToken::class,
+            VerifyCsrfToken::class,
         ]);
 
         foreach ([
@@ -250,9 +253,9 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'staff_id' => 10,
             'type' => 'Annual',
             'reason' => 'Future leave submitted this year',
-            'start_date' => ($year + 1) . '-01-15',
+            'start_date' => ($year + 1).'-01-15',
             'start_time' => '08:30',
-            'end_date' => ($year + 1) . '-01-15',
+            'end_date' => ($year + 1).'-01-15',
             'end_time' => '17:30',
             'duration_days' => 1,
             'status' => 'Pending',
@@ -318,10 +321,47 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'status' => 'Pending',
         ]);
         $this->assertDatabaseHas('in_app_notifications', [
-            'recipient_staff_id' => 20,
+            'recipient_staff_id' => 30,
             'actor_staff_id' => 10,
             'module_key' => 'staff.leaves',
             'entity_type' => 'leave_application',
+            'entity_id' => $leaveId,
+            'type' => 'leave.needs_recommendation',
+        ]);
+    }
+
+    public function test_leave_creation_succeeds_and_records_notification_when_email_fails(): void
+    {
+        // Phase 3 (M2): a thrown SMTP error must not fail the leave action.
+        // The send helper catches it, reports/logs, and returns mail_sent=false,
+        // while the leave row and in-app notification are still persisted.
+        Mail::shouldReceive('html')->andThrow(new \RuntimeException('SMTP unavailable'));
+
+        $response = $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Annual',
+                'reason' => 'Mail failure resilience',
+                'start_date' => '2026-06-09',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-09',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('mail_sent', false);
+
+        $leaveId = (int) $response->json('leave_id');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'staff_id' => 10,
+            'reason' => 'Mail failure resilience',
+            'status' => 'Pending',
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 30,
             'entity_id' => $leaveId,
             'type' => 'leave.needs_recommendation',
         ]);
@@ -377,9 +417,9 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $recommendedStage = collect($stages)->firstWhere('key', 'leave.recommended.approvers');
 
         $this->assertTrue($submittedStage['using_default']);
-        $this->assertSame(20, $submittedStage['effective_recipients'][0]['staff_id']);
+        $this->assertSame(30, $submittedStage['effective_recipients'][0]['staff_id']);
         $this->assertTrue($recommendedStage['using_default']);
-        $this->assertSame(30, $recommendedStage['effective_recipients'][0]['staff_id']);
+        $this->assertSame(20, $recommendedStage['effective_recipients'][0]['staff_id']);
     }
 
     public function test_leave_submission_uses_configured_recommenders_for_notifications(): void
@@ -446,7 +486,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
 
         DB::table('in_app_notifications')->insert([
-            'recipient_staff_id' => 20,
+            'recipient_staff_id' => 30,
             'actor_staff_id' => 10,
             'module_key' => 'staff.leaves',
             'entity_type' => 'leave_application',
@@ -458,7 +498,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $this->actingSession($this->hrSession())
+        $this->actingSession($this->managerSession())
             ->postJson("/hr/leaves/{$leaveId}/action", [
                 'id' => $leaveId,
                 'action' => 'recommend',
@@ -468,12 +508,12 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
         $this->assertDatabaseHas('in_app_notifications', [
             'recipient_staff_id' => 40,
-            'actor_staff_id' => 20,
+            'actor_staff_id' => 30,
             'entity_id' => $leaveId,
             'type' => 'leave.needs_approval',
         ]);
         $this->assertDatabaseMissing('in_app_notifications', [
-            'recipient_staff_id' => 30,
+            'recipient_staff_id' => 20,
             'entity_id' => $leaveId,
             'type' => 'leave.needs_approval',
         ]);
@@ -484,7 +524,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $leaveId = DB::table('hr_leaves_application')->insertGetId([
             'staff_id' => 10,
             'type' => 'Annual',
-            'reason' => 'Manager should not recommend',
+            'reason' => 'HR should not recommend',
             'start_date' => '2026-06-05',
             'start_time' => '08:30',
             'end_date' => '2026-06-05',
@@ -494,7 +534,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'applied_at' => '2026-05-20 09:15:00',
         ]);
 
-        $this->actingSession($this->managerSession())
+        $this->actingSession($this->hrSession())
             ->postJson("/hr/leaves/{$leaveId}/action", [
                 'id' => $leaveId,
                 'action' => 'recommend',
@@ -511,7 +551,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $leaveId = DB::table('hr_leaves_application')->insertGetId([
             'staff_id' => 10,
             'type' => 'Annual',
-            'reason' => 'HR should not approve',
+            'reason' => 'Manager should not approve',
             'start_date' => '2026-06-06',
             'start_time' => '08:30',
             'end_date' => '2026-06-06',
@@ -519,12 +559,12 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'duration_days' => 1,
             'status' => 'Pending',
             'applied_at' => '2026-05-20 09:15:00',
-            'reviewed_by' => 20,
+            'reviewed_by' => 30,
             'reviewed_at' => now(),
             'reviewed_status' => 'Recommended',
         ]);
 
-        $this->actingSession($this->hrSession())
+        $this->actingSession($this->managerSession())
             ->postJson("/hr/leaves/{$leaveId}/action", [
                 'id' => $leaveId,
                 'action' => 'approve',
@@ -537,6 +577,62 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'id' => $leaveId,
             'status' => 'Pending',
             'approved_by' => null,
+        ]);
+    }
+
+    public function test_configured_workflow_recipient_gets_backend_permissions_without_default_stage_role(): void
+    {
+        DB::table('hr_leave_workflow_recipients')->insert([
+            [
+                'stage_key' => 'leave.submitted.recommenders',
+                'staff_id' => 20,
+                'sort_order' => 0,
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'stage_key' => 'leave.recommended.approvers',
+                'staff_id' => 30,
+                'sort_order' => 0,
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Configured recipient should recommend',
+            'start_date' => '2026-06-07',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-07',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->getJson('/hr/leaves')
+            ->assertOk()
+            ->assertJsonPath('action_permissions.can_recommend', true)
+            ->assertJsonPath('action_permissions.can_approve', false);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'recommend',
+                'remarks' => 'Configured recommender',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Pending',
+            'reviewed_by' => 20,
+            'reviewed_status' => 'Recommended',
         ]);
     }
 
@@ -557,7 +653,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
         $leaveId = (int) $response->json('leave_id');
 
-        $summary = $this->actingSession($this->hrSession())
+        $summary = $this->actingSession($this->managerSession())
             ->getJson('/notifications/summary')
             ->assertOk()
             ->json('data');
@@ -565,7 +661,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $this->assertSame(1, $summary['by_route_group']['/staff/leaves'] ?? 0);
         $this->assertSame(1, $summary['by_tab']['staff.leaves'] ?? 0);
 
-        $this->actingSession($this->hrSession())
+        $this->actingSession($this->managerSession())
             ->postJson("/hr/leaves/{$leaveId}/action", [
                 'id' => $leaveId,
                 'action' => 'recommend',
@@ -574,31 +670,31 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             ->assertOk();
 
         $this->assertDatabaseHas('in_app_notifications', [
-            'recipient_staff_id' => 20,
+            'recipient_staff_id' => 30,
             'entity_id' => $leaveId,
             'type' => 'leave.needs_recommendation',
         ]);
         $this->assertNotNull(
             DB::table('in_app_notifications')
-                ->where('recipient_staff_id', 20)
+                ->where('recipient_staff_id', 30)
                 ->where('entity_id', $leaveId)
                 ->where('type', 'leave.needs_recommendation')
                 ->value('consumed_at'),
         );
         $this->assertDatabaseHas('in_app_notifications', [
-            'recipient_staff_id' => 30,
-            'actor_staff_id' => 20,
+            'recipient_staff_id' => 20,
+            'actor_staff_id' => 30,
             'entity_id' => $leaveId,
             'type' => 'leave.needs_approval',
         ]);
 
-        $summary = $this->actingSession($this->managerSession())
+        $summary = $this->actingSession($this->hrSession())
             ->getJson('/notifications/summary')
             ->assertOk()
             ->json('data');
         $this->assertSame(1, $summary['by_module']['staff.leaves'] ?? 0);
 
-        $this->actingSession($this->managerSession())
+        $this->actingSession($this->hrSession())
             ->postJson("/hr/leaves/{$leaveId}/action", [
                 'id' => $leaveId,
                 'action' => 'approve',
@@ -608,14 +704,14 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
         $this->assertNotNull(
             DB::table('in_app_notifications')
-                ->where('recipient_staff_id', 30)
+                ->where('recipient_staff_id', 20)
                 ->where('entity_id', $leaveId)
                 ->where('type', 'leave.needs_approval')
                 ->value('consumed_at'),
         );
         $this->assertDatabaseHas('in_app_notifications', [
             'recipient_staff_id' => 10,
-            'actor_staff_id' => 30,
+            'actor_staff_id' => 20,
             'module_key' => 'my.leaves',
             'entity_id' => $leaveId,
             'type' => 'leave.approved',
@@ -664,12 +760,12 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'duration_days' => 1,
             'status' => 'Pending',
             'applied_at' => '2026-05-20 09:15:00',
-            'reviewed_by' => 20,
+            'reviewed_by' => 30,
             'reviewed_status' => 'Recommended',
             'reviewed_at' => '2026-05-20 09:30:00',
         ]);
 
-        $this->actingSession($this->managerSession())
+        $this->actingSession($this->hrSession())
             ->postJson("/hr/leaves/{$leaveId}/action", [
                 'id' => $leaveId,
                 'action' => 'approve',
@@ -681,7 +777,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $this->assertDatabaseHas('hr_leaves_application', [
             'id' => $leaveId,
             'status' => 'Approved',
-            'approved_by' => 30,
+            'approved_by' => 20,
         ]);
         $this->assertEquals(
             '3',
@@ -818,13 +914,16 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
         $this->actingSession($this->managerSession())
             ->patchJson("/vendor-payments/{$paymentId}/approve")
+            ->assertStatus(409);
+
+        $this->actingSession($this->managerSession())
+            ->patchJson("/vendor-payments/{$paymentId}/check")
             ->assertOk()
             ->assertJsonPath('status', 'success');
 
         $this->assertDatabaseHas('vendor_payments', [
             'id' => $paymentId,
-            'status' => 'Approved',
-            'approved_by' => 30,
+            'status' => 'Checked',
         ]);
 
         $this->actingSession($this->managerSession())

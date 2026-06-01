@@ -2,13 +2,8 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class DashboardStatsService
 {
@@ -35,6 +30,11 @@ class DashboardStatsService
     private function financeDashboardStatsService(): FinanceDashboardStatsService
     {
         return app(FinanceDashboardStatsService::class);
+    }
+
+    private function workloadDashboardStatsService(): WorkloadDashboardStatsService
+    {
+        return app(WorkloadDashboardStatsService::class);
     }
 
     public function inquiryStats(Request $request): JsonResponse
@@ -125,5 +125,35 @@ class DashboardStatsService
     public function allDebtors(Request $request): JsonResponse
     {
         return $this->financeDashboardStatsService()->allDebtors($request);
+    }
+
+    public function workload(Request $request): JsonResponse
+    {
+        return $this->workloadDashboardStatsService()->workload($request);
+    }
+
+    public function workloadHistory(Request $request): JsonResponse
+    {
+        return app(WorkloadDailySnapshotService::class)->history($request);
+    }
+
+    public function workloadSnapshotHealth(Request $request): JsonResponse
+    {
+        return app(WorkloadSnapshotHealthService::class)->healthPayload();
+    }
+
+    public function workloadPdf(Request $request)
+    {
+        return app(WorkloadDashboardPdfService::class)->export($request);
+    }
+
+    public function createWorkloadShare(Request $request): JsonResponse
+    {
+        return app(WorkloadDashboardShareService::class)->create($request);
+    }
+
+    public function workloadShare(string $token): JsonResponse
+    {
+        return app(WorkloadDashboardShareService::class)->show($token);
     }
 }

@@ -43,6 +43,7 @@ class SpecialQuoteRecordListingService
                 qs.sp_id,
                 qs.service_title,
                 qs.service_code,
+                qs.proposal_language,
                 qs.general_remarks,
                 qs.sst_percent,
                 qs.sst_amount,
@@ -129,6 +130,7 @@ class SpecialQuoteRecordListingService
         }
 
         ProjectOutcomeSummary::attach($quotes, $awardHistory);
+        QuoteRecordProposalPayload::attach($quotes, 'special');
 
         return response()->json([
             'status' => 'success',

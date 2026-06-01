@@ -3,14 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Services\Monitoring\ManualPipelineEntryService;
+use App\Services\Stats\StatsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
-use App\Services\Stats\StatsService;
 
 class StatsController extends Controller
 {
@@ -107,6 +102,46 @@ class StatsController extends Controller
     public function allDebtors(Request $request): JsonResponse
     {
         return $this->statsService()->allDebtors($request);
+    }
+
+    public function workload(Request $request): JsonResponse
+    {
+        return $this->statsService()->workload($request);
+    }
+
+    public function workloadHistory(Request $request): JsonResponse
+    {
+        return $this->statsService()->workloadHistory($request);
+    }
+
+    public function workloadSnapshotHealth(Request $request): JsonResponse
+    {
+        return $this->statsService()->workloadSnapshotHealth($request);
+    }
+
+    public function workloadPdf(Request $request)
+    {
+        return $this->statsService()->workloadPdf($request);
+    }
+
+    public function createWorkloadShare(Request $request): JsonResponse
+    {
+        return $this->statsService()->createWorkloadShare($request);
+    }
+
+    public function workloadShare(string $token): JsonResponse
+    {
+        return $this->statsService()->workloadShare($token);
+    }
+
+    public function monthlyDashboardReportPdf(Request $request)
+    {
+        return $this->statsService()->monthlyDashboardReportPdf($request);
+    }
+
+    public function publicMonthlyDashboardReport(string $token)
+    {
+        return $this->statsService()->publicMonthlyDashboardReport($token);
     }
 
     public function monitoringPipelineTools(Request $request): JsonResponse

@@ -10,14 +10,8 @@ use App\Http\Requests\Project\CloseProjectRequest;
 use App\Http\Requests\Project\StoreProjectRequest;
 use App\Http\Requests\Project\UpdateProgressRequest;
 use App\Http\Requests\Project\UpdateProjectRequest;
-use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 
 class ProjectService
 {
@@ -54,6 +48,11 @@ class ProjectService
     public function index(Request $request): JsonResponse
     {
         return $this->projectCoreService()->index($request);
+    }
+
+    public function options(Request $request): JsonResponse
+    {
+        return $this->projectCoreService()->options($request);
     }
 
     public function store(StoreProjectRequest $request): JsonResponse

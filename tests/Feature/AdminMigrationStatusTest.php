@@ -31,6 +31,27 @@ class AdminMigrationStatusTest extends TestCase
             $table->integer('batch');
         });
 
+        Schema::dropIfExists('mail_diagnostic_logs');
+        Schema::create('mail_diagnostic_logs', function (Blueprint $table): void {
+            $table->id();
+            $table->string('type', 40);
+            $table->string('status', 20);
+            $table->string('mailer', 80)->nullable();
+            $table->string('transport', 40)->nullable();
+            $table->string('from_address')->nullable();
+            $table->string('expected_from_address')->nullable();
+            $table->string('recipient_email');
+            $table->string('attachment_name')->nullable();
+            $table->text('response_message')->nullable();
+            $table->json('missing_config')->nullable();
+            $table->string('error_class')->nullable();
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->string('name_code', 20)->nullable();
+            $table->string('ip_address', 45)->nullable();
+            $table->timestamp('completed_at')->nullable();
+            $table->timestamps();
+        });
+
         DB::table('system_users')->insert([
             'id' => 1,
             'staff_id' => 10,
@@ -206,6 +227,7 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('data.quote.from_address', 'info.admin@amiosh.com')
             ->assertJsonPath('data.default.live_ready', true)
             ->assertJsonPath('data.quote.live_ready', true)
+            ->assertJsonPath('data.logs', [])
             ->assertJsonMissingPath('data.default.password')
             ->assertJsonMissingPath('data.quote.password');
     }
@@ -226,7 +248,17 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('data.from', 'kijo@work.amiosh.com')
             ->assertJsonPath('data.expected_from', 'kijo@work.amiosh.com')
             ->assertJsonPath('data.to', 'recipient@example.test')
+            ->assertJsonPath('data.log.status', 'sent')
+            ->assertJsonPath('data.log.to', 'recipient@example.test')
             ->assertJsonStructure(['data' => ['completed_at']]);
+
+        $this->assertDatabaseHas('mail_diagnostic_logs', [
+            'type' => 'default',
+            'status' => 'sent',
+            'from_address' => 'kijo@work.amiosh.com',
+            'recipient_email' => 'recipient@example.test',
+            'staff_id' => 10,
+        ]);
     }
 
     public function test_system_admin_can_send_quote_pdf_diagnostic_email(): void
@@ -249,7 +281,17 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('data.expected_from', 'info.admin@amiosh.com')
             ->assertJsonPath('data.to', 'recipient@example.test')
             ->assertJsonPath('data.attachment', 'quote-mail-diagnostic.pdf')
+            ->assertJsonPath('data.log.status', 'sent')
             ->assertJsonStructure(['data' => ['completed_at']]);
+
+        $this->assertDatabaseHas('mail_diagnostic_logs', [
+            'type' => 'quote_pdf',
+            'status' => 'sent',
+            'from_address' => 'info.admin@amiosh.com',
+            'recipient_email' => 'recipient@example.test',
+            'attachment_name' => 'quote-mail-diagnostic.pdf',
+            'staff_id' => 10,
+        ]);
     }
 
     public function test_mail_diagnostics_reject_non_admin_role(): void
@@ -280,6 +322,14 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('status', 'error')
             ->assertJsonPath('data.status', 'blocked')
             ->assertJsonPath('data.expected_from', 'kijo@work.amiosh.com');
+
+        $this->assertDatabaseHas('mail_diagnostic_logs', [
+            'type' => 'default',
+            'status' => 'blocked',
+            'from_address' => 'hello@example.com',
+            'expected_from_address' => 'kijo@work.amiosh.com',
+            'recipient_email' => 'recipient@example.test',
+        ]);
     }
 
     public function test_quote_pdf_diagnostic_reports_wrong_sender_as_blocked(): void
@@ -300,7 +350,16 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('data.status', 'blocked')
             ->assertJsonPath('data.from', 'wrong@example.test')
             ->assertJsonPath('data.expected_from', 'info.admin@amiosh.com')
+            ->assertJsonPath('data.log.status', 'blocked')
             ->assertJsonPath('data.attachment', 'quote-mail-diagnostic.pdf');
+
+        $this->assertDatabaseHas('mail_diagnostic_logs', [
+            'type' => 'quote_pdf',
+            'status' => 'blocked',
+            'from_address' => 'wrong@example.test',
+            'expected_from_address' => 'info.admin@amiosh.com',
+            'recipient_email' => 'recipient@example.test',
+        ]);
     }
 
     public function test_default_mail_diagnostic_reports_incomplete_smtp_credentials(): void
@@ -326,6 +385,12 @@ class AdminMigrationStatusTest extends TestCase
             ->assertJsonPath('status', 'error')
             ->assertJsonPath('data.status', 'blocked')
             ->assertJsonPath('data.missing_config', ['password']);
+
+        $this->assertDatabaseHas('mail_diagnostic_logs', [
+            'type' => 'default',
+            'status' => 'blocked',
+            'recipient_email' => 'recipient@example.test',
+        ]);
     }
 
     private function authenticatedSession(array $roles): array

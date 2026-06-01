@@ -7,6 +7,8 @@ use App\Http\Requests\ToolRequest\StoreToolRequestRequest;
 use App\Http\Requests\ToolRequest\UpdateAchievementRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
+use App\Services\Mail\SystemEmailBodyBuilder;
+use App\Services\Mail\SystemEmailUrlBuilder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -78,15 +80,31 @@ class ToolRequestController extends Controller
             'azam@amiosh.com',
             'System Admin',
             "New Tool Request #{$newId} (Staff {$staffId} - {$staffName})",
-            "<p>A new tool request has been submitted in KIJO.</p>
-             <p><strong>Requester:</strong> " . htmlspecialchars($staffName) . " (ID: {$staffId})</p>
-             <p><strong>Equipment Detail:</strong> " . htmlspecialchars($data['equipmentDetail']) . "</p>
-             <p><strong>Use Start Date:</strong> {$data['useStartDate']}</p>
-             <p><strong>Use End Date:</strong> {$data['useEndDate']}</p>
-             <p><strong>Purpose:</strong><br/>" . nl2br(htmlspecialchars($data['purpose'])) . "</p>
-             <p><strong>Remarks:</strong><br/>" . nl2br(htmlspecialchars($data['remarks'] ?? '-')) . "</p>
-             <p>Please note: company equipment is for work-related use only.</p>",
+            $this->emailBody()->render([
+                'intro' => 'A new tool request has been submitted in KIJO.',
+                'status' => ['label' => 'New Request', 'tone' => 'warning'],
+                'detailsHeading' => 'Tool Request Details',
+                'details' => [
+                    'Requester' => "{$staffName} (ID: {$staffId})",
+                    'Equipment Detail' => $data['equipmentDetail'],
+                    'Use Start Date' => $data['useStartDate'],
+                    'Use End Date' => $data['useEndDate'],
+                    'Purpose' => $data['purpose'],
+                    'Remarks' => $data['remarks'] ?? '-',
+                ],
+                'notice' => [
+                    'label' => 'Reminder',
+                    'body' => 'Company equipment is for work-related use only.',
+                    'tone' => 'info',
+                ],
+                'actionUrl' => $this->emailUrls()->frontendUrl("/support/requests/{$newId}"),
+                'actionLabel' => 'Open tool request',
+                'signOff' => false,
+            ]),
             ['hr.amiosh@gmail.com', 'kamarul@amiosh.com'],
+            null,
+            null,
+            $this->emailBody()->presentation('Tool Request', "New Tool Request #{$newId}", 'Action required', "New Tool Request #{$newId}"),
         );
 
         return response()->json(['status' => 'success', 'id' => $newId]);
@@ -118,5 +136,15 @@ class ToolRequestController extends Controller
 
         $this->auditLog->log($request, "Updated tool request achievement #{$id}");
         return response()->json(['status' => 'success']);
+    }
+
+    private function emailBody(): SystemEmailBodyBuilder
+    {
+        return app(SystemEmailBodyBuilder::class);
+    }
+
+    private function emailUrls(): SystemEmailUrlBuilder
+    {
+        return app(SystemEmailUrlBuilder::class);
     }
 }

@@ -12,7 +12,8 @@ class PdfRenderer
 
     public function pdfView(string $baseView, mixed $language): string
     {
-        $bmView = $baseView . '-bm';
+        $bmView = $baseView.'-bm';
+
         return $this->normalizeProposalLanguage($language) === 'ms-MY' && view()->exists($bmView)
             ? $bmView
             : $baseView;
@@ -21,14 +22,15 @@ class PdfRenderer
     public function companyLogoDataUri(): ?string
     {
         $logoPath = AppFilePaths::tcpdfTemplatePath('logo.png');
-        if (!is_file($logoPath) || !is_readable($logoPath)) {
+        if (! is_file($logoPath) || ! is_readable($logoPath)) {
             return null;
         }
         $bytes = file_get_contents($logoPath);
         if ($bytes === false) {
             return null;
         }
-        return 'data:image/png;base64,' . base64_encode($bytes);
+
+        return 'data:image/png;base64,'.base64_encode($bytes);
     }
 
     public function renderPortraitWithFooter(string $html, mixed $generatedAt, string $generatorCode, string $generatorId): Dompdf
@@ -46,15 +48,18 @@ class PdfRenderer
 
         $canvas = $dompdf->getCanvas();
         $metrics = $dompdf->getFontMetrics();
-        $font = $metrics->getFont('Helvetica', 'italic') ?: $metrics->getFont('Times-Roman', 'italic');
+        $font = $metrics->getFont('WorkloadArial', 'italic')
+            ?: $metrics->getFont('Arial', 'italic')
+            ?: $metrics->getFont('Helvetica', 'italic')
+            ?: $metrics->getFont('Times-Roman', 'italic');
         $fontSize = 8;
         $y = $canvas->get_height() - 28;
         $muted = [0.45, 0.45, 0.45];
         $canvas->page_text(20, $y, 'Page {PAGE_NUM} of {PAGE_COUNT}', $font, $fontSize, $muted);
 
-        $stamp = 'Computer generated on: ' . $generatedAt->format('d M Y, h:i A')
-            . ' by: ' . ($generatorCode !== '' ? $generatorCode : '-')
-            . ' (' . $generatorId . ')';
+        $stamp = 'Computer generated on: '.$generatedAt->format('d M Y, h:i A')
+            .' by: '.($generatorCode !== '' ? $generatorCode : '-')
+            .' ('.$generatorId.')';
         $stampWidth = $metrics->getTextWidth($stamp, $font, $fontSize);
         $canvas->page_text($canvas->get_width() - 20 - $stampWidth, $y, $stamp, $font, $fontSize, $muted);
 
@@ -72,6 +77,7 @@ class PdfRenderer
         if (preg_match('/<\s*\/?\s*[a-z][^>]*>/i', $decoded)) {
             $allowed = '<p><br><br/><strong><b><em><i><u><ul><ol><li><div><span><h1><h2><h3><h4><h5><h6><table><thead><tbody><tr><th><td><a><sup><sub>';
             $clean = strip_tags($decoded, $allowed);
+
             return $clean !== '' ? $clean : nl2br(e($decoded));
         }
 
@@ -81,6 +87,7 @@ class PdfRenderer
     public function formatProposalDurationLabel(mixed $durationRaw): string
     {
         $duration = strtolower(trim((string) $durationRaw));
+
         return match ($duration) {
             '1hour' => '1 Hour',
             '2hour' => '2 Hours',
@@ -97,6 +104,7 @@ class PdfRenderer
     {
         $clean = static function (mixed $value): string {
             $text = trim((string) $value);
+
             return $text === '-' || strcasecmp($text, 'N/A') === 0 ? '' : $text;
         };
 
@@ -109,12 +117,13 @@ class PdfRenderer
 
         $lines = array_filter([$addressLine, $locationLine], static fn (string $line): bool => $line !== '');
 
-        return !empty($lines) ? implode("\n", $lines) : $fallback;
+        return ! empty($lines) ? implode("\n", $lines) : $fallback;
     }
 
     public function normalizeProposalLanguage(mixed $language): string
     {
         $value = strtolower(trim((string) $language));
+
         return match ($value) {
             'bm', 'ms', 'ms-my', 'ms_my', 'bahasa', 'bahasa melayu' => 'ms-MY',
             default => 'en',
@@ -123,9 +132,10 @@ class PdfRenderer
 
     protected function makeDompdf(): Dompdf
     {
-        $options = new Options();
+        $options = new Options;
         $options->set('isRemoteEnabled', false);
         $options->set('isHtml5ParserEnabled', true);
+
         return new Dompdf($options);
     }
 
@@ -135,7 +145,7 @@ class PdfRenderer
             return;
         }
 
-        if (!self::$dompdfAutoloaderRegistered) {
+        if (! self::$dompdfAutoloaderRegistered) {
             $prefixes = [
                 'Dompdf\\' => base_path('vendor/dompdf/dompdf/src/'),
                 'FontLib\\' => base_path('vendor/dompdf/php-font-lib/src/FontLib/'),
@@ -147,11 +157,11 @@ class PdfRenderer
 
             spl_autoload_register(static function (string $class) use ($prefixes): void {
                 foreach ($prefixes as $prefix => $baseDir) {
-                    if (!str_starts_with($class, $prefix)) {
+                    if (! str_starts_with($class, $prefix)) {
                         continue;
                     }
                     $relative = str_replace('\\', '/', substr($class, strlen($prefix)));
-                    $file = rtrim($baseDir, '/\\') . '/' . $relative . '.php';
+                    $file = rtrim($baseDir, '/\\').'/'.$relative.'.php';
                     if (is_file($file)) {
                         require_once $file;
                     }
@@ -184,7 +194,7 @@ class PdfRenderer
             }
         }
 
-        if (!interface_exists('Safe\\Exceptions\\SafeExceptionInterface', false)) {
+        if (! interface_exists('Safe\\Exceptions\\SafeExceptionInterface', false)) {
             $safeInterface = base_path('vendor/thecodingmachine/safe/lib/Exceptions/SafeExceptionInterface.php');
             if (is_file($safeInterface) && is_readable($safeInterface)) {
                 require_once $safeInterface;

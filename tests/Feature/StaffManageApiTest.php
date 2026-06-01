@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendHtmlMailJob;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -13,7 +15,12 @@ class StaffManageApiTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['staff_profile', 'staff_general', 'system_users'] as $table) {
+        config([
+            'app.frontend_url' => 'https://kijo.amiosh.com',
+            'app.url' => 'https://api.amiosh.com',
+        ]);
+
+        foreach (['staff_profile', 'staff_general', 'system_users', 'user_activities'] as $table) {
             Schema::dropIfExists($table);
         }
 
@@ -21,6 +28,7 @@ class StaffManageApiTest extends TestCase
             $table->id();
             $table->unsignedInteger('staff_id');
             $table->string('email')->nullable();
+            $table->string('password_hash')->nullable();
             $table->json('role')->nullable();
             $table->boolean('is_active')->default(true);
             $table->timestamps();
@@ -48,6 +56,15 @@ class StaffManageApiTest extends TestCase
             $table->increments('id');
             $table->unsignedInteger('staff_id');
             $table->string('nric')->nullable();
+        });
+
+        Schema::create('user_activities', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedInteger('staff_id');
+            $table->string('name_code', 20);
+            $table->string('action');
+            $table->string('ip_address', 45)->nullable();
+            $table->timestamp('created_at')->nullable();
         });
 
         DB::table('system_users')->insert([
@@ -177,6 +194,45 @@ class StaffManageApiTest extends TestCase
         ]);
     }
 
+    public function test_granting_staff_access_queues_standardized_account_email(): void
+    {
+        Bus::fake([SendHtmlMailJob::class]);
+
+        $this->actingAsManager()
+            ->putJson('/staff', [
+                'staffId' => 2,
+                'fullName' => 'Inactive Staff',
+                'nameCode' => 'ISA',
+                'email' => 'inactive@example.test',
+                'mobileNumber' => '60123456789',
+                'position' => 'Consultant',
+                'staffType' => 'Permanent',
+                'department' => 'Operations',
+                'startDate' => '2026-05-01',
+                'status' => 'Active',
+                'grantAccess' => true,
+                'systemRoles' => ['Staff'],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        Bus::assertDispatched(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
+            $body = (string) $this->jobProperty($job, 'body');
+            $presentation = (array) $this->jobProperty($job, 'presentation');
+
+            return $this->jobProperty($job, 'to') === 'inactive@example.test'
+                && $this->jobProperty($job, 'subject') === 'Welcome to KIJO - Your Account Is Ready'
+                && $this->jobProperty($job, 'cc') === []
+                && str_contains($body, 'Login Details')
+                && str_contains($body, 'Temporary password')
+                && str_contains($body, 'Open KIJO')
+                && str_contains($body, 'href="https://kijo.amiosh.com/login"')
+                && ! str_contains($body, 'work.amiosh.com')
+                && ! str_contains($body, 'https://api.amiosh.com')
+                && ($presentation['headerLabel'] ?? null) === 'Account Access';
+        });
+    }
+
     private function actingAsManager(): self
     {
         return $this->withSession([
@@ -185,5 +241,14 @@ class StaffManageApiTest extends TestCase
             'roles' => ['HR'],
             '_token' => 'test-token',
         ])->withHeader('X-CSRF-TOKEN', 'test-token');
+    }
+
+    private function jobProperty(object $job, string $property): mixed
+    {
+        $reflection = new \ReflectionClass($job);
+        $prop = $reflection->getProperty($property);
+        $prop->setAccessible(true);
+
+        return $prop->getValue($job);
     }
 }

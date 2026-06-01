@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Http\Controllers\Api\StaffPreferenceController;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -33,6 +34,240 @@ class StaffPreferenceApiTest extends TestCase
         $response = $controller->show($request, 'crm-records-all-visible-columns');
 
         $this->assertSame(401, $response->getStatusCode());
+    }
+
+    public function test_stats_visibility_preferences_require_authenticated_session(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $showResponse = $controller->show(
+            $this->makeRequest('GET'),
+            'datatable-stats-visible.support.requests.v1',
+        );
+        $updateResponse = $controller->update(
+            $this->makeRequest('PUT', [], ['value' => ['visible' => false]]),
+            'datatable-stats-visible.support.requests.v1',
+        );
+
+        $this->assertSame(401, $showResponse->getStatusCode());
+        $this->assertSame(401, $updateResponse->getStatusCode());
+    }
+
+    public function test_controls_visibility_preferences_require_authenticated_session(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $showResponse = $controller->show(
+            $this->makeRequest('GET'),
+            'datatable-controls-visible.support.requests.v1',
+        );
+        $updateResponse = $controller->update(
+            $this->makeRequest('PUT', [], ['value' => ['visible' => false]]),
+            'datatable-controls-visible.support.requests.v1',
+        );
+
+        $this->assertSame(401, $showResponse->getStatusCode());
+        $this->assertSame(401, $updateResponse->getStatusCode());
+    }
+
+    public function test_show_returns_stats_visibility_default_when_preference_missing(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $response = $controller->show(
+            $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 99]),
+            'datatable-stats-visible.support.requests.v1',
+        );
+        $body = $response->getData(true);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('datatable-stats-visible.support.requests.v1', $body['data']['key']);
+        $this->assertFalse($body['data']['found']);
+        $this->assertTrue($body['data']['value']['visible']);
+    }
+
+    public function test_stats_visibility_page_preference_saves_and_loads(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $updateResponse = $controller->update(
+            $this->makeRequest('PUT', ['user_id' => 1, 'staff_id' => 99], [
+                'value' => ['visible' => false],
+            ]),
+            'datatable-stats-visible.support.requests.v1',
+        );
+        $updateBody = $updateResponse->getData(true);
+
+        $this->assertSame(200, $updateResponse->getStatusCode());
+        $this->assertFalse($updateBody['data']['value']['visible']);
+        $this->assertDatabaseHas('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.statsVisible.support.requests.v1',
+        ]);
+
+        $showResponse = $controller->show(
+            $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 99]),
+            'datatable-stats-visible.support.requests.v1',
+        );
+        $showBody = $showResponse->getData(true);
+
+        $this->assertSame(200, $showResponse->getStatusCode());
+        $this->assertTrue($showBody['data']['found']);
+        $this->assertFalse($showBody['data']['value']['visible']);
+    }
+
+    public function test_show_returns_controls_visibility_default_when_preference_missing(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $response = $controller->show(
+            $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 99]),
+            'datatable-controls-visible.support.requests.v1',
+        );
+        $body = $response->getData(true);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('datatable-controls-visible.support.requests.v1', $body['data']['key']);
+        $this->assertFalse($body['data']['found']);
+        $this->assertTrue($body['data']['value']['visible']);
+    }
+
+    public function test_systemwide_stats_visibility_clears_page_overrides_for_same_staff(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+        $now = now();
+        DB::table('staff_preferences')->insert([
+            [
+                'staff_id' => 99,
+                'preference_key' => 'datatable.statsVisible.support.requests.v1',
+                'preference_value' => json_encode(['visible' => false]),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'staff_id' => 99,
+                'preference_key' => 'datatable.statsVisible.staff.tasks.v1',
+                'preference_value' => json_encode(['visible' => false]),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'staff_id' => 100,
+                'preference_key' => 'datatable.statsVisible.support.requests.v1',
+                'preference_value' => json_encode(['visible' => false]),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        $response = $controller->update(
+            $this->makeRequest('PUT', ['user_id' => 1, 'staff_id' => 99], [
+                'value' => ['visible' => true],
+            ]),
+            'datatable-stats-visible.systemwide.v1',
+        );
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertDatabaseHas('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.statsVisible.systemwide.v1',
+        ]);
+        $this->assertDatabaseMissing('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.statsVisible.support.requests.v1',
+        ]);
+        $this->assertDatabaseMissing('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.statsVisible.staff.tasks.v1',
+        ]);
+        $this->assertDatabaseHas('staff_preferences', [
+            'staff_id' => 100,
+            'preference_key' => 'datatable.statsVisible.support.requests.v1',
+        ]);
+    }
+
+    public function test_controls_visibility_page_preference_saves_and_loads(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $updateResponse = $controller->update(
+            $this->makeRequest('PUT', ['user_id' => 1, 'staff_id' => 99], [
+                'value' => ['visible' => false],
+            ]),
+            'datatable-controls-visible.support.requests.v1',
+        );
+        $updateBody = $updateResponse->getData(true);
+
+        $this->assertSame(200, $updateResponse->getStatusCode());
+        $this->assertFalse($updateBody['data']['value']['visible']);
+        $this->assertDatabaseHas('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.controlsVisible.support.requests.v1',
+        ]);
+
+        $showResponse = $controller->show(
+            $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 99]),
+            'datatable-controls-visible.support.requests.v1',
+        );
+        $showBody = $showResponse->getData(true);
+
+        $this->assertSame(200, $showResponse->getStatusCode());
+        $this->assertTrue($showBody['data']['found']);
+        $this->assertFalse($showBody['data']['value']['visible']);
+    }
+
+    public function test_systemwide_controls_visibility_clears_page_overrides_for_same_staff(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+        $now = now();
+        DB::table('staff_preferences')->insert([
+            [
+                'staff_id' => 99,
+                'preference_key' => 'datatable.controlsVisible.support.requests.v1',
+                'preference_value' => json_encode(['visible' => true]),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'staff_id' => 99,
+                'preference_key' => 'datatable.controlsVisible.staff.tasks.v1',
+                'preference_value' => json_encode(['visible' => true]),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'staff_id' => 100,
+                'preference_key' => 'datatable.controlsVisible.support.requests.v1',
+                'preference_value' => json_encode(['visible' => true]),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        $response = $controller->update(
+            $this->makeRequest('PUT', ['user_id' => 1, 'staff_id' => 99], [
+                'value' => ['visible' => false],
+            ]),
+            'datatable-controls-visible.systemwide.v1',
+        );
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertDatabaseHas('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.controlsVisible.systemwide.v1',
+        ]);
+        $this->assertDatabaseMissing('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.controlsVisible.support.requests.v1',
+        ]);
+        $this->assertDatabaseMissing('staff_preferences', [
+            'staff_id' => 99,
+            'preference_key' => 'datatable.controlsVisible.staff.tasks.v1',
+        ]);
+        $this->assertDatabaseHas('staff_preferences', [
+            'staff_id' => 100,
+            'preference_key' => 'datatable.controlsVisible.support.requests.v1',
+        ]);
     }
 
     public function test_show_returns_defaults_when_preference_missing(): void
@@ -289,6 +524,26 @@ class StaffPreferenceApiTest extends TestCase
         $this->assertSame(404, $response->getStatusCode());
     }
 
+    public function test_malformed_stats_visibility_preference_key_is_rejected(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+        $request = $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 99]);
+
+        $response = $controller->show($request, 'datatable-stats-visible.support.requests');
+
+        $this->assertSame(404, $response->getStatusCode());
+    }
+
+    public function test_malformed_controls_visibility_preference_key_is_rejected(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+        $request = $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 99]);
+
+        $response = $controller->show($request, 'datatable-controls-visible.support.requests');
+
+        $this->assertSame(404, $response->getStatusCode());
+    }
+
     public function test_procedure_record_column_preferences_are_supported(): void
     {
         $controller = app(StaffPreferenceController::class);
@@ -413,6 +668,26 @@ class StaffPreferenceApiTest extends TestCase
         $this->assertSame(200, $showResponse->getStatusCode());
         $this->assertFalse($showBody['data']['value']['createdAt']);
         $this->assertFalse($showBody['data']['value']['daysLapsed']);
+    }
+
+    public function test_task_manager_task_column_preferences_default_created_on_hidden(): void
+    {
+        $controller = app(StaffPreferenceController::class);
+
+        $showRequest = $this->makeRequest('GET', ['user_id' => 1, 'staff_id' => 100]);
+        $showResponse = $controller->show(
+            $showRequest,
+            'task-manager-tasks-visible-columns-v7',
+        );
+        $showBody = $showResponse->getData(true);
+
+        $this->assertSame(200, $showResponse->getStatusCode());
+        $this->assertTrue($showBody['data']['value']['title']);
+        $this->assertTrue($showBody['data']['value']['statusText']);
+        $this->assertFalse($showBody['data']['value']['createdAt']);
+        $this->assertTrue($showBody['data']['value']['dueDate']);
+        $this->assertTrue($showBody['data']['value']['daysLapsed']);
+        $this->assertTrue($showBody['data']['value']['commentSummary']);
     }
 
     private function makeRequest(string $method, array $sessionData = [], array $payload = []): Request

@@ -37,14 +37,20 @@ abstract class LeaveBaseService
         if (!is_array($roles)) {
             $roles = [$roles];
         }
+        $normalizedRoles = array_map(
+            static fn ($role): string => strtolower(trim((string) $role)),
+            $roles,
+        );
+        if (in_array('system admin', $normalizedRoles, true)) {
+            return true;
+        }
 
         $normalizedAllowed = array_map(
             static fn (string $role): string => strtolower(trim($role)),
             $allowedRoles,
         );
 
-        return collect($roles)
-            ->map(static fn ($role): string => strtolower(trim((string) $role)))
+        return collect($normalizedRoles)
             ->intersect($normalizedAllowed)
             ->isNotEmpty();
     }

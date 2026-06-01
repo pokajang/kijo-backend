@@ -145,6 +145,7 @@ class EquipmentQuoteRecordListingService
         ", $ids);
 
         ProjectOutcomeSummary::attach($quotes, $awardHistory);
+        QuoteRecordProposalPayload::attach($quotes, 'equipment');
 
         return response()->json([
             'status' => 'success',

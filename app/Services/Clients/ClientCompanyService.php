@@ -2,13 +2,8 @@
 
 namespace App\Services\Clients;
 
-use App\Http\Requests\Client\DeleteUnassignedClientPicRequest;
-use App\Http\Requests\Client\ListClientsRequest;
 use App\Http\Requests\Client\StoreClientRequest;
-use App\Http\Requests\Client\UnassignClientPicRequest;
-use App\Http\Requests\Client\UpdateClientPicRequest;
 use App\Http\Requests\Client\UpdateClientRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -23,7 +18,7 @@ class ClientCompanyService extends ClientBaseService
 
         $companyName = trim((string) ($data['company_name'] ?? ''));
         $clientStatus = (string) ($data['client_status'] ?? 'New');
-        if (!in_array($clientStatus, ['Old', 'New'], true)) {
+        if (! in_array($clientStatus, ['Old', 'New'], true)) {
             $clientStatus = 'New';
         }
         $paymentTermsDays = $this->normalizeNullablePaymentTermsDays($data['payment_terms_days'] ?? null);
@@ -103,6 +98,7 @@ class ClientCompanyService extends ClientBaseService
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return $this->error('Database error.', 500);
         }
 
@@ -113,7 +109,6 @@ class ClientCompanyService extends ClientBaseService
             'branches_created' => $branchesCreated,
         ], 'Client and PIC(s) created successfully.');
     }
-
 
     public function update(UpdateClientRequest $request, ?int $companyId = null): JsonResponse
     {
@@ -126,7 +121,7 @@ class ClientCompanyService extends ClientBaseService
 
         $companyName = trim((string) ($data['company_name'] ?? ''));
         $clientStatus = (string) ($data['client_status'] ?? 'New');
-        if (!in_array($clientStatus, ['Old', 'New'], true)) {
+        if (! in_array($clientStatus, ['Old', 'New'], true)) {
             $clientStatus = 'New';
         }
         $paymentTermsDays = $this->normalizeNullablePaymentTermsDays($data['payment_terms_days'] ?? null);
@@ -173,7 +168,7 @@ class ClientCompanyService extends ClientBaseService
                     $mobileNumber = trim((string) ($pic['mobile_number'] ?? ''));
                     $position = trim((string) ($pic['position'] ?? ''));
 
-                    if ($picId <= 0 || !in_array($picId, $existingPicIds, true)) {
+                    if ($picId <= 0 || ! in_array($picId, $existingPicIds, true)) {
                         continue;
                     }
 
@@ -303,13 +298,64 @@ class ClientCompanyService extends ClientBaseService
                 'company_id' => $companyId,
                 'exception' => $e,
             ]);
+
             return $this->error('Database error.', 500);
         }
 
         $this->auditLog->log($request, "Updated client company: {$companyName}");
+
         return $this->success(null, 'Company and PICs updated.');
     }
 
+    public function refreshStatusFromInvoices(Request $request): JsonResponse
+    {
+        try {
+            $query = DB::table('client_company')
+                ->where(function ($statusQuery): void {
+                    $statusQuery
+                        ->whereNull('client_status')
+                        ->orWhereRaw("TRIM(COALESCE(client_status, '')) = ''")
+                        ->orWhereRaw("LOWER(TRIM(client_status)) = 'new'");
+                })
+                ->whereExists(function ($invoiceQuery): void {
+                    $invoiceQuery
+                        ->selectRaw('1')
+                        ->from('invoices')
+                        ->whereColumn('invoices.client_id', 'client_company.company_id')
+                        ->where(function ($invoiceStatusQuery): void {
+                            $invoiceStatusQuery
+                                ->whereNull('invoices.status')
+                                ->orWhere(function ($realInvoiceStatusQuery): void {
+                                    $realInvoiceStatusQuery
+                                        ->whereRaw("LOWER(invoices.status) NOT LIKE '%void%'")
+                                        ->whereRaw("LOWER(invoices.status) NOT LIKE '%cancel%'");
+                                });
+                        });
+                });
+
+            if (Schema::hasColumn('client_company', 'deleted_at')) {
+                $query->whereNull('deleted_at');
+            }
+
+            $update = ['client_status' => 'Old'];
+            if (Schema::hasColumn('client_company', 'updated_at')) {
+                $update['updated_at'] = now();
+            }
+
+            $updatedCount = $query->update($update);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return $this->error('Failed to refresh client statuses.', 500);
+        }
+
+        $this->auditLog->log($request, "Refreshed client statuses from invoices ({$updatedCount} updated)");
+
+        return $this->success(
+            ['updated_count' => (int) $updatedCount],
+            'Client statuses refreshed.',
+        );
+    }
 
     public function destroy(Request $request, ?int $companyId = null): JsonResponse
     {
@@ -337,6 +383,7 @@ class ClientCompanyService extends ClientBaseService
 
             if ($affected === 0) {
                 DB::rollBack();
+
                 return $this->error('Company not found or already deleted.', 404);
             }
 
@@ -365,10 +412,12 @@ class ClientCompanyService extends ClientBaseService
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return $this->error('Failed to delete company.', 500);
         }
 
         $this->auditLog->log($request, "Soft deleted client company ID: {$companyId}");
+
         return $this->success(null, 'Company deleted successfully.');
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Quotes\Records;
 
+use App\Services\Projects\ProjectCollaboratorAssignmentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,7 +15,7 @@ class QuoteRecordAwardService
     {
         $service = $this->config->normalizeServiceKey($service);
         $cfg = $this->config->quoteConfig($service);
-        if (!$cfg) {
+        if (! $cfg) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported service type.'], 404);
         }
 
@@ -25,7 +26,7 @@ class QuoteRecordAwardService
         }
 
         $row = DB::table($cfg['table'])->where('id', $quoteId)->first();
-        if (!$row) {
+        if (! $row) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
 
@@ -39,9 +40,11 @@ class QuoteRecordAwardService
                 'status_remarks' => $remarks,
                 'updated_at' => now(),
             ]);
+
             return response()->json(['status' => 'success', 'message' => 'Quotation marked as Failed.']);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }
@@ -60,7 +63,7 @@ class QuoteRecordAwardService
     {
         $service = $this->config->normalizeServiceKey($service);
         $cfg = $this->config->quoteConfig($service);
-        if (!$cfg) {
+        if (! $cfg) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported service type.'], 404);
         }
 
@@ -70,7 +73,7 @@ class QuoteRecordAwardService
         }
 
         $quote = DB::table($cfg['table'])->where('id', $quoteId)->first();
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
@@ -90,7 +93,7 @@ class QuoteRecordAwardService
             if ($target) {
                 $targetId = (int) $target->id;
                 foreach (['invoices', 'do_details', 'project_vendors', 'vendor_payments'] as $table) {
-                    if (!$this->config->hasTable($table) || !$this->config->hasColumn($table, 'project_id')) {
+                    if (! $this->config->hasTable($table) || ! $this->config->hasColumn($table, 'project_id')) {
                         continue;
                     }
                     $q = DB::table($table)->where('project_id', $targetId);
@@ -135,6 +138,7 @@ class QuoteRecordAwardService
             }
 
             DB::commit();
+
             return response()->json([
                 'status' => 'success',
                 'message' => $remaining > 0
@@ -143,6 +147,7 @@ class QuoteRecordAwardService
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 400);
         }
     }
@@ -151,7 +156,7 @@ class QuoteRecordAwardService
     {
         $service = $this->config->normalizeServiceKey($service);
         $cfg = $this->config->quoteConfig($service);
-        if (!$cfg) {
+        if (! $cfg) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported service type.'], 404);
         }
 
@@ -166,7 +171,7 @@ class QuoteRecordAwardService
         }
 
         $quote = DB::table($cfg['table'])->where('id', $quoteId)->first();
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
@@ -174,7 +179,7 @@ class QuoteRecordAwardService
             return response()->json(['status' => 'error', 'message' => 'Only Awarded quotations can be re-awarded.'], 400);
         }
 
-        if (!$isReAward && $this->config->linkedProjectsBase($service)->where('quote_id', $quoteId)->exists()) {
+        if (! $isReAward && $this->config->linkedProjectsBase($service)->where('quote_id', $quoteId)->exists()) {
             return response()->json(['status' => 'error', 'message' => 'This quotation is already linked to a project.'], 400);
         }
 
@@ -189,15 +194,17 @@ class QuoteRecordAwardService
             ]);
 
             $projectId = $this->insertProjectFromQuote($service, $quoteId, $description, $awardDate, $clientRefNo);
+            app(ProjectCollaboratorAssignmentService::class)->assignInitialCollaborators($projectId, $request);
             DB::commit();
 
             return response()->json([
                 'status' => 'success',
-                'message' => ($isReAward ? 'Re-awarded' : 'Quotation awarded') . ' and project created successfully.',
+                'message' => ($isReAward ? 'Re-awarded' : 'Quotation awarded').' and project created successfully.',
                 'project_id' => $projectId,
             ]);
         } catch (\Throwable $e) {
             DB::rollBack();
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 400);
         }
     }
@@ -206,7 +213,7 @@ class QuoteRecordAwardService
     {
         $cfg = $this->config->quoteConfig($service);
         $quote = DB::table($cfg['table'])->where('id', $quoteId)->first();
-        if (!$quote) {
+        if (! $quote) {
             throw new \RuntimeException('Quote not found.');
         }
 
@@ -221,8 +228,8 @@ class QuoteRecordAwardService
                 ->filter()
                 ->values()
                 ->all();
-            if (!empty($itemNames)) {
-                $projectName .= ' - ' . implode(', ', $itemNames);
+            if (! empty($itemNames)) {
+                $projectName .= ' - '.implode(', ', $itemNames);
             }
         } elseif ($service === 'training') {
             $projectName = (string) ($quote->training_title ?: $cfg['project_type']);

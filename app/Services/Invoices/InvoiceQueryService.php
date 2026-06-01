@@ -14,8 +14,18 @@ class InvoiceQueryService extends InvoiceBaseService
     {
         try {
             $year = (int) $request->query('year', 0);
-            $yearClause = ($year >= 2000 && $year <= 2100) ? 'WHERE YEAR(i.invoice_date) = ?' : '';
-            $bindings = ($year >= 2000 && $year <= 2100) ? [$year] : [];
+            $driver = DB::connection()->getDriverName();
+            $yearClause = '';
+            $bindings = [];
+            if ($year >= 2000 && $year <= 2100) {
+                $yearClause = $driver === 'sqlite'
+                    ? "WHERE strftime('%Y', i.invoice_date) = ?"
+                    : 'WHERE YEAR(i.invoice_date) = ?';
+                $bindings = [(string) $year];
+            }
+            $clientFallbackExpression = $driver === 'sqlite'
+                ? "('Client #' || i.client_id)"
+                : "CONCAT('Client #', i.client_id)";
             $invoices = DB::select("
                 SELECT
                     i.*,
@@ -30,7 +40,7 @@ class InvoiceQueryService extends InvoiceBaseService
                     p.description       AS project_description,
                     cc.payment_terms_days AS client_payment_terms_days,
                     CASE WHEN cc.payment_terms_days IS NULL THEN 'system_default' ELSE 'client' END AS client_payment_terms_source,
-                    COALESCE(i.invoice_client_name, q.client_name, cc.company_name, CONCAT('Client #', i.client_id)) AS client_name,
+                    COALESCE(i.invoice_client_name, q.client_name, cc.company_name, {$clientFallbackExpression}) AS client_name,
                     COALESCE(i.invoice_client_ssm, q.client_ssm, cc.ssm_number)              AS client_ssm,
                     COALESCE(i.invoice_client_tin, cc.tax_id_no_tin)                         AS client_tin,
                     COALESCE(i.invoice_client_address, q.client_address, cc.address)         AS client_address,

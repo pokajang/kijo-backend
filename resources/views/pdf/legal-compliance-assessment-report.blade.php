@@ -25,6 +25,18 @@
 
         return $display($rawValue);
     };
+    $groupLetter = static function (int $index): string {
+        $value = $index + 1;
+        $label = '';
+
+        while ($value > 0) {
+            $value--;
+            $label = chr(65 + ($value % 26)).$label;
+            $value = intdiv($value, 26);
+        }
+
+        return $label !== '' ? $label : 'A';
+    };
     $conductedByName = trim((string) ($record->assessor_name ?? ''));
     $conductedByEmail = trim((string) ($record->assessor_email ?? ''));
     $conductedBy = $conductedByName !== '' && $conductedByEmail !== ''
@@ -74,6 +86,9 @@
         .disclaimer-card { margin: 0 0 4mm 0; border: 0.5px solid #d8dee5; border-radius: 1.5mm; padding: 2mm 2.5mm; background: #fafafa; }
         .disclaimer-title { margin: 0 0 0.8mm 0; color: #333; font-size: 9pt; font-weight: 700; }
         .disclaimer-text { margin: 0; color: #666; font-size: 8pt; font-style: italic; line-height: 1.3; }
+        .snapshot-warning { margin: 0 0 4mm 0; border: 0.5px solid #f0b429; border-radius: 1.5mm; padding: 2mm 2.5mm; background: #fff8e5; color: #7a4d00; font-size: 8.5pt; line-height: 1.35; }
+        .snapshot-warning-title { margin: 0 0 0.8mm 0; font-size: 9pt; font-weight: 700; }
+        .snapshot-warning-text { margin: 0; }
         .section-title { margin: 0 0 2mm 0; color: #006400; font-size: 11pt; font-weight: 700; page-break-after: avoid; }
         .details-table { width: 100%; border-collapse: collapse; margin-bottom: 5mm; table-layout: fixed; }
         .details-table th { color: #555; font-size: 8.5pt; font-weight: 400; text-align: left; padding: 1.2mm 1.5mm 0.4mm 0; }
@@ -112,6 +127,13 @@
             <div class="disclaimer-card">
                 <p class="disclaimer-title">Disclaimer</p>
                 <p class="disclaimer-text">{{ $disclaimerText }}</p>
+            </div>
+        @endif
+
+        @if(! empty($templateSnapshotUnresolved))
+            <div class="snapshot-warning">
+                <p class="snapshot-warning-title">Template Snapshot Unresolved</p>
+                <p class="snapshot-warning-text">The original assessment template could not be resolved from a stored snapshot or historical template version. Findings are shown only where saved responses exist; legal groups and clauses are not inferred from the current active template.</p>
             </div>
         @endif
 
@@ -183,9 +205,9 @@
         </table>
 
         <div class="section-title">Assessment Findings</div>
-        @forelse($groups as $group)
+        @forelse($groups as $groupIndex => $group)
             <section class="group">
-                <h2 class="group-title">{{ $display($group['title'] ?? '') }}</h2>
+                <h2 class="group-title">{{ $groupLetter($groupIndex) }}. {{ $display($group['title'] ?? 'Legislation name not set') }}</h2>
                 @forelse(($group['clauses'] ?? []) as $clause)
                     @php
                         $clauseId = (string) ($clause['id'] ?? '');

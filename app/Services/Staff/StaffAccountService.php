@@ -11,6 +11,8 @@ use App\Http\Requests\Staff\UpdateProfileRequest;
 use App\Http\Requests\Staff\UpdateStaffRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
+use App\Services\Mail\SystemEmailBodyBuilder;
+use App\Services\Mail\SystemEmailUrlBuilder;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Http\Request;
@@ -102,21 +104,24 @@ class StaffAccountService extends StaffBaseService
         $this->auditLog->log($request, "Registered new staff member: {$data['fullName']} (ID: {$staffId})");
 
         if ($grantAccess && $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) && $tempPassword !== null) {
-            $safeName = htmlspecialchars((string) $data['fullName'], ENT_QUOTES, 'UTF-8');
-            $safeEmail = htmlspecialchars($email, ENT_QUOTES, 'UTF-8');
-            $safePassword = htmlspecialchars($tempPassword, ENT_QUOTES, 'UTF-8');
-            $loginUrl = 'https://work.amiosh.com/login';
+            $loginUrl = $this->emailUrls()->frontendUrl('/login');
 
             SendHtmlMailJob::dispatch(
                 $email,
                 (string) $data['fullName'],
                 'Welcome to KIJO - Your Account Is Ready',
-                "<p>Hi {$safeName},</p>
-                 <p>Welcome to KIJO. Your account has been created and you can start using the platform at <a href=\"{$loginUrl}\">work.amiosh.com</a>.</p>
-                 <p><strong>Login email:</strong> {$safeEmail}</p>
-                 <p><strong>Temporary password:</strong> {$safePassword}</p>
-                 <p>Please change your password after your first login at <strong>Account &gt; Settings &gt; Password</strong>.</p>
-                 <p>If you have any questions, please contact the admin team.</p>"
+                $this->accountAccessEmailBody(
+                    (string) $data['fullName'],
+                    'Welcome to KIJO. Your account has been created and you can start using the platform from the button below.',
+                    $email,
+                    $tempPassword,
+                    $loginUrl,
+                    true,
+                ),
+                [],
+                null,
+                null,
+                $this->emailBody()->presentation('Account Access', 'Welcome to KIJO', 'Your account is ready', 'Your KIJO account is ready.'),
             );
         }
 
@@ -266,20 +271,24 @@ class StaffAccountService extends StaffBaseService
         $this->auditLog->log($request, "Updated staff member ID #{$staffId}");
 
         if ($grantAccess && $shouldSendWelcome && filter_var($email, FILTER_VALIDATE_EMAIL) && $tempPassword !== null) {
-            $safeName = htmlspecialchars($staffName, ENT_QUOTES, 'UTF-8');
-            $safeEmail = htmlspecialchars($email, ENT_QUOTES, 'UTF-8');
-            $safePassword = htmlspecialchars($tempPassword, ENT_QUOTES, 'UTF-8');
-            $loginUrl = 'https://work.amiosh.com/login';
+            $loginUrl = $this->emailUrls()->frontendUrl('/login');
 
             SendHtmlMailJob::dispatch(
                 $email,
                 $staffName,
                 'Welcome to KIJO - Your Account Is Ready',
-                "<p>Hi {$safeName},</p>
-                 <p>Your KIJO system access is active. You can log in at <a href=\"{$loginUrl}\">work.amiosh.com</a>.</p>
-                 <p><strong>Login email:</strong> {$safeEmail}</p>
-                 <p><strong>Temporary password:</strong> {$safePassword}</p>
-                 <p>Please change your password after your first login at <strong>Account &gt; Settings &gt; Password</strong>.</p>"
+                $this->accountAccessEmailBody(
+                    $staffName,
+                    'Your KIJO system access is active. You can log in from the button below.',
+                    $email,
+                    $tempPassword,
+                    $loginUrl,
+                    false,
+                ),
+                [],
+                null,
+                null,
+                $this->emailBody()->presentation('Account Access', 'Welcome to KIJO', 'Your account is ready', 'Your KIJO account is ready.'),
             );
         }
 
@@ -345,5 +354,50 @@ class StaffAccountService extends StaffBaseService
             'users' => $users,
             'pagination' => $this->paginationMeta($paginator),
         ]);
+    }
+
+    private function accountAccessEmailBody(
+        string $staffName,
+        string $intro,
+        string $email,
+        string $temporaryPassword,
+        string $loginUrl,
+        bool $includeSupportLine,
+    ): string {
+        $introLines = [
+            "Hi {$staffName},",
+            $intro,
+        ];
+        if ($includeSupportLine) {
+            $introLines[] = 'If you have any questions, please contact the admin team.';
+        }
+
+        return $this->emailBody()->render([
+            'intro' => $introLines,
+            'status' => ['label' => 'Account Ready', 'tone' => 'success'],
+            'detailsHeading' => 'Login Details',
+            'details' => [
+                'Login email' => $email,
+                'Temporary password' => $temporaryPassword,
+            ],
+            'notice' => [
+                'label' => 'Required',
+                'body' => 'Please change your password after your first login at Account > Settings > Password.',
+                'tone' => 'warning',
+            ],
+            'actionUrl' => $loginUrl,
+            'actionLabel' => 'Open KIJO',
+            'signOff' => ['thanks' => 'Thank you.', 'name' => 'KIJO Admin'],
+        ]);
+    }
+
+    private function emailBody(): SystemEmailBodyBuilder
+    {
+        return app(SystemEmailBodyBuilder::class);
+    }
+
+    private function emailUrls(): SystemEmailUrlBuilder
+    {
+        return app(SystemEmailUrlBuilder::class);
     }
 }

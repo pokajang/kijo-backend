@@ -2,42 +2,34 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
-
 trait MonitoringStatsDetailHelpers
 {
-    private function monitoringToolsDistinctRow(string $label, array $datedKeys, array $weeks): array
+    private function monitoringToolsDistinctRow(string $label, array $datedKeys, array $periodColumns): array
     {
-        $weeklySets = [];
-        $weeklyItems = [];
-        foreach ($weeks as $week) {
-            $weeklySets[$week['key']] = [];
-            $weeklyItems[$week['key']] = [];
+        $periodicSets = [];
+        $periodicItems = [];
+        foreach ($periodColumns as $column) {
+            $periodicSets[$column['key']] = [];
+            $periodicItems[$column['key']] = [];
         }
 
         foreach ($datedKeys as $item) {
-            $weekKey = $this->monitoringResolveWeekKey($item['date'] ?? null, $weeks);
+            $periodKey = $this->monitoringResolvePeriodColumnKey($item['date'] ?? null, $periodColumns);
             $key = (string) ($item['key'] ?? '');
-            if ($weekKey !== null && $key !== '') {
-                $weeklySets[$weekKey][$key] = true;
+            if ($periodKey !== null && $key !== '') {
+                $periodicSets[$periodKey][$key] = true;
                 $contributor = $this->monitoringContributorFromEvent($item);
                 if ($contributor !== null) {
-                    $weeklyItems[$weekKey][$key] = $contributor;
+                    $periodicItems[$periodKey][$key] = $contributor;
                 }
             }
         }
 
-        $weekly = [];
-        $weeklyDetails = [];
-        foreach ($weeks as $week) {
-            $weekly[$week['key']] = count($weeklySets[$week['key']]);
-            $weeklyDetails[$week['key']] = $this->monitoringBoundDetails($weeklyItems[$week['key']]);
+        $periodic = [];
+        $periodicDetails = [];
+        foreach ($periodColumns as $column) {
+            $periodic[$column['key']] = count($periodicSets[$column['key']]);
+            $periodicDetails[$column['key']] = $this->monitoringBoundDetails($periodicItems[$column['key']]);
         }
         $segments = $this->monitoringSegmentQuantitySeed();
         $segmentSets = [
@@ -100,7 +92,7 @@ trait MonitoringStatsDetailHelpers
             ];
         }
 
-        $total = array_sum($weekly);
+        $total = array_sum($periodic);
         if (empty($segmentDetails['individual'])) {
             $segmentDetails['individual'] = [
                 'qty' => $this->monitoringEmptyDetail(),
@@ -111,7 +103,8 @@ trait MonitoringStatsDetailHelpers
 
         return [
             'label' => $label,
-            'weekly' => $weekly,
+            'weekly' => $periodic,
+            'periodic' => $periodic,
             'total' => $total,
             'individualQty' => $total,
             'individualRm' => $segmentRms['individual'] ?? 0.0,
@@ -120,19 +113,20 @@ trait MonitoringStatsDetailHelpers
             'tenderQty' => $segments['tender'],
             'tenderRm' => $segmentRms['tender'] ?? 0.0,
             'details' => [
-                'weekly' => $weeklyDetails,
+                'weekly' => $periodicDetails,
+                'periodic' => $periodicDetails,
                 'total' => $this->monitoringBoundDetails($totalItems),
                 'segments' => $segmentDetails,
             ],
         ];
     }
 
-    private function monitoringToolsTotalRow(array $rows, array $weeks): array
+    private function monitoringToolsTotalRow(array $rows, array $periodColumns): array
     {
-        $weekly = $this->monitoringWeekSeed($weeks);
-        $weeklyItems = [];
-        foreach ($weeks as $week) {
-            $weeklyItems[$week['key']] = [];
+        $periodic = $this->monitoringPeriodSeed($periodColumns);
+        $periodicItems = [];
+        foreach ($periodColumns as $column) {
+            $periodicItems[$column['key']] = [];
         }
         $total = 0;
         $totalItems = [];
@@ -143,12 +137,12 @@ trait MonitoringStatsDetailHelpers
         ];
 
         foreach ($rows as $row) {
-            foreach ($weeks as $week) {
-                $key = $week['key'];
-                $weekly[$key] += (int) ($row['weekly'][$key] ?? 0);
-                foreach (($row['details']['weekly'][$key]['items'] ?? []) as $item) {
+            foreach ($periodColumns as $column) {
+                $key = $column['key'];
+                $periodic[$key] += (int) (($row['periodic'][$key] ?? $row['weekly'][$key] ?? 0));
+                foreach ((($row['details']['periodic'][$key]['items'] ?? null) ?? ($row['details']['weekly'][$key]['items'] ?? [])) as $item) {
                     $itemKey = $this->monitoringDetailItemKey($item, (string) ($row['label'] ?? ''));
-                    $weeklyItems[$key][$itemKey] = $item;
+                    $periodicItems[$key][$itemKey] = $item;
                     $totalItems[$itemKey] = $item;
                 }
             }
@@ -164,19 +158,20 @@ trait MonitoringStatsDetailHelpers
             }
         }
 
-        $weeklyDetails = [];
-        foreach ($weeks as $week) {
-            $weeklyDetails[$week['key']] = $this->monitoringBoundDetails(
-                $weeklyItems[$week['key']],
+        $periodicDetails = [];
+        foreach ($periodColumns as $column) {
+            $periodicDetails[$column['key']] = $this->monitoringBoundDetails(
+                $periodicItems[$column['key']],
                 null,
                 self::MONITORING_DETAIL_LIMIT,
-                (int) ($weekly[$week['key']] ?? 0)
+                (int) ($periodic[$column['key']] ?? 0)
             );
         }
 
         return [
             'label' => 'TOTAL',
-            'weekly' => $weekly,
+            'weekly' => $periodic,
+            'periodic' => $periodic,
             'total' => $total,
             'individualQty' => $this->monitoringSumNullable($rows, 'individualQty'),
             'individualRm' => $this->monitoringSumNullableValue($rows, 'individualRm'),
@@ -185,7 +180,8 @@ trait MonitoringStatsDetailHelpers
             'tenderQty' => $this->monitoringSumNullable($rows, 'tenderQty'),
             'tenderRm' => $this->monitoringSumNullableValue($rows, 'tenderRm'),
             'details' => [
-                'weekly' => $weeklyDetails,
+                'weekly' => $periodicDetails,
+                'periodic' => $periodicDetails,
                 'total' => $this->monitoringBoundDetails(
                     $totalItems,
                     null,
@@ -245,8 +241,7 @@ trait MonitoringStatsDetailHelpers
         ?float $value = null,
         int $limit = self::MONITORING_DETAIL_LIMIT,
         ?int $countOverride = null
-    ): array
-    {
+    ): array {
         $count = $countOverride ?? count($items);
         $details = [
             'count' => $count,
@@ -272,13 +267,18 @@ trait MonitoringStatsDetailHelpers
 
     private function monitoringResolveWeekKey(?string $date, array $weeks): ?string
     {
+        return $this->monitoringResolvePeriodColumnKey($date, $weeks);
+    }
+
+    private function monitoringResolvePeriodColumnKey(?string $date, array $periodColumns): ?string
+    {
         if (empty($date)) {
             return null;
         }
 
-        foreach ($weeks as $week) {
-            if ($date >= $week['start'] && $date <= $week['end']) {
-                return $week['key'];
+        foreach ($periodColumns as $column) {
+            if ($date >= $column['start'] && $date <= $column['end']) {
+                return $column['key'];
             }
         }
 
@@ -309,9 +309,9 @@ trait MonitoringStatsDetailHelpers
             $prefix,
             (string) ($item['eventType'] ?? ''),
             (string) ($item['sourceId'] ?? ''),
-        ], static fn($part) => $part !== ''));
+        ], static fn ($part) => $part !== ''));
 
-        return !empty($parts) ? implode('|', $parts) : md5(json_encode($item));
+        return ! empty($parts) ? implode('|', $parts) : md5(json_encode($item));
     }
 
     private function monitoringSumNullable(array $rows, string $key): ?int
@@ -343,9 +343,14 @@ trait MonitoringStatsDetailHelpers
 
     private function monitoringWeekSeed(array $weeks): array
     {
+        return $this->monitoringPeriodSeed($weeks);
+    }
+
+    private function monitoringPeriodSeed(array $periodColumns): array
+    {
         $seed = [];
-        foreach ($weeks as $week) {
-            $seed[$week['key']] = 0;
+        foreach ($periodColumns as $column) {
+            $seed[$column['key']] = 0;
         }
 
         return $seed;
@@ -367,15 +372,17 @@ trait MonitoringStatsDetailHelpers
 
     private function monitoringFinalizeStatusDetails(array &$row): void
     {
-        foreach (($row['details']['weekly'] ?? []) as $weekKey => $metrics) {
-            $row['details']['weekly'][$weekKey] = [
+        $periodDetails = $row['details']['periodic'] ?? $row['details']['weekly'] ?? [];
+        foreach ($periodDetails as $periodKey => $metrics) {
+            $row['details']['periodic'][$periodKey] = [
                 'qty' => $this->monitoringBoundDetails($metrics['qty'] ?? []),
                 'rm' => $this->monitoringBoundDetails(
                     $metrics['rm'] ?? [],
-                    (float) ($row['weekly'][$weekKey]['rm'] ?? 0)
+                    (float) (($row['periodic'][$periodKey]['rm'] ?? null) ?? ($row['weekly'][$periodKey]['rm'] ?? 0))
                 ),
             ];
         }
+        $row['details']['weekly'] = $row['details']['periodic'] ?? [];
 
         $row['details']['total'] = [
             'qty' => $this->monitoringBoundDetails($row['details']['total']['qty'] ?? []),
@@ -386,8 +393,8 @@ trait MonitoringStatsDetailHelpers
         ];
 
         foreach (['individual', 'specialProject', 'tender'] as $segment) {
-            $qtyKey = $segment . 'Qty';
-            $rmKey = $segment . 'Rm';
+            $qtyKey = $segment.'Qty';
+            $rmKey = $segment.'Rm';
             $row['details']['segments'][$segment] = [
                 'qty' => $this->monitoringBoundDetails($row['details']['segments'][$segment]['qty'] ?? []),
                 'rm' => $this->monitoringBoundDetails(
@@ -400,13 +407,15 @@ trait MonitoringStatsDetailHelpers
 
     private function monitoringMergeStatusDetails(array &$target, array $source): void
     {
-        foreach (($source['weekly'] ?? []) as $weekKey => $metrics) {
+        $periodicSource = $source['periodic'] ?? $source['weekly'] ?? [];
+        foreach ($periodicSource as $periodKey => $metrics) {
             foreach (['qty', 'rm'] as $metric) {
                 foreach (($metrics[$metric] ?? []) as $item) {
-                    $this->monitoringStoreDetailItem($target['weekly'][$weekKey][$metric], $item);
+                    $this->monitoringStoreDetailItem($target['periodic'][$periodKey][$metric], $item);
                 }
             }
         }
+        $target['weekly'] = $target['periodic'];
 
         foreach (['qty', 'rm'] as $metric) {
             foreach (($source['total'][$metric] ?? []) as $item) {
@@ -433,15 +442,16 @@ trait MonitoringStatsDetailHelpers
         ], true);
     }
 
-    private function monitoringStatusDetailSeed(array $weeks): array
+    private function monitoringStatusDetailSeed(array $periodColumns): array
     {
-        $weekly = [];
-        foreach ($weeks as $week) {
-            $weekly[$week['key']] = ['qty' => [], 'rm' => []];
+        $periodic = [];
+        foreach ($periodColumns as $column) {
+            $periodic[$column['key']] = ['qty' => [], 'rm' => []];
         }
 
         return [
-            'weekly' => $weekly,
+            'weekly' => $periodic,
+            'periodic' => $periodic,
             'total' => ['qty' => [], 'rm' => []],
             'segments' => [
                 'individual' => ['qty' => [], 'rm' => []],
@@ -463,9 +473,14 @@ trait MonitoringStatsDetailHelpers
 
     private function monitoringWeeklyMetricSeed(array $weeks): array
     {
+        return $this->monitoringPeriodicMetricSeed($weeks);
+    }
+
+    private function monitoringPeriodicMetricSeed(array $periodColumns): array
+    {
         $seed = [];
-        foreach ($weeks as $week) {
-            $seed[$week['key']] = ['qty' => 0, 'rm' => 0.0];
+        foreach ($periodColumns as $column) {
+            $seed[$column['key']] = ['qty' => 0, 'rm' => 0.0];
         }
 
         return $seed;

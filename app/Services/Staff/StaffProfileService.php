@@ -2,25 +2,12 @@
 
 namespace App\Services\Staff;
 
-use App\Http\Requests\Staff\GenerateUserActivityReportRequest;
-use App\Http\Requests\Staff\GetStaffByIdRequest;
-use App\Http\Requests\Staff\ListActivityRequest;
-use App\Http\Requests\Staff\ListStaffRequest;
-use App\Http\Requests\Staff\StoreStaffRequest;
 use App\Http\Requests\Staff\UpdateProfileRequest;
-use App\Http\Requests\Staff\UpdateStaffRequest;
-use App\Jobs\SendHtmlMailJob;
-use App\Services\AuditLogService;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 
 class StaffProfileService extends StaffBaseService
 {
-
     public function getProfile(Request $request)
     {
         $staffId = (int) $request->session()->get('staff_id', 0);
@@ -60,7 +47,7 @@ class StaffProfileService extends StaffBaseService
             ->whereNull('g.deleted_at')
             ->first();
 
-        if (!$profile) {
+        if (! $profile) {
             return response()->json(['status' => 'error', 'message' => 'Profile not found.'], 404);
         }
 
@@ -71,7 +58,6 @@ class StaffProfileService extends StaffBaseService
             'profile' => $profile,
         ]);
     }
-
 
     public function updateProfile(UpdateProfileRequest $request)
     {
@@ -109,9 +95,33 @@ class StaffProfileService extends StaffBaseService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$staff) {
+            if (! $staff) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Profile not found.'], 404);
+            }
+
+            $identityErrors = [];
+            if (
+                array_key_exists('email', $data)
+                && trim((string) $data['email']) !== trim((string) $staff->email)
+            ) {
+                $identityErrors['email'] = ['Email is managed by your system account.'];
+            }
+            if (
+                array_key_exists('nameCode', $data)
+                && strtoupper(trim((string) $data['nameCode'])) !== strtoupper(trim((string) $staff->name_code))
+            ) {
+                $identityErrors['nameCode'] = ['Name code is maintained by administration.'];
+            }
+            if (! empty($identityErrors)) {
+                DB::rollBack();
+
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Readonly identity fields cannot be changed from My Account.',
+                    'errors' => $identityErrors,
+                ], 422);
             }
 
             $profileExists = DB::table('staff_profile')
@@ -127,7 +137,7 @@ class StaffProfileService extends StaffBaseService
             }
 
             if ($profileExists) {
-                if (!empty($profileUpdates)) {
+                if (! empty($profileUpdates)) {
                     $profileUpdates['updated_at'] = now();
                     DB::table('staff_profile')
                         ->where('staff_id', $staffId)
@@ -150,11 +160,9 @@ class StaffProfileService extends StaffBaseService
 
             foreach ([
                 'fullName' => 'full_name',
-                'email' => 'email',
                 'mobileNumber' => 'mobile_number',
-                'nameCode' => 'name_code',
             ] as $inputKey => $column) {
-                if (!array_key_exists($inputKey, $data)) {
+                if (! array_key_exists($inputKey, $data)) {
                     continue;
                 }
 
@@ -168,49 +176,18 @@ class StaffProfileService extends StaffBaseService
                 }
             }
 
-            if (array_key_exists('email', $data) && trim((string) $data['email']) !== '') {
-                $email = trim((string) $data['email']);
-
-                $emailUsedByOtherStaff = DB::table('staff_general')
-                    ->where('email', $email)
-                    ->where('staff_id', '!=', $staffId)
-                    ->whereNull('deleted_at')
-                    ->exists();
-                if ($emailUsedByOtherStaff) {
-                    DB::rollBack();
-                    return response()->json(['status' => 'error', 'message' => 'Email is already in use by another staff record.'], 422);
-                }
-
-                $emailUsedByOtherUser = DB::table('system_users')
-                    ->where('email', $email)
-                    ->where('staff_id', '!=', $staffId)
-                    ->exists();
-                if ($emailUsedByOtherUser) {
-                    DB::rollBack();
-                    return response()->json(['status' => 'error', 'message' => 'Email is already used by another system user.'], 422);
-                }
-            }
-
-            if (!empty($generalUpdates)) {
+            if (! empty($generalUpdates)) {
                 $generalUpdates['updated_at'] = now();
                 DB::table('staff_general')
                     ->where('staff_id', $staffId)
                     ->update($generalUpdates);
             }
 
-            if (array_key_exists('email', $data) && trim((string) $data['email']) !== '') {
-                DB::table('system_users')
-                    ->where('staff_id', $staffId)
-                    ->update([
-                        'email' => trim((string) $data['email']),
-                        'updated_at' => now(),
-                    ]);
-            }
-
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 

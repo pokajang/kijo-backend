@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\AuditLogService;
 use App\Services\LegalComplianceAssessmentReportPdfService;
+use App\Services\LegalComplianceAssessmentSnapshotService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +20,11 @@ class LegalComplianceAssessmentController extends Controller
     private function auditLog(): AuditLogService
     {
         return app(AuditLogService::class);
+    }
+
+    private function snapshotService(): LegalComplianceAssessmentSnapshotService
+    {
+        return app(LegalComplianceAssessmentSnapshotService::class);
     }
 
     public function index(Request $request): JsonResponse
@@ -90,6 +96,7 @@ class LegalComplianceAssessmentController extends Controller
                     ->filter(fn ($response) => trim((string) ($response['finding'] ?? '')) !== '')
                     ->count();
                 $snapshot = json_decode((string) $record->template_snapshot, true) ?: [];
+                $hasStoredSnapshot = ! empty($snapshot['groups']) && is_array($snapshot['groups']);
                 $snapshotClauses = collect($snapshot['groups'] ?? [])->flatMap(
                     fn ($group) => $group['clauses'] ?? []
                 );
@@ -121,9 +128,9 @@ class LegalComplianceAssessmentController extends Controller
                         ->count();
                 $totalClauseCount = collect($snapshot['groups'] ?? [])
                     ->sum(fn ($group) => count($group['clauses'] ?? []));
-                $assessmentTier = strtolower(trim((string) ($snapshot['assessment_tier'] ?? 'free'))) === 'paid'
-                    ? 'paid'
-                    : 'free';
+                $assessmentTier = $hasStoredSnapshot
+                    ? (strtolower(trim((string) ($snapshot['assessment_tier'] ?? 'free'))) === 'paid' ? 'paid' : 'free')
+                    : null;
 
                 unset($record->clause_responses);
                 unset($record->template_snapshot);
@@ -210,7 +217,10 @@ class LegalComplianceAssessmentController extends Controller
         }
 
         $record->stage = $record->stage === 'details' ? 'details_saved' : $record->stage;
-        $record->template_snapshot = $this->resolveRecordTemplateSnapshot($record);
+        $snapshotResolution = $this->snapshotService()->resolve($record);
+        $record->template_snapshot = $snapshotResolution['snapshot'];
+        $record->template_snapshot_unresolved = (bool) $snapshotResolution['unresolved'];
+        $record->template_snapshot_resolution_source = $snapshotResolution['source'];
         $record->selected_assessors = json_decode((string) $record->selected_assessors, true) ?: [];
         $record->clause_responses = json_decode((string) $record->clause_responses, true) ?: [];
 
@@ -305,28 +315,16 @@ class LegalComplianceAssessmentController extends Controller
                 ]);
             }
 
-            $templateSnapshot = json_decode((string) $existingAssessment->template_snapshot, true) ?: [];
-            $templateFields = [];
-            if (empty($templateSnapshot)) {
-                $templateVersion = ! empty($existingAssessment->template_version_id)
-                    ? $this->resolveTemplateVersionById((int) $existingAssessment->template_version_id)
-                    : $this->resolvePublishedTemplateVersion($validated);
-
-                if (! $templateVersion) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Published template version could not be verified.',
-                    ], 422);
-                }
-
-                $templateSnapshot = json_decode((string) $templateVersion->content, true) ?: [];
-                $templateFields = [
-                    'template_id' => $templateVersion->template_id,
-                    'template_version_id' => $templateVersion->id,
-                    'template_version' => 'v'.$templateVersion->version_number,
-                    'template_snapshot' => json_encode($templateSnapshot),
-                ];
+            $snapshotResolution = $this->snapshotService()->resolve($existingAssessment);
+            if ($snapshotResolution['unresolved']) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Assessment template snapshot could not be resolved. Run the legacy snapshot backfill before editing this record.',
+                ], 422);
             }
+
+            $templateSnapshot = $snapshotResolution['snapshot'];
+            $templateFields = $this->templateFieldsFromSnapshotResolution($existingAssessment, $snapshotResolution);
 
             $validationError = $this->validateClauseResponses(
                 $templateSnapshot,
@@ -532,13 +530,32 @@ class LegalComplianceAssessmentController extends Controller
                 ];
             }
 
+            $snapshotResolution = $this->snapshotService()->resolve($record);
+            if ($snapshotResolution['unresolved']) {
+                return [
+                    'status' => 422,
+                    'message' => 'Assessment template snapshot could not be resolved. Run the legacy snapshot backfill before revising this report.',
+                ];
+            }
+
+            $templateVersion = $snapshotResolution['template_version'];
+            $templateId = ! empty($record->template_id)
+                ? $record->template_id
+                : ($templateVersion->template_id ?? null);
+            $templateVersionId = ! empty($record->template_version_id)
+                ? $record->template_version_id
+                : ($templateVersion->id ?? null);
+            $templateVersionLabel = trim((string) ($record->template_version ?? '')) !== ''
+                ? $record->template_version
+                : ($templateVersion ? 'v'.$templateVersion->version_number : null);
+
             $now = now();
             $revisionId = DB::table('legal_compliance_assessments')->insertGetId([
                 'staff_id' => $staffId,
-                'template_id' => $record->template_id,
-                'template_version_id' => $record->template_version_id,
-                'template_version' => $record->template_version,
-                'template_snapshot' => $record->template_snapshot,
+                'template_id' => $templateId,
+                'template_version_id' => $templateVersionId,
+                'template_version' => $templateVersionLabel,
+                'template_snapshot' => json_encode($snapshotResolution['snapshot']),
                 'stage' => 'details_saved',
                 'parent_assessment_id' => $record->id,
                 'revision_number' => ((int) ($record->revision_number ?? 1)) + 1,
@@ -602,8 +619,7 @@ class LegalComplianceAssessmentController extends Controller
         $now,
         int $staffId,
         ?object $project = null
-    ): array
-    {
+    ): array {
         $projectAddress = $project ? $this->formatProjectAddress($project) : null;
         $payload = [
             'stage' => $validated['stage'],
@@ -674,54 +690,38 @@ class LegalComplianceAssessmentController extends Controller
             ->first();
     }
 
-    private function resolveTemplateVersionById(int $templateVersionId): ?object
+    private function templateFieldsFromSnapshotResolution(object $record, array $snapshotResolution): array
     {
-        if ($templateVersionId <= 0) {
-            return null;
+        if (($snapshotResolution['source'] ?? '') === 'existing_valid') {
+            return [];
         }
 
-        return DB::table('legal_compliance_template_versions')
-            ->where('id', $templateVersionId)
-            ->first();
-    }
+        $templateVersion = $snapshotResolution['template_version'] ?? null;
+        $fields = [
+            'template_snapshot' => json_encode($snapshotResolution['snapshot'] ?? []),
+        ];
 
-    private function resolveRecordTemplateSnapshot(object $record): array
-    {
-        $snapshot = json_decode((string) ($record->template_snapshot ?? ''), true) ?: [];
-        if (! empty($snapshot['groups']) && is_array($snapshot['groups'])) {
-            return $snapshot;
+        if ($templateVersion) {
+            if (empty($record->template_id)) {
+                $fields['template_id'] = $templateVersion->template_id;
+            }
+
+            if (empty($record->template_version_id)) {
+                $fields['template_version_id'] = $templateVersion->id;
+            }
+
+            if (trim((string) ($record->template_version ?? '')) === '') {
+                $fields['template_version'] = 'v'.$templateVersion->version_number;
+            }
         }
 
-        $templateVersion = ! empty($record->template_version_id)
-            ? $this->resolveTemplateVersionById((int) $record->template_version_id)
-            : null;
-
-        if (! $templateVersion && ! empty($record->template_id)) {
-            $templateVersion = DB::table('legal_compliance_templates as templates')
-                ->join('legal_compliance_template_versions as versions', 'versions.id', '=', 'templates.active_version_id')
-                ->where('templates.id', $record->template_id)
-                ->select('versions.*')
-                ->first();
-        }
-
-        if (! $templateVersion) {
-            $templateVersion = DB::table('legal_compliance_templates as templates')
-                ->join('legal_compliance_template_versions as versions', 'versions.id', '=', 'templates.active_version_id')
-                ->where('templates.is_default', true)
-                ->select('versions.*')
-                ->first();
-        }
-
-        return $templateVersion
-            ? (json_decode((string) $templateVersion->content, true) ?: [])
-            : $snapshot;
+        return $fields;
     }
 
     private function validateProjectForTemplate(
         array $templateSnapshot,
         array $details,
-    ): array
-    {
+    ): array {
         $tier = strtolower(trim((string) ($templateSnapshot['assessment_tier'] ?? 'free'))) === 'paid'
             ? 'paid'
             : 'free';
@@ -753,7 +753,7 @@ class LegalComplianceAssessmentController extends Controller
             })
             ->leftJoin('client_company as cc', 'cc.company_id', '=', 'p.client_id')
             ->where('p.id', $projectId)
-            ->selectRaw("
+            ->selectRaw('
                 p.id,
                 p.project_name,
                 p.status,
@@ -765,7 +765,7 @@ class LegalComplianceAssessmentController extends Controller
                 COALESCE(qt.client_zip, qh.client_zip, qm.client_zip, qs.client_zip, qe.client_zip, cc.zip) AS client_zip,
                 COALESCE(qt.pic_name, qh.pic_name, qm.pic_name, qs.pic_name, qe.pic_name) AS pic_name,
                 COALESCE(qt.pic_email, qh.pic_email, qm.pic_email, qs.pic_email, qe.pic_email) AS pic_email
-            ")
+            ')
             ->first();
 
         if (! $project) {
@@ -835,6 +835,10 @@ class LegalComplianceAssessmentController extends Controller
         $roles = $request->attributes->get('auth.roles', $request->session()->get('roles', []));
         $roles = is_array($roles) ? $roles : [$roles];
         $normalizedRoles = array_map(static fn ($role) => strtolower(trim((string) $role)), $roles);
+        if (in_array('system admin', $normalizedRoles, true)) {
+            return true;
+        }
+
         $normalizedAllowed = array_map(static fn ($role) => strtolower(trim((string) $role)), $allowedRoles);
 
         return ! empty(array_intersect($normalizedRoles, $normalizedAllowed));

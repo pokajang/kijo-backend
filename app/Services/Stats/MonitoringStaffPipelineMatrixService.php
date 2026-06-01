@@ -2,32 +2,30 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class MonitoringStaffPipelineMatrixService
 {
     use MonitoringStatsCoreHelpers;
+    use MonitoringStatsDetailHelpers;
+    use MonitoringStatsEventHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
     use MonitoringStatsManualHelpers;
     use MonitoringStatsStaffHelpers;
-    use MonitoringStatsEventHelpers;
-    use MonitoringStatsDetailHelpers;
-    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -62,14 +60,14 @@ class MonitoringStaffPipelineMatrixService
     public function monitoringStaffPipelineMatrix(Request $request): JsonResponse
     {
         try {
-            if (!$this->canViewOtherMonitoringStaff($request)) {
+            if (! $this->canViewOtherMonitoringStaff($request)) {
                 return $this->monitoringStaffForbiddenResponse();
             }
 
             $context = $this->monitoringMonthContext($request);
             $staffFilter = ['code' => null, 'forbidden' => false];
             $quotes = $this->baseQuoteLifecycleQuery()
-                ->whereBetween(DB::raw('DATE(created_at)'), [$context['monthStart'], $context['monthEnd']])
+                ->whereBetween(DB::raw('DATE(created_at)'), [$context['rangeStart'], $context['rangeEnd']])
                 ->get();
             $manualEntries = $this->monitoringManualEntries($context, $staffFilter);
             $legalComplianceEvents = $this->monitoringLegalComplianceAssessmentEvents($context, $staffFilter);
@@ -107,12 +105,12 @@ class MonitoringStaffPipelineMatrixService
             foreach ($stageEvents as $stage => $events) {
                 foreach ($events as $event) {
                     $contributor = $event['contributor'] ?? null;
-                    if (!is_array($contributor)) {
+                    if (! is_array($contributor)) {
                         continue;
                     }
 
                     $staffCode = $this->monitoringContributorStaffCode($contributor);
-                    if (!isset($rowsByStaff[$staffCode])) {
+                    if (! isset($rowsByStaff[$staffCode])) {
                         $rowsByStaff[$staffCode] = $this->monitoringStaffMatrixEmptyRow(
                             $staffCode,
                             $this->monitoringContributorStaffName($contributor),
@@ -122,18 +120,18 @@ class MonitoringStaffPipelineMatrixService
 
                     $eventKey = (string) ($event['key'] ?? $this->monitoringDetailItemKey($contributor, $stage));
                     $rowsByStaff[$staffCode]['stageItems'][$stage][$eventKey] = $contributor;
-                    $totals['stageItems'][$stage][$staffCode . '|' . $eventKey] = $contributor;
+                    $totals['stageItems'][$stage][$staffCode.'|'.$eventKey] = $contributor;
                 }
             }
 
             foreach (array_merge($quoteIssuedEvents, $manualEntries['events']['PROPOSAL'] ?? []) as $event) {
                 $contributor = $event['contributor'] ?? null;
-                if (!is_array($contributor)) {
+                if (! is_array($contributor)) {
                     continue;
                 }
 
                 $staffCode = $this->monitoringContributorStaffCode($contributor);
-                if (!isset($rowsByStaff[$staffCode])) {
+                if (! isset($rowsByStaff[$staffCode])) {
                     $rowsByStaff[$staffCode] = $this->monitoringStaffMatrixEmptyRow(
                         $staffCode,
                         $this->monitoringContributorStaffName($contributor),
@@ -149,29 +147,32 @@ class MonitoringStaffPipelineMatrixService
                 $rowsByStaff[$staffCode]['segmentItems'][$segmentKey]['rm'][$eventKey] = $contributor;
                 $rowsByStaff[$staffCode]['segmentValues'][$segmentKey][$eventKey] = $value;
 
-                $totalKey = $staffCode . '|' . $eventKey;
+                $totalKey = $staffCode.'|'.$eventKey;
                 $totals['segmentItems'][$segmentKey]['qty'][$totalKey] = $contributor;
                 $totals['segmentItems'][$segmentKey]['rm'][$totalKey] = $contributor;
                 $totals['segmentValues'][$segmentKey][$totalKey] = $value;
             }
 
             $rows = array_values(array_map(
-                fn(array $row) => $this->monitoringFinalizeStaffMatrixRow($row),
+                fn (array $row) => $this->monitoringFinalizeStaffMatrixRow($row),
                 $rowsByStaff
             ));
 
-            usort($rows, fn($left, $right) => strcasecmp($left['staffLabel'], $right['staffLabel']));
+            usort($rows, fn ($left, $right) => strcasecmp($left['staffLabel'], $right['staffLabel']));
 
             return response()->json([
                 'status' => 'success',
                 'monthLabel' => $context['monthLabel'],
+                'rangeStart' => $context['rangeStart'],
+                'rangeEnd' => $context['rangeEnd'],
+                'rangeLabel' => $context['rangeLabel'],
                 'rows' => $rows,
                 'totals' => $this->monitoringFinalizeStaffMatrixRow($totals),
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
-
 }

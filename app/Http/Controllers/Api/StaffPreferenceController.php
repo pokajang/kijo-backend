@@ -10,31 +10,68 @@ use Illuminate\Support\Facades\DB;
 class StaffPreferenceController extends Controller
 {
     private const API_KEY_CRM_VISIBLE_COLUMNS = 'crm-records-all-visible-columns';
+
     private const DB_KEY_CRM_VISIBLE_COLUMNS = 'crm.records.all.visibleColumns';
+
     private const API_KEY_SERVICE_VISIBLE_COLUMNS_PREFIX = 'crm-records-service-visible-columns.';
+
     private const DB_KEY_SERVICE_VISIBLE_COLUMNS_PREFIX = 'crm.records.service.visibleColumns.';
+
     private const API_KEY_HANDBOOK_ACKNOWLEDGEMENTS_VISIBLE_COLUMNS = 'handbook-acknowledgements-visible-columns';
+
     private const DB_KEY_HANDBOOK_ACKNOWLEDGEMENTS_VISIBLE_COLUMNS = 'handbook.acknowledgements.visibleColumns';
+
     private const API_KEY_HANDBOOK_CHANGE_LOG_VISIBLE_COLUMNS = 'handbook-change-log-visible-columns';
+
     private const DB_KEY_HANDBOOK_CHANGE_LOG_VISIBLE_COLUMNS = 'handbook.changeLog.visibleColumns';
+
     private const API_KEY_MARKETING_PIPELINE_ENTRIES_VISIBLE_COLUMNS = 'marketing-pipeline-entries-visible-columns';
+
     private const DB_KEY_MARKETING_PIPELINE_ENTRIES_VISIBLE_COLUMNS = 'marketing.pipelineEntries.visibleColumns';
+
     private const API_KEY_MEETINGS_RECORDS_VISIBLE_COLUMNS = 'meetings-records-visible-columns';
+
     private const DB_KEY_MEETINGS_RECORDS_VISIBLE_COLUMNS = 'meetings.records.visibleColumns';
+
     private const API_KEY_PROCEDURE_RECORDS_VISIBLE_COLUMNS = 'procedure-records-visible-columns';
+
     private const DB_KEY_PROCEDURE_RECORDS_VISIBLE_COLUMNS = 'procedure.records.visibleColumns';
+
     private const API_KEY_STAFF_APPRAISE_RECORDS_VISIBLE_COLUMNS = 'staff-appraise-records-visible-columns';
+
     private const DB_KEY_STAFF_APPRAISE_RECORDS_VISIBLE_COLUMNS = 'staff.appraise.records.visibleColumns';
+
     private const API_KEY_APPRAISAL_PERSONAL_RECORDS_VISIBLE_COLUMNS = 'appraisal-personal-records-visible-columns';
+
     private const DB_KEY_APPRAISAL_PERSONAL_RECORDS_VISIBLE_COLUMNS = 'appraisal.personal.records.visibleColumns';
+
     private const API_KEY_SYSTEM_ADMIN_SCHEMA_SCRIPTS_VISIBLE_COLUMNS = 'system-admin-schema-scripts-visible-columns';
+
     private const DB_KEY_SYSTEM_ADMIN_SCHEMA_SCRIPTS_VISIBLE_COLUMNS = 'systemAdmin.schemaScripts.visibleColumns';
+
     private const API_KEY_SYSTEM_ADMIN_LARAVEL_MIGRATIONS_VISIBLE_COLUMNS = 'system-admin-laravel-migrations-visible-columns';
+
     private const DB_KEY_SYSTEM_ADMIN_LARAVEL_MIGRATIONS_VISIBLE_COLUMNS = 'systemAdmin.laravelMigrations.visibleColumns';
+
     private const API_KEY_SYSTEM_ADMIN_SCHEMA_RUNS_VISIBLE_COLUMNS = 'system-admin-schema-runs-visible-columns';
+
     private const DB_KEY_SYSTEM_ADMIN_SCHEMA_RUNS_VISIBLE_COLUMNS = 'systemAdmin.schemaRuns.visibleColumns';
+
     private const API_KEY_TASK_MANAGER_TASKS_VISIBLE_COLUMNS = 'task-manager-tasks-visible-columns';
+
     private const DB_KEY_TASK_MANAGER_TASKS_VISIBLE_COLUMNS = 'taskManager.tasks.visibleColumns';
+
+    private const API_KEY_DATATABLE_STATS_VISIBLE_PREFIX = 'datatable-stats-visible.';
+
+    private const DB_KEY_DATATABLE_STATS_VISIBLE_PREFIX = 'datatable.statsVisible.';
+
+    private const DB_KEY_DATATABLE_STATS_VISIBLE_SYSTEMWIDE = 'datatable.statsVisible.systemwide.v1';
+
+    private const API_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX = 'datatable-controls-visible.';
+
+    private const DB_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX = 'datatable.controlsVisible.';
+
+    private const DB_KEY_DATATABLE_CONTROLS_VISIBLE_SYSTEMWIDE = 'datatable.controlsVisible.systemwide.v1';
 
     private const VISIBLE_COLUMN_KEYS = [
         'service',
@@ -175,6 +212,10 @@ class StaffPreferenceController extends Controller
 
     private const TASK_MANAGER_TASK_REQUIRED_VISIBLE_COLUMNS = ['title', 'statusText'];
 
+    private const TASK_MANAGER_TASK_DEFAULT_VISIBLE_COLUMNS = [
+        'createdAt' => false,
+    ];
+
     public function show(Request $request, string $key): JsonResponse
     {
         $resolvedKey = $this->resolvePreferenceKey($key);
@@ -207,6 +248,7 @@ class StaffPreferenceController extends Controller
             'message' => 'Preference loaded.',
             'data' => [
                 'key' => $key,
+                'found' => $row !== null,
                 'value' => $normalizedValue,
             ],
         ]);
@@ -230,6 +272,22 @@ class StaffPreferenceController extends Controller
 
         $normalizedValue = $this->normalizePreferenceValue($resolvedKey, $validated['value']);
         $now = now();
+
+        if ($resolvedKey === self::DB_KEY_DATATABLE_STATS_VISIBLE_SYSTEMWIDE) {
+            DB::table('staff_preferences')
+                ->where('staff_id', $staffId)
+                ->where('preference_key', 'like', self::DB_KEY_DATATABLE_STATS_VISIBLE_PREFIX.'%')
+                ->where('preference_key', '!=', $resolvedKey)
+                ->delete();
+        }
+
+        if ($resolvedKey === self::DB_KEY_DATATABLE_CONTROLS_VISIBLE_SYSTEMWIDE) {
+            DB::table('staff_preferences')
+                ->where('staff_id', $staffId)
+                ->where('preference_key', 'like', self::DB_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX.'%')
+                ->where('preference_key', '!=', $resolvedKey)
+                ->delete();
+        }
 
         DB::table('staff_preferences')->upsert(
             [[
@@ -255,6 +313,24 @@ class StaffPreferenceController extends Controller
 
     private function resolvePreferenceKey(string $key): ?string
     {
+        if (str_starts_with($key, self::API_KEY_DATATABLE_STATS_VISIBLE_PREFIX)) {
+            $statsKey = substr($key, strlen(self::API_KEY_DATATABLE_STATS_VISIBLE_PREFIX));
+            if ($statsKey === '' || preg_match('/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.v\d+$/', $statsKey) !== 1) {
+                return null;
+            }
+
+            return self::DB_KEY_DATATABLE_STATS_VISIBLE_PREFIX.$statsKey;
+        }
+
+        if (str_starts_with($key, self::API_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX)) {
+            $controlsKey = substr($key, strlen(self::API_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX));
+            if ($controlsKey === '' || preg_match('/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.v\d+$/', $controlsKey) !== 1) {
+                return null;
+            }
+
+            return self::DB_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX.$controlsKey;
+        }
+
         foreach ($this->visibleColumnPreferenceKeys() as $apiKey => $dbKey) {
             $resolvedKey = $this->resolveVersionedPreferenceKey($key, $apiKey, $dbKey);
             if ($resolvedKey !== null) {
@@ -264,11 +340,11 @@ class StaffPreferenceController extends Controller
 
         if (str_starts_with($key, self::API_KEY_SERVICE_VISIBLE_COLUMNS_PREFIX)) {
             $serviceKey = substr($key, strlen(self::API_KEY_SERVICE_VISIBLE_COLUMNS_PREFIX));
-            if ($serviceKey === '' || !preg_match('/^[a-z0-9-]+(?:\.v\d+)?$/', $serviceKey)) {
+            if ($serviceKey === '' || ! preg_match('/^[a-z0-9-]+(?:\.v\d+)?$/', $serviceKey)) {
                 return null;
             }
 
-            return self::DB_KEY_SERVICE_VISIBLE_COLUMNS_PREFIX . $serviceKey;
+            return self::DB_KEY_SERVICE_VISIBLE_COLUMNS_PREFIX.$serviceKey;
         }
 
         return null;
@@ -276,6 +352,14 @@ class StaffPreferenceController extends Controller
 
     private function normalizePreferenceValue(string $key, mixed $value): array
     {
+        if (str_starts_with($key, self::DB_KEY_DATATABLE_STATS_VISIBLE_PREFIX)) {
+            return $this->normalizeStatsVisibility($value);
+        }
+
+        if (str_starts_with($key, self::DB_KEY_DATATABLE_CONTROLS_VISIBLE_PREFIX)) {
+            return $this->normalizeStatsVisibility($value);
+        }
+
         if ($this->matchesVersionedPreferenceKey($key, self::DB_KEY_CRM_VISIBLE_COLUMNS)) {
             return $this->normalizeVisibleColumns(
                 $value,
@@ -369,6 +453,7 @@ class StaffPreferenceController extends Controller
                 $value,
                 self::TASK_MANAGER_TASK_VISIBLE_COLUMN_KEYS,
                 self::TASK_MANAGER_TASK_REQUIRED_VISIBLE_COLUMNS,
+                self::TASK_MANAGER_TASK_DEFAULT_VISIBLE_COLUMNS,
             );
         }
 
@@ -381,6 +466,16 @@ class StaffPreferenceController extends Controller
         }
 
         return [];
+    }
+
+    private function normalizeStatsVisibility(mixed $value): array
+    {
+        $input = is_array($value) ? $value : [];
+        $raw = $input['visible'] ?? true;
+
+        return [
+            'visible' => $this->coerceBoolean($raw),
+        ];
     }
 
     private function visibleColumnPreferenceKeys(): array
@@ -407,27 +502,33 @@ class StaffPreferenceController extends Controller
             return $dbKey;
         }
 
-        $pattern = '/^' . preg_quote($apiKey, '/') . '-v(\d+)$/';
+        $pattern = '/^'.preg_quote($apiKey, '/').'-v(\d+)$/';
         if (preg_match($pattern, $key, $matches) !== 1) {
             return null;
         }
 
-        return $dbKey . '.v' . $matches[1];
+        return $dbKey.'.v'.$matches[1];
     }
 
     private function matchesVersionedPreferenceKey(string $key, string $dbKey): bool
     {
-        return $key === $dbKey || preg_match('/^' . preg_quote($dbKey, '/') . '\.v\d+$/', $key) === 1;
+        return $key === $dbKey || preg_match('/^'.preg_quote($dbKey, '/').'\.v\d+$/', $key) === 1;
     }
 
-    private function normalizeVisibleColumns(mixed $value, array $allowedKeys, array $requiredKeys): array
-    {
+    private function normalizeVisibleColumns(
+        mixed $value,
+        array $allowedKeys,
+        array $requiredKeys,
+        array $defaultValues = []
+    ): array {
         $input = is_array($value) ? $value : [];
         $normalized = [];
 
         foreach ($allowedKeys as $columnKey) {
             $raw = $input[$columnKey] ?? null;
-            $normalized[$columnKey] = $raw === null ? true : $this->coerceBoolean($raw);
+            $normalized[$columnKey] = $raw === null
+                ? ($defaultValues[$columnKey] ?? true)
+                : $this->coerceBoolean($raw);
         }
 
         foreach ($requiredKeys as $columnKey) {

@@ -19,7 +19,7 @@ trait MonitoringStatsLegalComplianceHelpers
         $assessmentId = isset($context['assessmentId']) ? (int) $context['assessmentId'] : null;
 
         foreach ($this->monitoringLegalComplianceAssessmentRecords($start, $end, $assessmentId) as $record) {
-            if (!$this->monitoringLegalComplianceIsFreeAssessment($record)) {
+            if (! $this->monitoringLegalComplianceIsFreeAssessment($record)) {
                 continue;
             }
 
@@ -30,7 +30,7 @@ trait MonitoringStatsLegalComplianceHelpers
 
             foreach ($this->monitoringLegalComplianceAssessors($record) as $assessor) {
                 if (
-                    !empty($staffFilter['code']) &&
+                    ! empty($staffFilter['code']) &&
                     $this->monitoringLegalNormalizeStaffCode($assessor['staffCode'] ?? null) !== $staffFilter['code']
                 ) {
                     continue;
@@ -38,7 +38,7 @@ trait MonitoringStatsLegalComplianceHelpers
 
                 $events[] = [
                     'date' => $date,
-                    'key' => 'legal-compliance:' . (int) $record->id . ':assessor:' . $assessor['key'],
+                    'key' => 'legal-compliance:'.(int) $record->id.':assessor:'.$assessor['key'],
                     'segment' => 'individual',
                     'contributor' => $this->monitoringLegalComplianceContributor($record, $assessor, $date),
                 ];
@@ -78,18 +78,18 @@ trait MonitoringStatsLegalComplianceHelpers
             'monthEnd' => $end,
         ], $staffFilter) as $event) {
             $contributor = $event['contributor'] ?? [];
-            if (!is_array($contributor)) {
+            if (! is_array($contributor)) {
                 continue;
             }
 
             $record = $contributor['record'] ?? null;
-            if (!$record) {
+            if (! $record) {
                 continue;
             }
 
             $entry = $this->monitoringLegalComplianceEntryFromEvent($event, $record);
 
-            if ($search !== '' && !$this->monitoringLegalComplianceEntryMatchesSearch($entry, $search)) {
+            if ($search !== '' && ! $this->monitoringLegalComplianceEntryMatchesSearch($entry, $search)) {
                 continue;
             }
 
@@ -131,7 +131,7 @@ trait MonitoringStatsLegalComplianceHelpers
 
     private function monitoringLegalCompliancePipelineEntryById(Request $request, string $id): ?array
     {
-        if (!preg_match('/^legal-compliance:(\d+):assessor:.+$/', $id, $matches)) {
+        if (! preg_match('/^legal-compliance:(\d+):assessor:.+$/', $id, $matches)) {
             return null;
         }
 
@@ -143,7 +143,7 @@ trait MonitoringStatsLegalComplianceHelpers
             }
 
             $record = $event['contributor']['record'] ?? null;
-            if (!$record) {
+            if (! $record) {
                 return null;
             }
 
@@ -157,7 +157,7 @@ trait MonitoringStatsLegalComplianceHelpers
     {
         $options = [];
         foreach ($this->monitoringLegalComplianceAssessmentRecords(null, null) as $record) {
-            if (!$this->monitoringLegalComplianceIsFreeAssessment($record)) {
+            if (! $this->monitoringLegalComplianceIsFreeAssessment($record)) {
                 continue;
             }
 
@@ -170,7 +170,7 @@ trait MonitoringStatsLegalComplianceHelpers
                 $name = trim((string) ($assessor['staffName'] ?? ''));
                 $options[] = [
                     'value' => $code,
-                    'label' => trim($code . ($name !== '' ? ' - ' . $name : '')),
+                    'label' => trim($code.($name !== '' ? ' - '.$name : '')),
                 ];
             }
         }
@@ -180,7 +180,7 @@ trait MonitoringStatsLegalComplianceHelpers
 
     private function monitoringLegalComplianceAssessmentRecords(?string $start, ?string $end, ?int $assessmentId = null): array
     {
-        if (!$this->monitoringLegalComplianceAssessmentsReady()) {
+        if (! $this->monitoringLegalComplianceAssessmentsReady()) {
             return [];
         }
 
@@ -240,7 +240,7 @@ trait MonitoringStatsLegalComplianceHelpers
 
     private function monitoringLegalComplianceAssessmentsReady(): bool
     {
-        if (!Schema::hasTable('legal_compliance_assessments')) {
+        if (! Schema::hasTable('legal_compliance_assessments')) {
             return false;
         }
 
@@ -266,7 +266,7 @@ trait MonitoringStatsLegalComplianceHelpers
         ];
 
         foreach ($requiredColumns as $column) {
-            if (!Schema::hasColumn('legal_compliance_assessments', $column)) {
+            if (! Schema::hasColumn('legal_compliance_assessments', $column)) {
                 return false;
             }
         }
@@ -284,7 +284,7 @@ trait MonitoringStatsLegalComplianceHelpers
     private function monitoringLegalComplianceActivityDate($record): ?string
     {
         $rawDate = $record->assessment_date ?: $record->submitted_at;
-        if (!$rawDate) {
+        if (! $rawDate) {
             return null;
         }
 
@@ -302,7 +302,7 @@ trait MonitoringStatsLegalComplianceHelpers
         $assessors = [];
 
         foreach ($selected as $index => $option) {
-            if (!is_array($option)) {
+            if (! is_array($option)) {
                 continue;
             }
 
@@ -312,18 +312,18 @@ trait MonitoringStatsLegalComplianceHelpers
             }
         }
 
-        if (!empty($assessors)) {
+        if (! empty($assessors)) {
             return $assessors;
         }
 
         $creatorCode = $this->monitoringLegalNormalizeStaffCode($record->creator_staff_code ?? null);
         $creatorId = (int) ($record->staff_id ?? 0);
-        $fallbackKey = $creatorCode ?: ($creatorId > 0 ? 'staff-' . $creatorId : 'unassigned');
+        $fallbackKey = $creatorCode ?: ($creatorId > 0 ? 'staff-'.$creatorId : 'unassigned');
 
         return [[
             'key' => $fallbackKey,
             'staffId' => $creatorId > 0 ? $creatorId : null,
-            'staffCode' => $creatorCode ?: ($creatorId > 0 ? 'STAFF-' . $creatorId : ''),
+            'staffCode' => $creatorCode ?: ($creatorId > 0 ? 'STAFF-'.$creatorId : ''),
             'staffName' => trim((string) ($record->creator_staff_name ?? $record->assessor_name ?? '')),
             'email' => trim((string) ($record->assessor_email ?? '')),
         ]];
@@ -346,7 +346,7 @@ trait MonitoringStatsLegalComplianceHelpers
         ));
         $email = trim((string) ($data['email'] ?? $data['staff_email'] ?? ''));
         $label = trim((string) ($option['label'] ?? ''));
-        $key = $staffCode ?: ($staffId > 0 ? 'staff-' . $staffId : md5($label . '|' . $email . '|' . $index));
+        $key = $staffCode ?: ($staffId > 0 ? 'staff-'.$staffId : md5($label.'|'.$email.'|'.$index));
 
         if ($staffName === '' && $label !== '') {
             $staffName = preg_replace('/\s+-\s+.*$/', '', $label) ?: $label;
@@ -360,7 +360,7 @@ trait MonitoringStatsLegalComplianceHelpers
         return [
             'key' => $key,
             'staffId' => $staffId > 0 ? $staffId : null,
-            'staffCode' => $staffCode ?: ($staffId > 0 ? 'STAFF-' . $staffId : ''),
+            'staffCode' => $staffCode ?: ($staffId > 0 ? 'STAFF-'.$staffId : ''),
             'staffName' => $staffName,
             'email' => $email,
         ];
@@ -392,7 +392,7 @@ trait MonitoringStatsLegalComplianceHelpers
 
         return [
             'sourceType' => 'legal_compliance',
-            'sourceId' => 'legal-compliance-assessment:' . (int) ($record->id ?? 0) . ':assessor:' . $assessor['key'],
+            'sourceId' => 'legal-compliance-assessment:'.(int) ($record->id ?? 0).':assessor:'.$assessor['key'],
             'eventType' => 'meeting_pitching',
             'date' => $date,
             'clientName' => trim((string) ($record->company_name ?? '')),

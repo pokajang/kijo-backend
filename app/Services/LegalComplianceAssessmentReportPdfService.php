@@ -10,6 +10,7 @@ class LegalComplianceAssessmentReportPdfService extends PdfRenderer
 {
     public function __construct(
         private AuditLogService $auditLog,
+        private LegalComplianceAssessmentSnapshotService $snapshotService,
     ) {}
 
     public function export(Request $request, int $id)
@@ -55,7 +56,8 @@ class LegalComplianceAssessmentReportPdfService extends PdfRenderer
             ], 422);
         }
 
-        $templateSnapshot = $this->resolveRecordTemplateSnapshot($record);
+        $snapshotResolution = $this->snapshotService->resolve($record);
+        $templateSnapshot = $snapshotResolution['snapshot'];
         $clauseResponses = json_decode((string) $record->clause_responses, true) ?: [];
         $selectedAssessors = json_decode((string) $record->selected_assessors, true) ?: [];
         $generatedAt = now();
@@ -65,6 +67,8 @@ class LegalComplianceAssessmentReportPdfService extends PdfRenderer
         $html = view('pdf.legal-compliance-assessment-report', [
             'record' => $record,
             'templateSnapshot' => $templateSnapshot,
+            'templateSnapshotUnresolved' => (bool) $snapshotResolution['unresolved'],
+            'templateSnapshotResolutionSource' => $snapshotResolution['source'],
             'groups' => $templateSnapshot['groups'] ?? [],
             'clauseResponses' => $clauseResponses,
             'selectedAssessors' => $selectedAssessors,
@@ -89,45 +93,15 @@ class LegalComplianceAssessmentReportPdfService extends PdfRenderer
             || $this->hasAnyRole($request, ['Manager', 'System Admin']);
     }
 
-    private function resolveRecordTemplateSnapshot(object $record): array
-    {
-        $snapshot = json_decode((string) ($record->template_snapshot ?? ''), true) ?: [];
-        if (! empty($snapshot['groups']) && is_array($snapshot['groups'])) {
-            return $snapshot;
-        }
-
-        $templateVersion = ! empty($record->template_version_id)
-            ? DB::table('legal_compliance_template_versions')
-                ->where('id', $record->template_version_id)
-                ->first()
-            : null;
-
-        if (! $templateVersion && ! empty($record->template_id)) {
-            $templateVersion = DB::table('legal_compliance_templates as templates')
-                ->join('legal_compliance_template_versions as versions', 'versions.id', '=', 'templates.active_version_id')
-                ->where('templates.id', $record->template_id)
-                ->select('versions.*')
-                ->first();
-        }
-
-        if (! $templateVersion) {
-            $templateVersion = DB::table('legal_compliance_templates as templates')
-                ->join('legal_compliance_template_versions as versions', 'versions.id', '=', 'templates.active_version_id')
-                ->where('templates.is_default', true)
-                ->select('versions.*')
-                ->first();
-        }
-
-        return $templateVersion
-            ? (json_decode((string) $templateVersion->content, true) ?: [])
-            : $snapshot;
-    }
-
     private function hasAnyRole(Request $request, array $allowedRoles): bool
     {
         $roles = $request->attributes->get('auth.roles', $request->session()->get('roles', []));
         $roles = is_array($roles) ? $roles : [$roles];
         $normalizedRoles = array_map(static fn ($role) => strtolower(trim((string) $role)), $roles);
+        if (in_array('system admin', $normalizedRoles, true)) {
+            return true;
+        }
+
         $normalizedAllowed = array_map(static fn ($role) => strtolower(trim((string) $role)), $allowedRoles);
 
         return ! empty(array_intersect($normalizedRoles, $normalizedAllowed));

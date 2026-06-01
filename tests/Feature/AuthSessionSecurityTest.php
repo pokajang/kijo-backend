@@ -141,16 +141,44 @@ class AuthSessionSecurityTest extends TestCase
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->postJson('/auth/password', [
                 'currentPassword' => 'old-password',
-                'newPassword' => 'new-password',
-                'confirmPassword' => 'new-password',
+                'newPassword' => 'new-password-123',
+                'confirmPassword' => 'new-password-123',
             ])
             ->assertOk()
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('csrf_token', fn (mixed $value): bool => is_string($value) && $value !== '');
 
         $hash = (string) DB::table('system_users')->where('id', 1)->value('password_hash');
-        $this->assertTrue(password_verify('new-password', $hash));
+        $this->assertTrue(password_verify('new-password-123', $hash));
         $this->assertDatabaseMissing('sessions', ['id' => 'other-session-id']);
+    }
+
+    public function test_password_update_rejects_short_new_password(): void
+    {
+        $this->withSession($this->sessionPayload(['Staff']))
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/auth/password', [
+                'currentPassword' => 'old-password',
+                'newPassword' => 'short',
+                'confirmPassword' => 'short',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('status', 'error')
+            ->assertJsonValidationErrors(['newPassword']);
+    }
+
+    public function test_password_update_rejects_incorrect_current_password(): void
+    {
+        $this->withSession($this->sessionPayload(['Staff']))
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/auth/password', [
+                'currentPassword' => 'wrong-password',
+                'newPassword' => 'new-password-123',
+                'confirmPassword' => 'new-password-123',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('status', 'error')
+            ->assertJsonValidationErrors(['currentPassword']);
     }
 
     private function sessionPayload(array $roles): array

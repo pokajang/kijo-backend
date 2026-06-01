@@ -2,11 +2,7 @@
 
 namespace App\Services\Tasks;
 
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
 class TaskService
@@ -31,6 +27,11 @@ class TaskService
         return app(TaskPdfService::class);
     }
 
+    private function taskClassificationService(): TaskClassificationService
+    {
+        return app(TaskClassificationService::class);
+    }
+
     public function getAllTasks(Request $request)
     {
         return $this->taskQueryService()->getAllTasks($request);
@@ -49,6 +50,29 @@ class TaskService
     public function createTasksBatch(Request $request)
     {
         return $this->taskMutationService()->createTasksBatch($request);
+    }
+
+    public function classifyTask(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'title' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Invalid input: title must be 255 characters or fewer.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $title = trim((string) ($validator->validated()['title'] ?? ''));
+        $classification = $this->taskClassificationService()->classifyTitle($title);
+
+        return response()->json([
+            'status' => 'success',
+            'classification' => $this->taskClassificationService()->toResponse($classification),
+        ]);
     }
 
     public function markCompleted(Request $request)
@@ -75,5 +99,4 @@ class TaskService
     {
         return $this->taskPdfService()->exportPersonalTasksPdf($request);
     }
-
 }

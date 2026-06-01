@@ -30,6 +30,8 @@ class TrainingQuoteRecordListingService
                 created_by_name,
                 created_by_code,
                 attach_proposal,
+                proposal_id,
+                proposal_language,
                 client_id,
                 training_id,
                 client_name,
@@ -132,6 +134,7 @@ class TrainingQuoteRecordListingService
         }
 
         ProjectOutcomeSummary::attach($quotes, $awardHistory);
+        QuoteRecordProposalPayload::attach($quotes, 'training');
 
         return response()->json([
             'status' => 'success',

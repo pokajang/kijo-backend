@@ -3,10 +3,9 @@
 namespace App\Services\Stats;
 
 use App\Services\Monitoring\ManualPipelineEntryService;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -16,13 +15,15 @@ class MonitoringManualStatsService
 
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -67,7 +68,7 @@ class MonitoringManualStatsService
     public function monitoringManualPipelineEntries(Request $request): JsonResponse
     {
         try {
-            if (!$this->manualPipelineEntryService()->entriesTableReady()) {
+            if (! $this->manualPipelineEntryService()->entriesTableReady()) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Manual monitoring entries table is not available.',
@@ -76,7 +77,7 @@ class MonitoringManualStatsService
 
             [$start, $end] = $this->parseDates($request);
             $staffFilter = $this->monitoringStaffFilter($request);
-            if (!empty($staffFilter['forbidden'])) {
+            if (! empty($staffFilter['forbidden'])) {
                 return $this->monitoringStaffForbiddenResponse();
             }
 
@@ -101,6 +102,7 @@ class MonitoringManualStatsService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -108,7 +110,7 @@ class MonitoringManualStatsService
     public function monitoringManualPipelineEntry(Request $request): JsonResponse
     {
         try {
-            if (!$this->manualPipelineEntryService()->entriesTableReady()) {
+            if (! $this->manualPipelineEntryService()->entriesTableReady()) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Manual monitoring entries table is not available.',
@@ -137,6 +139,7 @@ class MonitoringManualStatsService
                 : response()->json(['status' => 'error', 'message' => 'Pipeline entry not found.'], 404);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -169,9 +172,9 @@ class MonitoringManualStatsService
             ")
             ->orderBy('staff_code')
             ->get()
-            ->map(fn($row) => [
+            ->map(fn ($row) => [
                 'value' => strtoupper((string) $row->staff_code),
-                'label' => trim(strtoupper((string) $row->staff_code) . ' - ' . $row->staff_name),
+                'label' => trim(strtoupper((string) $row->staff_code).' - '.$row->staff_name),
             ])
             ->all();
 
@@ -189,7 +192,7 @@ class MonitoringManualStatsService
             foreach ($callStaff as $row) {
                 $options[] = [
                     'value' => strtoupper((string) $row->staff_code),
-                    'label' => trim(strtoupper((string) $row->staff_code) . ' - ' . $row->staff_name),
+                    'label' => trim(strtoupper((string) $row->staff_code).' - '.$row->staff_name),
                 ];
             }
         }
@@ -207,7 +210,7 @@ class MonitoringManualStatsService
             foreach ($manualStaff as $row) {
                 $options[] = [
                     'value' => strtoupper((string) $row->staff_code),
-                    'label' => trim(strtoupper((string) $row->staff_code) . ' - ' . $row->staff_name),
+                    'label' => trim(strtoupper((string) $row->staff_code).' - '.$row->staff_name),
                 ];
             }
         }
@@ -217,7 +220,7 @@ class MonitoringManualStatsService
         }
 
         $options = collect($options)
-            ->filter(fn($option) => trim((string) ($option['value'] ?? '')) !== '')
+            ->filter(fn ($option) => trim((string) ($option['value'] ?? '')) !== '')
             ->unique('value')
             ->sortBy('value')
             ->values()
@@ -233,11 +236,11 @@ class MonitoringManualStatsService
         }
 
         $ownOptions = collect($options)
-            ->filter(fn($option) => strtoupper((string) ($option['value'] ?? '')) === $sessionStaffCode)
+            ->filter(fn ($option) => strtoupper((string) ($option['value'] ?? '')) === $sessionStaffCode)
             ->values()
             ->all();
 
-        if (!empty($ownOptions)) {
+        if (! empty($ownOptions)) {
             return $ownOptions;
         }
 
@@ -245,7 +248,7 @@ class MonitoringManualStatsService
 
         return [[
             'value' => $sessionStaffCode,
-            'label' => trim($sessionStaffCode . ($sessionStaffName !== '' ? ' - ' . $sessionStaffName : '')),
+            'label' => trim($sessionStaffCode.($sessionStaffName !== '' ? ' - '.$sessionStaffName : '')),
         ]];
     }
 
@@ -254,7 +257,7 @@ class MonitoringManualStatsService
         $code = $this->normalizeStaffCode($request->input('staff_code'));
         $canViewOthers = $this->canViewOtherMonitoringStaff($request);
 
-        if ($code === null && !$canViewOthers) {
+        if ($code === null && ! $canViewOthers) {
             $code = $this->monitoringSessionStaffCode($request);
             if ($code === null) {
                 return ['code' => null, 'staffId' => null, 'forbidden' => true];
@@ -265,7 +268,7 @@ class MonitoringManualStatsService
             return ['code' => null, 'staffId' => null, 'forbidden' => false];
         }
 
-        if (!$canViewOthers) {
+        if (! $canViewOthers) {
             $sessionStaffCode = $this->monitoringSessionStaffCode($request);
             if ($sessionStaffCode === null || $sessionStaffCode !== $code) {
                 return ['code' => $code, 'staffId' => null, 'forbidden' => true];
@@ -311,7 +314,7 @@ class MonitoringManualStatsService
         // source rows exist. Normalize first so every downstream KPI aggregates on
         // one quote fact instead of raw joined rows.
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -324,7 +327,7 @@ class MonitoringManualStatsService
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');
@@ -349,7 +352,7 @@ class MonitoringManualStatsService
 
     private function monitoringManualPipelineEntriesReady(): bool
     {
-        if (!Schema::hasTable('monitoring_manual_pipeline_entries')) {
+        if (! Schema::hasTable('monitoring_manual_pipeline_entries')) {
             return false;
         }
 
@@ -373,7 +376,7 @@ class MonitoringManualStatsService
         ];
 
         foreach ($requiredColumns as $column) {
-            if (!Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
+            if (! Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
                 return false;
             }
         }
@@ -414,12 +417,12 @@ class MonitoringManualStatsService
     private function monitoringSessionRoles(Request $request): array
     {
         $roles = $request->session()->get('roles', []);
-        if (!is_array($roles)) {
+        if (! is_array($roles)) {
             $roles = $roles ? [$roles] : [];
         }
 
         return array_values(array_filter(array_map(
-            static fn($role) => trim((string) $role),
+            static fn ($role) => trim((string) $role),
             $roles
         )));
     }

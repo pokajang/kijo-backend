@@ -2,32 +2,29 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 class MonitoringStaffOptionsService
 {
     use MonitoringStatsCoreHelpers;
+    use MonitoringStatsDetailHelpers;
+    use MonitoringStatsEventHelpers;
+    use MonitoringStatsLegalComplianceHelpers;
     use MonitoringStatsManualHelpers;
     use MonitoringStatsStaffHelpers;
-    use MonitoringStatsEventHelpers;
-    use MonitoringStatsDetailHelpers;
-    use MonitoringStatsLegalComplianceHelpers;
 
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -68,8 +65,8 @@ class MonitoringStaffOptionsService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
-
 }

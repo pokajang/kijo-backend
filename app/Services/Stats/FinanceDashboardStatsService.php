@@ -2,11 +2,8 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -14,13 +11,15 @@ class FinanceDashboardStatsService
 {
     /**
      * Dashboard metric contract:
-     * - Sales uses award_date for system AWARDED/WON quote facts plus revenue-complete manual closed entries.
+     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.
      */
     private const MONITORING_YEARLY_TARGET = 3400000.0;
+
     private const MONITORING_INDIVIDUAL_TARGET = 860000.0;
+
     private const MONITORING_DETAIL_LIMIT = 1000;
 
     private const MONITORING_PIPELINE_TOOL_ROWS = [
@@ -57,23 +56,31 @@ class FinanceDashboardStatsService
         [$start, $end] = $this->parseDates($request);
         try {
             $invQ = DB::table('invoices')->where('status', '!=', 'Cancelled');
-            if ($start && $end) $invQ->whereBetween(DB::raw('DATE(invoice_date)'), [$start, $end]);
+            if ($start && $end) {
+                $invQ->whereBetween(DB::raw('DATE(invoice_date)'), [$start, $end]);
+            }
             $totalInvoiced = (float) ($invQ->sum('grand_total') ?? 0);
             if ($this->manualDebtorsTableReady()) {
                 $manualInvoicedQ = DB::table('manual_debtors')
                     ->whereRaw("LOWER(TRIM(COALESCE(status, 'open'))) NOT IN ('cancelled', 'canceled', 'void')");
-                if ($start && $end) $manualInvoicedQ->whereBetween(DB::raw('DATE(invoice_date)'), [$start, $end]);
+                if ($start && $end) {
+                    $manualInvoicedQ->whereBetween(DB::raw('DATE(invoice_date)'), [$start, $end]);
+                }
                 $totalInvoiced += (float) ($manualInvoicedQ->sum('grand_total') ?? 0);
             }
 
             $paidQ = DB::table('invoices')->where('status', 'Paid')->whereNotNull('paid_date');
-            if ($start && $end) $paidQ->whereBetween(DB::raw('DATE(paid_date)'), [$start, $end]);
+            if ($start && $end) {
+                $paidQ->whereBetween(DB::raw('DATE(paid_date)'), [$start, $end]);
+            }
             $totalReceived = (float) ($paidQ->sum('paid_amount') ?? 0);
             if ($this->manualDebtorsTableReady()) {
                 $manualPaidQ = DB::table('manual_debtors')
                     ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) = 'paid'")
                     ->whereNotNull('paid_date');
-                if ($start && $end) $manualPaidQ->whereBetween(DB::raw('DATE(paid_date)'), [$start, $end]);
+                if ($start && $end) {
+                    $manualPaidQ->whereBetween(DB::raw('DATE(paid_date)'), [$start, $end]);
+                }
                 $totalReceived += (float) ($manualPaidQ->sum('paid_amount') ?? 0);
             }
 
@@ -99,16 +106,21 @@ class FinanceDashboardStatsService
                 $outstandingCount += (int) ($manualOpenInvoiceCountQ->count() ?? 0);
             }
 
+            $uninvoicedAwarded = $this->uninvoicedAwardedProjectTotals($asOfDate);
+
             return response()->json([
-                'status'            => 'success',
-                'totalInvoiced'     => $totalInvoiced,
-                'totalReceived'     => $totalReceived,
+                'status' => 'success',
+                'totalInvoiced' => $totalInvoiced,
+                'totalReceived' => $totalReceived,
                 'outstandingAmount' => $outstandingAmount,
-                'outstandingCount'  => $outstandingCount,
-                'asOfDate'          => $asOfDate,
+                'outstandingCount' => $outstandingCount,
+                'uninvoicedAwardedAmount' => $uninvoicedAwarded['amount'],
+                'uninvoicedAwardedCount' => $uninvoicedAwarded['count'],
+                'asOfDate' => $asOfDate,
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -241,14 +253,15 @@ class FinanceDashboardStatsService
             $systemRows = $query->get()->map(function ($row) {
                 $row->client_name = (string) ($row->client_name ?? '') !== ''
                     ? $row->client_name
-                    : 'Client #' . (string) ($row->client_id ?? '');
+                    : 'Client #'.(string) ($row->client_id ?? '');
                 $row->project_name = (string) ($row->project_name ?? '') !== ''
                     ? $row->project_name
-                    : 'Project #' . (string) ($row->project_id ?? '');
+                    : 'Project #'.(string) ($row->project_id ?? '');
                 $row->source_type = 'invoice';
                 $row->sourceType = 'invoice';
                 $row->source_id = (int) $row->id;
                 $row->sourceId = (int) $row->id;
+
                 return $row;
             });
 
@@ -283,20 +296,22 @@ class FinanceDashboardStatsService
                         $row->sourceType = 'manual';
                         $row->source_id = (int) $row->id;
                         $row->sourceId = (int) $row->id;
+
                         return $row;
                     });
             }
 
             return response()->json([
-                'status'   => 'success',
+                'status' => 'success',
                 'asOfDate' => $asOfDate,
-                'debtors'  => $systemRows
+                'debtors' => $systemRows
                     ->merge($manualRows)
                     ->sortBy(fn ($row) => (string) ($row->invoice_date ?? ''))
                     ->values(),
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -339,6 +354,46 @@ class FinanceDashboardStatsService
             'manualInvoiceCount' => 0,
             'systemReceivedCount' => 0,
             'manualReceivedCount' => 0,
+        ];
+    }
+
+    private function realizedSalesProjectQuery(): RealizedSalesProjectQuery
+    {
+        return app(RealizedSalesProjectQuery::class);
+    }
+
+    private function uninvoicedAwardedProjectTotals(string $asOfDate): array
+    {
+        $realizedQuery = $this->realizedSalesProjectQuery();
+        $invoiceTotals = DB::table('invoices')
+            ->selectRaw('project_id, SUM(COALESCE(grand_total, 0)) AS invoiced_total')
+            ->whereNotNull('project_id')
+            ->whereDate('invoice_date', '<=', $asOfDate)
+            ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) NOT IN ('cancelled', 'canceled', 'void')")
+            ->groupBy('project_id');
+
+        $remainingProjects = $realizedQuery->projectFacts()
+            ->leftJoinSub($invoiceTotals, 'project_invoices', 'project_facts.project_id', '=', 'project_invoices.project_id')
+            ->selectRaw('
+                CASE
+                    WHEN COALESCE(project_facts.value, 0) - COALESCE(project_invoices.invoiced_total, 0) > 0
+                    THEN COALESCE(project_facts.value, 0) - COALESCE(project_invoices.invoiced_total, 0)
+                    ELSE 0
+                END AS remaining_value
+            ')
+            ->whereRaw($realizedQuery->realizedStatusPredicate('project_facts.project_status'))
+            ->whereNotNull('project_facts.award_date')
+            ->whereDate('project_facts.award_date', '<=', $asOfDate);
+
+        $totals = DB::query()
+            ->fromSub($remainingProjects, 'remaining_projects')
+            ->selectRaw('COALESCE(SUM(remaining_value), 0) AS amount, COUNT(*) AS count')
+            ->where('remaining_value', '>', 0)
+            ->first();
+
+        return [
+            'amount' => (float) ($totals->amount ?? 0),
+            'count' => (int) ($totals->count ?? 0),
         ];
     }
 

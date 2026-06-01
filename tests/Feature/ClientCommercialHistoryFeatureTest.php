@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Http\Middleware\RequireAuth;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -14,9 +17,9 @@ class ClientCommercialHistoryFeatureTest extends TestCase
         parent::setUp();
 
         $this->withoutMiddleware([
-            \App\Http\Middleware\RequireAuth::class,
-            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
-            \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+            RequireAuth::class,
+            ValidateCsrfToken::class,
+            VerifyCsrfToken::class,
         ]);
 
         $this->createTables();
@@ -36,7 +39,7 @@ class ClientCommercialHistoryFeatureTest extends TestCase
         $this->assertSame(1000.0, (float) $data['summary']['awarded_value']);
         $this->assertSame(1100.0, (float) $data['summary']['invoiced_total']);
         $this->assertSame(750.0, (float) $data['summary']['received_total']);
-        $this->assertSame(475.0, (float) $data['summary']['actual_profit']);
+        $this->assertSame(525.0, (float) $data['summary']['actual_profit']);
 
         $payments = collect($data['payments']);
         $this->assertCount(2, $payments);
@@ -153,13 +156,18 @@ class ClientCommercialHistoryFeatureTest extends TestCase
             $table->integer('project_id')->nullable();
             $table->decimal('amount', 15, 2)->nullable();
             $table->string('status')->nullable();
+            $table->date('paid_date')->nullable();
+            $table->dateTime('date_approved')->nullable();
+            $table->timestamp('created_at')->nullable();
             $table->timestamp('deleted_at')->nullable();
         });
 
         Schema::create('project_expenses', function (Blueprint $table): void {
             $table->increments('id');
             $table->integer('project_id')->nullable();
+            $table->date('date')->nullable();
             $table->decimal('amount', 15, 2)->nullable();
+            $table->timestamp('created_at')->nullable();
         });
 
         foreach (['quotes_training', 'quotes_equipment'] as $tableName) {
@@ -208,12 +216,13 @@ class ClientCommercialHistoryFeatureTest extends TestCase
         ]);
 
         DB::table('vendor_payments')->insert([
-            ['project_id' => 10, 'amount' => 200, 'status' => 'Approved', 'deleted_at' => null],
-            ['project_id' => 11, 'amount' => 50, 'status' => 'Paid', 'deleted_at' => null],
+            ['project_id' => 10, 'amount' => 200, 'status' => 'Approved', 'paid_date' => null, 'date_approved' => '2026-05-09 10:00:00', 'created_at' => '2026-05-08 10:00:00', 'deleted_at' => null],
+            ['project_id' => 11, 'amount' => 50, 'status' => 'Paid', 'paid_date' => '2026-04-20', 'date_approved' => '2026-04-19 10:00:00', 'created_at' => '2026-04-18 10:00:00', 'deleted_at' => null],
         ]);
 
         DB::table('project_expenses')->insert([
-            ['project_id' => 10, 'amount' => 25],
+            ['project_id' => 10, 'date' => '2026-05-14', 'amount' => 25, 'created_at' => '2026-05-14 10:00:00'],
+            ['project_id' => 11, 'date' => '2026-04-14', 'amount' => 10, 'created_at' => '2026-04-14 10:00:00'],
         ]);
     }
 }

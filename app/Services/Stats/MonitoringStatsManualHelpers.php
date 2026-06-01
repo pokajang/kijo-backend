@@ -2,11 +2,6 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -20,7 +15,7 @@ trait MonitoringStatsManualHelpers
             'rows' => [],
         ];
 
-        if (!$this->monitoringManualPipelineEntriesReady()) {
+        if (! $this->monitoringManualPipelineEntriesReady()) {
             return $empty;
         }
 
@@ -29,7 +24,7 @@ trait MonitoringStatsManualHelpers
             ->orderByDesc('entry_date')
             ->orderByDesc('id');
 
-        if (!empty($staffFilter['code'])) {
+        if (! empty($staffFilter['code'])) {
             $query->whereRaw('UPPER(owner_staff_code) = ?', [$staffFilter['code']]);
         }
 
@@ -50,7 +45,7 @@ trait MonitoringStatsManualHelpers
             );
             $event = [
                 'date' => (string) $entry->entry_date,
-                'key' => 'manual:' . $entry->entry_type . ':' . (int) $entry->id,
+                'key' => 'manual:'.$entry->entry_type.':'.(int) $entry->id,
                 'segment' => $segment,
                 'contributor' => $contributor,
             ];
@@ -58,15 +53,17 @@ trait MonitoringStatsManualHelpers
                 $event['value'] = $estimatedRm;
             }
 
-            if ($label !== null) {
+            $isCompleteClosedRevenue = (string) $entry->entry_type === 'closed'
+                && $this->isMonitoringManualClosedRevenueComplete($entry);
+
+            if ($label !== null && ($label !== 'CLOSED' || $isCompleteClosedRevenue)) {
                 $events[$label][] = $event;
             }
 
             $serviceLabel = $this->monitoringManualServiceCategoryToStatusLabel($entry->service_category);
             if (
                 $serviceLabel !== null &&
-                (string) $entry->entry_type === 'closed' &&
-                $this->isMonitoringManualClosedRevenueComplete($entry)
+                $isCompleteClosedRevenue
             ) {
                 $serviceEvents[$serviceLabel][] = $event;
             }
@@ -81,7 +78,7 @@ trait MonitoringStatsManualHelpers
                 'serviceCategory' => (string) ($this->normalizeMonitoringManualServiceCategory($entry->service_category) ?? ''),
                 'estimatedRm' => $estimatedRm,
                 'notes' => (string) ($entry->notes ?? ''),
-                'photoUrl' => !empty($entry->photo_path)
+                'photoUrl' => ! empty($entry->photo_path)
                     ? $this->monitoringManualEntryPhotoUrl((int) $entry->id)
                     : null,
                 'photoOriginalName' => (string) ($entry->photo_original_name ?? ''),
@@ -100,7 +97,7 @@ trait MonitoringStatsManualHelpers
 
     private function monitoringManualPipelineEntriesReady(): bool
     {
-        if (!Schema::hasTable('monitoring_manual_pipeline_entries')) {
+        if (! Schema::hasTable('monitoring_manual_pipeline_entries')) {
             return false;
         }
 
@@ -124,7 +121,7 @@ trait MonitoringStatsManualHelpers
         ];
 
         foreach ($requiredColumns as $column) {
-            if (!Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
+            if (! Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
                 return false;
             }
         }
@@ -145,7 +142,7 @@ trait MonitoringStatsManualHelpers
     {
         return [
             'sourceType' => 'manual',
-            'sourceId' => 'manual:' . (string) ($entry->entry_type ?? '') . ':' . (int) ($entry->id ?? 0),
+            'sourceId' => 'manual:'.(string) ($entry->entry_type ?? '').':'.(int) ($entry->id ?? 0),
             'eventType' => $label,
             'date' => (string) $entry->entry_date,
             'clientName' => $this->monitoringCleanText($entry->prospect_name ?? ''),
@@ -157,7 +154,7 @@ trait MonitoringStatsManualHelpers
             'ownerStaffCode' => $this->monitoringCleanText($entry->owner_staff_code ?? ''),
             'ownerStaffName' => $this->monitoringCleanText($entry->owner_staff_name ?? ''),
             'segment' => $classification ?: 'individual',
-            'photoUrl' => !empty($entry->photo_path)
+            'photoUrl' => ! empty($entry->photo_path)
                 ? $this->monitoringManualEntryPhotoUrl((int) $entry->id)
                 : null,
             'photoOriginalName' => $this->monitoringCleanText($entry->photo_original_name ?? ''),
@@ -166,7 +163,7 @@ trait MonitoringStatsManualHelpers
 
     private function monitoringManualEntryPhotoUrl(int $id): string
     {
-        return url('stats/monitoring-manual-pipeline-entry/' . $id . '/photo');
+        return url('stats/monitoring-manual-pipeline-entry/'.$id.'/photo');
     }
 
     private function monitoringManualEntryTypeToToolLabel(string $entryType): ?string

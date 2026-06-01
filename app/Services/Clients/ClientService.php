@@ -8,10 +8,8 @@ use App\Http\Requests\Client\StoreClientRequest;
 use App\Http\Requests\Client\UnassignClientPicRequest;
 use App\Http\Requests\Client\UpdateClientPicRequest;
 use App\Http\Requests\Client\UpdateClientRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class ClientService
 {
@@ -73,6 +71,11 @@ class ClientService
     public function commercialHistory(Request $request, int $companyId): JsonResponse
     {
         return $this->clientCommercialHistoryService()->show($request, $companyId);
+    }
+
+    public function refreshStatusFromInvoices(Request $request): JsonResponse
+    {
+        return $this->clientCompanyService()->refreshStatusFromInvoices($request);
     }
 
     public function vendorRegistrations(Request $request): JsonResponse
@@ -154,5 +157,4 @@ class ClientService
     {
         return $this->clientPicService()->deleteUnassignedPic($request, $picId);
     }
-
 }

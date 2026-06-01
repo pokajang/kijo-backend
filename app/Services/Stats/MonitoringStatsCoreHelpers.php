@@ -2,16 +2,19 @@
 
 namespace App\Services\Stats;
 
-use App\Services\Monitoring\ManualPipelineEntryService;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 trait MonitoringStatsCoreHelpers
 {
+    private function realizedSalesProjectQuery(): RealizedSalesProjectQuery
+    {
+        return app(RealizedSalesProjectQuery::class);
+    }
+
     private function baseQuoteLifecycleQuery(): Builder
     {
         $training = DB::table('quotes_training')->selectRaw("
@@ -126,12 +129,127 @@ trait MonitoringStatsCoreHelpers
     private function monitoringMonthContext(Request $request): array
     {
         [$start, $end] = $this->parseDates($request);
-        $anchorDate = Carbon::parse($end ?: $start ?: now()->format('Y-m-d'));
+        $period = trim((string) $request->input('period', ''));
+
+        if ($period === 'allTime' && ! $start && ! $end) {
+            [$start, $end] = $this->monitoringAvailableDateRange();
+        }
+
+        if (! $start && ! $end) {
+            $end = now()->format('Y-m-d');
+            $start = Carbon::parse($end)->startOfYear()->format('Y-m-d');
+        } elseif (! $start) {
+            $start = Carbon::parse($end)->startOfMonth()->format('Y-m-d');
+        } elseif (! $end) {
+            $end = Carbon::parse($start)->endOfMonth()->format('Y-m-d');
+        }
+
+        $rangeStart = Carbon::parse($start)->startOfDay();
+        $rangeEnd = Carbon::parse($end)->startOfDay();
+        if ($rangeStart->gt($rangeEnd)) {
+            [$rangeStart, $rangeEnd] = [$rangeEnd, $rangeStart];
+        }
+
+        $anchorDate = $rangeEnd->copy();
         $monthStart = $anchorDate->copy()->startOfMonth();
         $monthEnd = $anchorDate->copy()->endOfMonth();
+        $periodColumns = $this->monitoringPeriodColumns($rangeStart, $rangeEnd);
+        $weeks = array_values(array_filter(
+            $periodColumns,
+            static fn (array $column) => ($column['type'] ?? null) === 'week'
+        ));
 
-        $weeks = [];
+        $today = Carbon::today();
+        $yearToDateEnd = $monthStart->isSameMonth($today)
+            ? $today->min($monthEnd)->format('Y-m-d')
+            : $monthEnd->format('Y-m-d');
+
+        return [
+            'monthLabel' => strtoupper($monthStart->format('F Y')),
+            'monthStart' => $rangeStart->format('Y-m-d'),
+            'monthEnd' => $rangeEnd->format('Y-m-d'),
+            'anchorMonth' => $monthStart->format('Y-m'),
+            'anchorMonthStart' => $monthStart->format('Y-m-d'),
+            'anchorMonthEnd' => $monthEnd->format('Y-m-d'),
+            'rangeStart' => $rangeStart->format('Y-m-d'),
+            'rangeEnd' => $rangeEnd->format('Y-m-d'),
+            'rangeLabel' => $this->monitoringRangeLabel($rangeStart, $rangeEnd, $period),
+            'yearToDateEnd' => $yearToDateEnd,
+            'yearStart' => $monthStart->copy()->startOfYear()->format('Y-m-d'),
+            'weeks' => $weeks,
+            'periodColumns' => $periodColumns,
+        ];
+    }
+
+    private function monitoringRangeLabel(Carbon $start, Carbon $end, string $period): string
+    {
+        return match ($period) {
+            'previousMonth' => 'Previous Month',
+            'currentMonth' => 'Current Month',
+            'currentYear' => 'Current Year',
+            '3months' => 'Last 3 Months',
+            '6months' => 'Last 6 Months',
+            'allTime' => 'All Time',
+            default => $start->isSameDay($end)
+                ? $start->format('j M Y')
+                : $start->format('j M Y').' - '.$end->format('j M Y'),
+        };
+    }
+
+    private function monitoringPeriodColumns(Carbon $rangeStart, Carbon $rangeEnd): array
+    {
+        $columns = [];
+        $firstMonth = $rangeStart->copy()->startOfMonth();
+        $anchorMonth = $rangeEnd->copy()->startOfMonth();
+        $monthCount = (int) $firstMonth->diffInMonths($anchorMonth) + 1;
+        $cursor = $firstMonth->copy();
+
+        while ($cursor->lte($anchorMonth)) {
+            $monthStart = $cursor->copy()->startOfMonth();
+            $monthEnd = $cursor->copy()->endOfMonth();
+            $columnStart = $monthStart->copy()->max($rangeStart);
+            $columnEnd = $monthEnd->copy()->min($rangeEnd);
+
+            if ($monthCount <= 2 || $cursor->isSameMonth($anchorMonth)) {
+                $columns = array_merge(
+                    $columns,
+                    $this->monitoringWeekColumnsForMonth(
+                        $monthStart,
+                        $monthEnd,
+                        $rangeStart,
+                        $rangeEnd,
+                        $monthCount === 1
+                    )
+                );
+            } elseif ($columnStart->lte($columnEnd)) {
+                $columns[] = [
+                    'key' => 'month-'.$cursor->format('Y-m'),
+                    'type' => 'month',
+                    'label' => $cursor->format('M Y'),
+                    'groupLabel' => 'Monthly',
+                    'rangeLabel' => $this->monitoringColumnRangeLabel($columnStart, $columnEnd),
+                    'start' => $columnStart->format('Y-m-d'),
+                    'end' => $columnEnd->format('Y-m-d'),
+                    'monthKey' => $cursor->format('Y-m'),
+                ];
+            }
+
+            $cursor->addMonth();
+        }
+
+        return $columns;
+    }
+
+    private function monitoringWeekColumnsForMonth(
+        Carbon $monthStart,
+        Carbon $monthEnd,
+        Carbon $rangeStart,
+        Carbon $rangeEnd,
+        bool $singleMonth
+    ): array {
+        $columns = [];
         $cursor = $monthStart->copy();
+
         for ($index = 1; $index <= 5; $index++) {
             $weekStart = $cursor->copy();
             $weekEnd = $index < 5 ? $weekStart->copy()->addDays(6) : $monthEnd->copy();
@@ -139,43 +257,151 @@ trait MonitoringStatsCoreHelpers
                 $weekEnd = $monthEnd->copy();
             }
 
-            $weeks[] = [
-                'key' => 'W' . $index,
-                'label' => 'W' . $index,
-                'rangeLabel' => $weekStart->format('j M') . ' - ' . $weekEnd->format('j M'),
-                'start' => $weekStart->format('Y-m-d'),
-                'end' => $weekEnd->format('Y-m-d'),
-            ];
+            $columnStart = $weekStart->copy()->max($rangeStart);
+            $columnEnd = $weekEnd->copy()->min($rangeEnd);
+            if ($columnStart->lte($columnEnd)) {
+                $columns[] = [
+                    'key' => $singleMonth
+                        ? 'W'.$index
+                        : $monthStart->format('Y-m').'-W'.$index,
+                    'type' => 'week',
+                    'label' => 'W'.$index,
+                    'groupLabel' => $monthStart->format('M Y'),
+                    'rangeLabel' => $this->monitoringColumnRangeLabel($columnStart, $columnEnd),
+                    'start' => $columnStart->format('Y-m-d'),
+                    'end' => $columnEnd->format('Y-m-d'),
+                    'monthKey' => $monthStart->format('Y-m'),
+                ];
+            }
 
             $cursor = $weekEnd->copy()->addDay();
         }
 
-        return [
-            'monthLabel' => strtoupper($monthStart->format('F Y')),
-            'monthStart' => $monthStart->format('Y-m-d'),
-            'monthEnd' => $monthEnd->format('Y-m-d'),
-            'yearStart' => $monthStart->copy()->startOfYear()->format('Y-m-d'),
-            'weeks' => $weeks,
-        ];
+        return $columns;
+    }
+
+    private function monitoringColumnRangeLabel(Carbon $start, Carbon $end): string
+    {
+        return $start->format('j M').' - '.$end->format('j M');
+    }
+
+    private function monitoringAvailableDateRange(): array
+    {
+        $dates = [];
+        $this->monitoringAppendDateBoundaries($dates, 'all_quotes', 'created_at');
+        $this->monitoringAppendDateBoundaries($dates, 'projects_main', 'award_date');
+        $this->monitoringAppendDateBoundaries($dates, 'monitoring_manual_pipeline_entries', 'entry_date');
+        $this->monitoringAppendDateBoundaries($dates, 'google_call_records', 'called_at');
+        $this->monitoringAppendDateBoundaries($dates, 'google_call_records', 'created_at');
+        $this->monitoringAppendDateBoundaries($dates, 'quote_price_exception_requests', 'created_at');
+        $this->monitoringAppendDateBoundaries($dates, 'legal_compliance_assessments', 'assessment_date');
+        $this->monitoringAppendDateBoundaries($dates, 'legal_compliance_assessments', 'submitted_at');
+
+        if (empty($dates)) {
+            $today = now()->format('Y-m-d');
+
+            return [$today, $today];
+        }
+
+        sort($dates);
+
+        return [reset($dates), end($dates)];
+    }
+
+    private function monitoringAppendDateBoundaries(array &$dates, string $table, string $column): void
+    {
+        if (! Schema::hasTable($table) || ! Schema::hasColumn($table, $column)) {
+            return;
+        }
+
+        $min = DB::table($table)->whereNotNull($column)->min($column);
+        $max = DB::table($table)->whereNotNull($column)->max($column);
+
+        foreach ([$min, $max] as $value) {
+            if (! $value) {
+                continue;
+            }
+
+            try {
+                $dates[] = Carbon::parse($value)->format('Y-m-d');
+            } catch (\Throwable) {
+                continue;
+            }
+        }
     }
 
     private function monitoringYearToDateTotals(array $context, array $staffFilter): array
     {
-        $companyQuery = $this->baseQuoteLifecycleQuery()
-            ->whereIn(DB::raw('UPPER(quote_status)'), ['AWARDED', 'WON'])
-            ->whereBetween(DB::raw('DATE(award_date)'), [$context['yearStart'], $context['monthEnd']]);
-        $selectedQuery = $this->baseQuoteLifecycleQuery()
-            ->whereIn(DB::raw('UPPER(quote_status)'), ['AWARDED', 'WON'])
-            ->whereBetween(DB::raw('DATE(award_date)'), [$context['yearStart'], $context['monthEnd']]);
-
-        if (!empty($staffFilter['code'])) {
-            $selectedQuery->whereRaw('UPPER(staff_code) = ?', [$staffFilter['code']]);
-        }
+        $yearEnd = $context['yearToDateEnd'] ?? $context['monthEnd'];
+        $companyQuery = $this->monitoringRealizedSalesProjectQuery(
+            $context['yearStart'],
+            $yearEnd,
+            ['code' => null]
+        );
+        $selectedQuery = $this->monitoringRealizedSalesProjectQuery(
+            $context['yearStart'],
+            $yearEnd,
+            $staffFilter
+        );
 
         return [
-            'companyTotalRm' => (float) $companyQuery->sum('value'),
-            'selectedTotalRm' => (float) $selectedQuery->sum('value'),
+            'companyTotalRm' => (float) $companyQuery->sum('value')
+                + $this->monitoringManualClosedRevenueTotal($context['yearStart'], $yearEnd, ['code' => null]),
+            'selectedTotalRm' => (float) $selectedQuery->sum('value')
+                + $this->monitoringManualClosedRevenueTotal($context['yearStart'], $yearEnd, $staffFilter),
         ];
+    }
+
+    private function monitoringRealizedSalesProjectQuery(
+        string $start,
+        string $end,
+        array $staffFilter
+    ): Builder {
+        $realizedQuery = $this->realizedSalesProjectQuery();
+        $query = $realizedQuery->projectFacts()
+            ->whereRaw($realizedQuery->realizedStatusPredicate())
+            ->whereNotNull('award_date')
+            ->whereBetween(DB::raw('DATE(award_date)'), [$start, $end]);
+
+        if (! empty($staffFilter['code'])) {
+            $query->whereRaw('UPPER(staff_code) = ?', [$staffFilter['code']]);
+        }
+
+        return $query;
+    }
+
+    private function monitoringManualClosedRevenueQuery(
+        string $start,
+        string $end,
+        array $staffFilter
+    ): ?Builder {
+        if (! $this->monitoringManualPipelineEntriesReady()) {
+            return null;
+        }
+
+        $query = DB::table('monitoring_manual_pipeline_entries')
+            ->where('entry_type', 'closed')
+            ->whereNotNull('service_category')
+            ->whereIn('service_category', array_keys(self::MONITORING_MANUAL_SERVICE_CATEGORIES))
+            ->whereNotNull('estimated_rm')
+            ->where('estimated_rm', '>', 0)
+            ->whereBetween('entry_date', [$start, $end]);
+
+        if (! empty($staffFilter['code'])) {
+            $query->whereRaw('UPPER(owner_staff_code) = ?', [$staffFilter['code']]);
+        }
+
+        return $query;
+    }
+
+    private function monitoringManualClosedRevenueTotal(
+        string $start,
+        string $end,
+        array $staffFilter
+    ): float {
+        $query = $this->monitoringManualClosedRevenueQuery($start, $end, $staffFilter);
+
+        return $query === null ? 0.0 : (float) $query->sum('estimated_rm');
     }
 
     private function baseQuoteFactsQuery(): Builder
@@ -184,7 +410,7 @@ trait MonitoringStatsCoreHelpers
         // source rows exist. Normalize first so every downstream KPI aggregates on
         // one quote fact instead of raw joined rows.
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -197,7 +423,7 @@ trait MonitoringStatsCoreHelpers
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');
@@ -217,12 +443,12 @@ trait MonitoringStatsCoreHelpers
     private function monitoringSessionRoles(Request $request): array
     {
         $roles = $request->session()->get('roles', []);
-        if (!is_array($roles)) {
+        if (! is_array($roles)) {
             $roles = $roles ? [$roles] : [];
         }
 
         return array_values(array_filter(array_map(
-            static fn($role) => trim((string) $role),
+            static fn ($role) => trim((string) $role),
             $roles
         )));
     }
@@ -261,39 +487,29 @@ trait MonitoringStatsCoreHelpers
 
     private function monitoringTrendContext(Request $request): array
     {
-        $period = (string) $request->input('trend_period', 'last6');
-        $anchorDate = $request->input('end_date')
-            ? Carbon::parse((string) $request->input('end_date'))
-            : now();
-        $anchorMonth = $anchorDate->copy()->endOfMonth();
-
-        if ($period === 'last12') {
-            $startMonth = $anchorMonth->copy()->subMonths(11)->startOfMonth();
-            $periodLabel = 'Last 12 months';
-        } elseif ($period === 'ytd') {
-            $startMonth = $anchorMonth->copy()->startOfYear()->startOfMonth();
-            $periodLabel = 'Year to date';
-        } else {
-            $period = 'last6';
-            $startMonth = $anchorMonth->copy()->subMonths(5)->startOfMonth();
-            $periodLabel = 'Last 6 months';
-        }
+        $context = $this->monitoringMonthContext($request);
+        $start = Carbon::parse($context['rangeStart'])->startOfMonth();
+        $end = Carbon::parse($context['rangeEnd'])->endOfMonth();
 
         $months = [];
-        $cursor = $startMonth->copy();
-        while ($cursor->lte($anchorMonth)) {
+        $cursor = $start->copy();
+        while ($cursor->lte($end)) {
+            $monthStart = $cursor->copy()->startOfMonth()->max(Carbon::parse($context['rangeStart']));
+            $monthEnd = $cursor->copy()->endOfMonth()->min(Carbon::parse($context['rangeEnd']));
             $months[] = [
                 'key' => $cursor->format('Y-m'),
                 'label' => $cursor->format('M Y'),
-                'start' => $cursor->copy()->startOfMonth()->format('Y-m-d'),
-                'end' => $cursor->copy()->endOfMonth()->format('Y-m-d'),
+                'start' => $monthStart->format('Y-m-d'),
+                'end' => $monthEnd->format('Y-m-d'),
             ];
             $cursor->addMonth();
         }
 
         return [
-            'period' => $period,
-            'periodLabel' => $periodLabel,
+            'period' => (string) $request->input('period', ''),
+            'periodLabel' => $context['rangeLabel'],
+            'rangeStart' => $context['rangeStart'],
+            'rangeEnd' => $context['rangeEnd'],
             'months' => $months,
         ];
     }
