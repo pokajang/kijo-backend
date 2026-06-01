@@ -31,9 +31,9 @@ return new class extends Migration
                 $table->id();
                 $table->date('snapshot_date')->index();
                 $table->unsignedBigInteger('staff_id')->nullable()->index();
-                $table->string('staff_key')->index();
-                $table->string('staff_code')->nullable();
-                $table->string('staff_name')->nullable();
+                $table->string('staff_key', 191)->index();
+                $table->string('staff_code', 80)->nullable();
+                $table->string('staff_name', 191)->nullable();
                 $table->decimal('score', 12, 2)->default(0);
                 $table->unsignedInteger('active_tasks')->default(0);
                 $table->unsignedInteger('overdue_tasks')->default(0);

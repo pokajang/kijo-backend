@@ -11,10 +11,10 @@ return new class extends Migration
     {
         Schema::create('workflow_templates', function (Blueprint $table): void {
             $table->id();
-            $table->string('process_key')->unique();
+            $table->string('process_key', 120)->unique();
             $table->string('label');
-            $table->string('module_key');
-            $table->string('route_pattern')->nullable();
+            $table->string('module_key', 80);
+            $table->string('route_pattern', 191)->nullable();
             $table->boolean('enabled')->default(true);
             $table->timestamps();
         });
@@ -22,11 +22,11 @@ return new class extends Migration
         Schema::create('workflow_template_steps', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('template_id')->constrained('workflow_templates')->cascadeOnDelete();
-            $table->string('step_key');
+            $table->string('step_key', 120);
             $table->unsignedInteger('level_no')->default(1);
             $table->unsignedInteger('sort_order')->default(0);
             $table->string('label');
-            $table->string('action_label');
+            $table->string('action_label', 80);
             $table->json('fallback_roles')->nullable();
             $table->boolean('active')->default(true);
             $table->timestamps();
@@ -49,10 +49,10 @@ return new class extends Migration
         Schema::create('workflow_instances', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('template_id')->constrained('workflow_templates')->cascadeOnDelete();
-            $table->string('subject_type');
+            $table->string('subject_type', 120);
             $table->unsignedBigInteger('subject_id');
             $table->foreignId('current_step_id')->nullable()->constrained('workflow_template_steps')->nullOnDelete();
-            $table->string('status')->default('Prepared');
+            $table->string('status', 40)->default('Prepared');
             $table->unsignedBigInteger('maker_staff_id')->nullable();
             $table->unsignedBigInteger('submitted_by')->nullable();
             $table->timestamp('submitted_at')->nullable();
@@ -68,9 +68,9 @@ return new class extends Migration
             $table->id();
             $table->foreignId('instance_id')->constrained('workflow_instances')->cascadeOnDelete();
             $table->foreignId('step_id')->nullable()->constrained('workflow_template_steps')->nullOnDelete();
-            $table->string('action');
-            $table->string('status_from')->nullable();
-            $table->string('status_to')->nullable();
+            $table->string('action', 80);
+            $table->string('status_from', 40)->nullable();
+            $table->string('status_to', 40)->nullable();
             $table->unsignedBigInteger('actor_staff_id')->nullable();
             $table->text('remarks')->nullable();
             $table->timestamp('acted_at');

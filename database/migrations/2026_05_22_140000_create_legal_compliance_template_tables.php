@@ -12,7 +12,7 @@ return new class extends Migration
         Schema::create('legal_compliance_templates', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('slug')->unique();
+            $table->string('slug', 191)->unique();
             $table->text('description')->nullable();
             $table->json('draft_content')->nullable();
             $table->unsignedBigInteger('active_version_id')->nullable()->index();
