@@ -50,6 +50,45 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(3, (int) $may['count']);
     }
 
+    public function test_awarded_value_by_person_uses_staff_from_realized_project_source(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 120,
+            'project_name' => 'Direct Realized Project',
+            'quote_id' => null,
+            'project_type' => 'Training',
+            'quote_value' => 800,
+            'award_date' => '2026-05-10',
+            'status' => 'active',
+            'created_by' => 2,
+        ]);
+
+        $response = $this->authenticatedPost('/stats/awarded-value-by-person', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $rows = collect($response->json('awardValueByPerson'));
+
+        $this->assertNull($rows->firstWhere('staffCode', 'UNASSIGNED'));
+
+        $aza = $rows->firstWhere('staffCode', 'AZA');
+        $this->assertNotNull($aza);
+        $this->assertSame('Azam Bin Husain', $aza['staffName']);
+        $this->assertSame(5000.0, (float) $aza['systemAwarded']);
+        $this->assertSame(1200.0, (float) $aza['manualAwarded']);
+        $this->assertSame(6200.0, (float) $aza['totalAwarded']);
+
+        $bob = $rows->firstWhere('staffCode', 'BOB');
+        $this->assertNotNull($bob);
+        $this->assertSame('Bob Tester', $bob['staffName']);
+        $this->assertSame(800.0, (float) $bob['systemAwarded']);
+        $this->assertSame(0.0, (float) $bob['manualAwarded']);
+        $this->assertSame(800.0, (float) $bob['totalAwarded']);
+    }
+
     public function test_manual_closed_save_requires_revenue_complete_fields_and_normalizes_individual(): void
     {
         $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
@@ -938,13 +977,12 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(['AZA', 'BOB'], $rows->pluck('staffCode')->values()->all());
 
         $aza = $rows->firstWhere('staffCode', 'AZA');
-        $this->assertSame(8.35, (float) $aza['score']);
+        $this->assertSame(8.0, (float) $aza['score']);
         $this->assertSame(
             [
                 ['label' => 'Non-project tasks', 'points' => 1],
                 ['label' => 'Project responsibility', 'points' => 5],
                 ['label' => 'Deadline pressure', 'points' => 2],
-                ['label' => 'Completed work', 'points' => 0.35],
             ],
             $aza['scoreBreakdown']
         );
@@ -965,26 +1003,26 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(2.0, (float) $aza['projectGroups'][0]['projectOverheadPoints']);
         $this->assertSame(5.0, (float) $aza['projectGroups'][0]['scoreContribution']);
         $this->assertSame(['Project tagged overdue task'], collect($aza['projectGroups'][0]['activeTasks'])->pluck('title')->all());
-        $this->assertSame(['Completed tagged task'], collect($aza['projectGroups'][0]['completedTasks'])->pluck('title')->all());
+        $this->assertSame([], collect($aza['projectGroups'][0]['completedTasks'])->pluck('title')->all());
         $this->assertSame('real_effort', $aza['projectGroups'][0]['activeTasks'][0]['taskCategory']);
         $this->assertSame(3.0, (float) $aza['projectGroups'][0]['activeTasks'][0]['effortScore']);
         $this->assertSame('high', $aza['projectGroups'][0]['activeTasks'][0]['classificationConfidence']);
         $this->assertSame(
-            ['Completed task: Completed tagged task', 'Manual project update'],
+            ['Manual project update'],
             collect($aza['projectGroups'][0]['progressUpdates'])->pluck('progressText')->all()
         );
 
         $bob = $rows->firstWhere('staffCode', 'BOB');
-        $this->assertSame(3.05, (float) $bob['score']);
+        $this->assertSame(2.7, (float) $bob['score']);
         $this->assertSame(2, (int) $bob['activeTasks']);
         $this->assertSame(2, (int) $bob['overdueTasks']);
         $this->assertSame(0, (int) $bob['dueSoonTasks']);
         $this->assertSame(0, (int) $bob['projectTaggedActiveTasks']);
         $this->assertSame(0, (int) $bob['projectGroupCount']);
         $this->assertSame([], $bob['projectGroups']);
-        $this->assertSame(['Untagged completed task'], collect($bob['completedTasks'])->pluck('title')->all());
+        $this->assertSame([], collect($bob['completedTasks'])->pluck('title')->all());
         $this->assertEqualsCanonicalizing(
-            ['Non collaborator tagged task', 'Untagged due soon task', 'Untagged completed task'],
+            ['Non collaborator tagged task', 'Untagged due soon task'],
             collect($bob['otherTasks'])->pluck('title')->all()
         );
         $this->assertSame(
@@ -1633,12 +1671,40 @@ class DashboardStatsControllerTest extends TestCase
             'end_date' => '2026-05-31',
         ]);
 
+        DB::table('workload_dashboard_shares')->update([
+            'payload_json' => json_encode([
+                'status' => 'success',
+                'completedWindow' => ['startDate' => '2026-05-01', 'endDate' => '2026-05-31'],
+                'staff' => [
+                    [
+                        'staffKey' => '1',
+                        'staffCode' => 'AZA',
+                        'score' => 10,
+                        'completedInPeriod' => 1,
+                        'scoreBreakdown' => [
+                            ['label' => 'Non-project tasks', 'points' => 4],
+                            ['label' => 'Project responsibility', 'points' => 1],
+                            ['label' => 'Deadline pressure', 'points' => 2],
+                            ['label' => 'Completed work', 'points' => 3],
+                        ],
+                        'completedTasks' => [['title' => 'Legacy completed task']],
+                        'otherTasks' => [],
+                        'projectGroups' => [],
+                    ],
+                ],
+            ]),
+        ]);
+
         $publicResponse = $this->get('/stats/workload/share/'.$token);
 
         $publicResponse->assertOk()
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('completedWindow.startDate', '2026-05-01')
             ->assertJsonPath('completedWindow.endDate', '2026-05-31')
+            ->assertJsonPath('staff.0.score', 7)
+            ->assertJsonPath('staff.0.completedInPeriod', 0)
+            ->assertJsonPath('staff.0.completedTasks', [])
+            ->assertJsonMissing(['label' => 'Completed work'])
             ->assertJsonStructure(['staff', 'share' => ['expiresAt', 'createdAt']]);
         $this->assertStringContainsString('no-store', (string) $publicResponse->headers->get('Cache-Control'));
 
@@ -1924,6 +1990,151 @@ class DashboardStatsControllerTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('staff', []);
+    }
+
+    public function test_workload_normalize_current_scores_command_repairs_snapshot_scores(): void
+    {
+        $legacyBreakdown = [
+            ['label' => 'Non-project tasks', 'points' => 6],
+            ['label' => 'Project responsibility', 'points' => 2],
+            ['label' => 'Deadline pressure', 'points' => 1.5],
+            ['label' => 'Completed work', 'points' => 4],
+        ];
+        $legacyPayload = [
+            'staffKey' => '1',
+            'staffCode' => 'AZA',
+            'score' => 13.5,
+            'completedInPeriod' => 2,
+            'lateCompletedInPeriod' => 1,
+            'scoreBreakdown' => $legacyBreakdown,
+            'otherTasks' => [
+                ['title' => 'Active work', 'status' => 'Ongoing', 'workType' => 'technical_specialist', 'workTypeLabel' => 'Technical / Specialist', 'effortScore' => 3],
+            ],
+            'completedTasks' => [
+                ['title' => 'Completed work', 'status' => 'Completed', 'workType' => 'technical_specialist', 'workTypeLabel' => 'Technical / Specialist', 'effortScore' => 4],
+            ],
+            'projectGroups' => [
+                [
+                    'projectId' => 9,
+                    'projectName' => 'Current Project',
+                    'activeTasks' => [
+                        ['title' => 'Project work', 'status' => 'Ongoing', 'workType' => 'coordination_followup', 'workTypeLabel' => 'Coordination / Follow-up', 'effortScore' => 2],
+                    ],
+                    'completedTasks' => [
+                        ['title' => 'Completed project work', 'status' => 'Completed'],
+                    ],
+                    'progressUpdates' => [
+                        ['progressText' => 'Task-linked complete', 'sourceType' => 'task', 'sourceTaskId' => 88],
+                        ['progressText' => 'Manual update', 'sourceType' => null, 'sourceTaskId' => null],
+                    ],
+                    'scoreableProgressCount' => 1,
+                ],
+            ],
+        ];
+
+        DB::table('workload_daily_snapshots')->insert([
+            'snapshot_date' => '2026-05-29',
+            'start_date' => '2026-05-29',
+            'end_date' => '2026-05-29',
+            'staff_count' => 3,
+            'total_score' => 19.5,
+            'avg_score' => 6.5,
+            'total_completed_in_period' => 2,
+            'payload_json' => '{"status":"success"}',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('workload_daily_staff_snapshots')->insert([
+            [
+                'snapshot_date' => '2026-05-29',
+                'staff_id' => 1,
+                'staff_key' => '1',
+                'staff_code' => 'AZA',
+                'staff_name' => 'Azam Bin Husain',
+                'score' => 13.5,
+                'completed_in_period' => 2,
+                'late_completed_in_period' => 1,
+                'score_breakdown_json' => json_encode($legacyBreakdown),
+                'row_payload_json' => json_encode($legacyPayload),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-29',
+                'staff_id' => 2,
+                'staff_key' => '2',
+                'staff_code' => 'BOB',
+                'staff_name' => 'Bob Tester',
+                'score' => 6,
+                'completed_in_period' => 0,
+                'late_completed_in_period' => 0,
+                'score_breakdown_json' => json_encode([
+                    ['label' => 'Non-project tasks', 'points' => 6],
+                ]),
+                'row_payload_json' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'snapshot_date' => '2026-05-29',
+                'staff_id' => 3,
+                'staff_key' => '3',
+                'staff_code' => 'BAD',
+                'staff_name' => 'Bad Json',
+                'score' => 2,
+                'completed_in_period' => 0,
+                'late_completed_in_period' => 0,
+                'score_breakdown_json' => '{bad-json',
+                'row_payload_json' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->artisan('workload:normalize-current-scores', ['--dry-run' => true])
+            ->expectsOutput('Dry run workload current-score normalization: 1 row(s) would be updated, 1 unchanged, 1 skipped, 1 snapshot day(s) affected.')
+            ->assertExitCode(0);
+
+        $this->assertDatabaseHas('workload_daily_staff_snapshots', [
+            'staff_key' => '1',
+            'score' => 13.5,
+            'completed_in_period' => 2,
+        ]);
+
+        $this->artisan('workload:normalize-current-scores')
+            ->expectsOutput('Completed workload current-score normalization: 1 row(s) updated, 1 unchanged, 1 skipped, 1 snapshot day(s) affected.')
+            ->assertExitCode(0);
+
+        $row = DB::table('workload_daily_staff_snapshots')->where('staff_key', '1')->first();
+        $this->assertSame(9.5, (float) $row->score);
+        $this->assertSame(0, (int) $row->completed_in_period);
+        $this->assertSame(
+            [
+                ['label' => 'Non-project tasks', 'points' => 6],
+                ['label' => 'Project responsibility', 'points' => 2],
+                ['label' => 'Deadline pressure', 'points' => 1.5],
+            ],
+            json_decode((string) $row->score_breakdown_json, true)
+        );
+
+        $payload = json_decode((string) $row->row_payload_json, true);
+        $this->assertSame(9.5, (float) $payload['score']);
+        $this->assertSame(0, (int) $payload['completedInPeriod']);
+        $this->assertSame([], $payload['completedTasks']);
+        $this->assertSame([], $payload['projectGroups'][0]['completedTasks']);
+        $this->assertSame(['Manual update'], collect($payload['projectGroups'][0]['progressUpdates'])->pluck('progressText')->all());
+        $this->assertSame(['Technical / Specialist', 'Coordination / Follow-up'], collect($payload['workTypeBreakdown'])->pluck('workTypeLabel')->all());
+
+        $this->assertDatabaseHas('workload_daily_snapshots', [
+            'snapshot_date' => '2026-05-29',
+            'total_score' => 17.5,
+            'avg_score' => 5.83,
+            'total_completed_in_period' => 0,
+        ]);
+
+        $this->artisan('workload:normalize-current-scores')
+            ->expectsOutput('Completed workload current-score normalization: 0 row(s) updated, 2 unchanged, 1 skipped, 0 snapshot day(s) affected.')
+            ->assertExitCode(0);
     }
 
     public function test_workload_daily_capture_check_creates_one_check_and_notification_without_duplicates(): void
@@ -2428,7 +2639,7 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertLessThan(35, (float) $highValueLeader['score']);
     }
 
-    public function test_workload_score_uses_effort_for_non_project_deadline_and_completed_work(): void
+    public function test_workload_score_uses_effort_for_non_project_and_deadline_work_only(): void
     {
         $activeEfforts = [4.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5];
         foreach ($activeEfforts as $index => $effortScore) {
@@ -2475,24 +2686,23 @@ class DashboardStatsControllerTest extends TestCase
 
         $aza = collect($response->json('staff'))->firstWhere('staffCode', 'AZA');
 
-        $this->assertSame(60.5, (float) $aza['score']);
+        $this->assertSame(18.5, (float) $aza['score']);
         $this->assertSame(
             [
                 ['label' => 'Non-project tasks', 'points' => 14.5],
                 ['label' => 'Project responsibility', 'points' => 0],
                 ['label' => 'Deadline pressure', 'points' => 4],
-                ['label' => 'Completed work', 'points' => 42],
             ],
             $aza['scoreBreakdown']
         );
         $this->assertSame(9, (int) $aza['activeTasks']);
-        $this->assertSame(30, (int) $aza['completedInPeriod']);
-        $this->assertCount(30, $aza['completedTasks']);
+        $this->assertSame(0, (int) $aza['completedInPeriod']);
+        $this->assertCount(0, $aza['completedTasks']);
         $this->assertSame(4.0, (float) collect($aza['otherTasks'])->firstWhere('title', 'Effort active task 0')['effortScore']);
         $this->assertSame(3.0, (float) collect($aza['otherTasks'])->firstWhere('title', 'Effort active task 1')['effortScore']);
     }
 
-    public function test_workload_uses_period_end_as_snapshot_and_period_range_for_completed_credit(): void
+    public function test_workload_uses_period_end_as_snapshot_and_excludes_completed_work(): void
     {
         DB::table('tasks')->insert([
             [
@@ -2579,6 +2789,22 @@ class DashboardStatsControllerTest extends TestCase
                 'staff_id' => 1,
                 'project_id' => null,
                 'project_progress_id' => null,
+                'title' => 'Completed without completed date task',
+                'task_category' => 'real_effort',
+                'effort_score' => 3,
+                'classification_confidence' => 'high',
+                'classification_source' => 'system',
+                'user_override' => false,
+                'matched_pattern' => 'test-pattern',
+                'status' => 'Completed',
+                'due_date' => '2026-03-20',
+                'created_at' => '2026-03-01 09:00:00',
+                'completed_at' => null,
+            ],
+            [
+                'staff_id' => 1,
+                'project_id' => null,
+                'project_progress_id' => null,
                 'title' => 'Future created task',
                 'task_category' => 'critical_escalation',
                 'effort_score' => 4,
@@ -2606,16 +2832,15 @@ class DashboardStatsControllerTest extends TestCase
         $otherTasks = collect($aza['otherTasks']);
         $completedTasks = collect($aza['completedTasks']);
 
-        $this->assertSame(9.1, (float) $aza['score']);
+        $this->assertSame(6.75, (float) $aza['score']);
         $this->assertSame(2, (int) $aza['activeTasks']);
         $this->assertSame(2, (int) $aza['overdueTasks']);
-        $this->assertSame(2, (int) $aza['completedInPeriod']);
+        $this->assertSame(0, (int) $aza['completedInPeriod']);
         $this->assertSame(
             [
                 ['label' => 'Non-project tasks', 'points' => 5],
                 ['label' => 'Project responsibility', 'points' => 0],
                 ['label' => 'Deadline pressure', 'points' => 1.75],
-                ['label' => 'Completed work', 'points' => 2.35],
             ],
             $aza['scoreBreakdown']
         );
@@ -2623,18 +2848,16 @@ class DashboardStatsControllerTest extends TestCase
             [
                 'Past year open overdue task',
                 'Completed after snapshot task',
-                'Same day completed snapshot task',
-                'Completed inside snapshot window task',
             ],
             $otherTasks->pluck('title')->all()
         );
         $completedAfterSnapshot = $otherTasks->firstWhere('title', 'Completed after snapshot task');
         $this->assertSame('Ongoing', $completedAfterSnapshot['status']);
         $this->assertSame('', $completedAfterSnapshot['completedAt']);
-        $this->assertSame(
-            ['Same day completed snapshot task', 'Completed inside snapshot window task'],
-            $completedTasks->pluck('title')->all()
-        );
+        $this->assertSame([], $completedTasks->pluck('title')->all());
+        $this->assertFalse($otherTasks->contains('title', 'Same day completed snapshot task'));
+        $this->assertFalse($otherTasks->contains('title', 'Completed inside snapshot window task'));
+        $this->assertFalse($otherTasks->contains('title', 'Completed without completed date task'));
         $this->assertFalse($otherTasks->contains('title', 'Completed before snapshot window task'));
         $this->assertFalse($otherTasks->contains('title', 'Future created task'));
     }

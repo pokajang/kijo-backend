@@ -16,6 +16,11 @@ class WorkflowController extends Controller
         return $this->workflowService->templates($request);
     }
 
+    public function setupStatus(Request $request): JsonResponse
+    {
+        return $this->workflowService->setupStatus($request);
+    }
+
     public function template(Request $request, string $key): JsonResponse
     {
         return $this->workflowService->template($request, $key);

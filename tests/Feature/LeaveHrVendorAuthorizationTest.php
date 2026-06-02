@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\SendHtmlMailJob;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
@@ -25,6 +27,9 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'in_app_notifications',
             'user_activities',
             'vendor_payments',
+            'workflow_step_recipients',
+            'workflow_template_steps',
+            'workflow_templates',
             'hr_leave_workflow_recipients',
             'hr_leaves_application',
             'hr_leaves_allocation',
@@ -172,6 +177,41 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             $table->unsignedInteger('updated_by')->nullable();
             $table->timestamps();
             $table->unique(['stage_key', 'staff_id']);
+        });
+
+        Schema::create('workflow_templates', function (Blueprint $table): void {
+            $table->id();
+            $table->string('process_key', 120)->unique();
+            $table->string('label');
+            $table->string('module_key', 80);
+            $table->string('route_pattern', 191)->nullable();
+            $table->boolean('enabled')->default(true);
+            $table->timestamps();
+        });
+
+        Schema::create('workflow_template_steps', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('template_id')->constrained('workflow_templates')->cascadeOnDelete();
+            $table->string('step_key', 120);
+            $table->unsignedInteger('level_no')->default(1);
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->string('label');
+            $table->string('action_label', 80);
+            $table->json('fallback_roles')->nullable();
+            $table->boolean('active')->default(true);
+            $table->timestamps();
+            $table->unique(['template_id', 'step_key', 'level_no'], 'workflow_steps_template_key_level_unique');
+        });
+
+        Schema::create('workflow_step_recipients', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('step_id')->constrained('workflow_template_steps')->cascadeOnDelete();
+            $table->unsignedBigInteger('staff_id');
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->boolean('active')->default(true);
+            $table->timestamps();
+            $table->unique(['step_id', 'staff_id']);
+            $table->index('staff_id');
         });
 
         DB::table('system_users')->insert([
@@ -367,70 +407,71 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
     }
 
-    public function test_hr_can_manage_leave_workflow_recipients_but_employee_cannot(): void
+    public function test_central_leave_workflow_recipients_can_be_managed_by_system_admin_only(): void
     {
         $this->actingSession($this->employeeSession())
-            ->putJson('/hr/leaves/workflow-recipients', [
-                'stages' => [
-                    'leave.submitted.recommenders' => [30],
+            ->putJson('/workflows/templates/leave-application', [
+                'steps' => [
+                    ['stepKey' => 'leave.submitted.recommenders', 'recipient_staff_ids' => [30]],
                 ],
             ])
             ->assertStatus(403);
 
-        $this->actingSession($this->hrSession())
-            ->putJson('/hr/leaves/workflow-recipients', [
-                'stages' => [
-                    'leave.submitted.recommenders' => [30],
-                    'leave.recommended.approvers' => [40],
+        $this->actingSession($this->managerSession())
+            ->putJson('/workflows/templates/leave-application', [
+                'steps' => [
+                    ['stepKey' => 'leave.submitted.recommenders', 'recipient_staff_ids' => [30]],
+                    ['stepKey' => 'leave.recommended.approvers', 'recipient_staff_ids' => [40]],
                 ],
             ])
             ->assertOk()
             ->assertJsonPath('status', 'success');
 
-        $this->assertDatabaseHas('hr_leave_workflow_recipients', [
-            'stage_key' => 'leave.submitted.recommenders',
+        $submittedStepId = DB::table('workflow_template_steps as step')
+            ->join('workflow_templates as template', 'template.id', '=', 'step.template_id')
+            ->where('template.process_key', 'leave-application')
+            ->where('step.step_key', 'leave.submitted.recommenders')
+            ->value('step.id');
+
+        $this->assertDatabaseHas('workflow_step_recipients', [
+            'step_id' => $submittedStepId,
             'staff_id' => 30,
-            'is_active' => 1,
+            'active' => 1,
         ]);
 
-        $stages = $this->actingSession($this->hrSession())
-            ->getJson('/hr/leaves/workflow-recipients')
+        $steps = $this->actingSession($this->hrSession())
+            ->getJson('/workflows/templates/leave-application')
             ->assertOk()
-            ->json('stages');
+            ->json('template.steps');
 
-        $submittedStage = collect($stages)->firstWhere('key', 'leave.submitted.recommenders');
+        $submittedStage = collect($steps)->firstWhere('stepKey', 'leave.submitted.recommenders');
         $this->assertSame(30, $submittedStage['recipients'][0]['staff_id']);
-        $this->assertSame(30, $submittedStage['effective_recipients'][0]['staff_id']);
-        $this->assertFalse($submittedStage['using_default']);
-        $this->assertCount(2, $stages);
-        $this->assertNull(collect($stages)->firstWhere('key', 'leave.approved.notify'));
+        $this->assertSame(30, $submittedStage['effectiveRecipients'][0]['staff_id']);
+        $this->assertFalse($submittedStage['usingDefault']);
+        $this->assertCount(6, $steps);
+        $this->assertNotNull(collect($steps)->firstWhere('stepKey', 'leave.approved.notify'));
     }
 
     public function test_leave_workflow_settings_expose_effective_fallback_recipients(): void
     {
-        $stages = $this->actingSession($this->hrSession())
-            ->getJson('/hr/leaves/workflow-recipients')
+        $steps = $this->actingSession($this->hrSession())
+            ->getJson('/workflows/templates/leave-application')
             ->assertOk()
-            ->json('stages');
+            ->json('template.steps');
 
-        $submittedStage = collect($stages)->firstWhere('key', 'leave.submitted.recommenders');
-        $recommendedStage = collect($stages)->firstWhere('key', 'leave.recommended.approvers');
+        $submittedStage = collect($steps)->firstWhere('stepKey', 'leave.submitted.recommenders');
+        $recommendedStage = collect($steps)->firstWhere('stepKey', 'leave.recommended.approvers');
 
-        $this->assertTrue($submittedStage['using_default']);
-        $this->assertSame(30, $submittedStage['effective_recipients'][0]['staff_id']);
-        $this->assertTrue($recommendedStage['using_default']);
-        $this->assertSame(20, $recommendedStage['effective_recipients'][0]['staff_id']);
+        $this->assertTrue($submittedStage['usingDefault']);
+        $this->assertSame(30, $submittedStage['effectiveRecipients'][0]['staff_id']);
+        $this->assertTrue($recommendedStage['usingDefault']);
+        $this->assertSame(20, $recommendedStage['effectiveRecipients'][0]['staff_id']);
     }
 
     public function test_leave_submission_uses_configured_recommenders_for_notifications(): void
     {
-        DB::table('hr_leave_workflow_recipients')->insert([
-            'stage_key' => 'leave.submitted.recommenders',
-            'staff_id' => 30,
-            'sort_order' => 0,
-            'is_active' => 1,
-            'created_at' => now(),
-            'updated_at' => now(),
+        $this->configureLeaveWorkflow([
+            'leave.submitted.recommenders' => [30],
         ]);
 
         $response = $this->actingSession($this->employeeSession())
@@ -461,15 +502,40 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
     }
 
+    public function test_leave_submission_sends_individual_recommender_emails_without_cc(): void
+    {
+        Bus::fake([SendHtmlMailJob::class]);
+
+        $this->configureLeaveWorkflow([
+            'leave.submitted.recommenders' => [20, 30],
+        ]);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Annual',
+                'reason' => 'No visible cc',
+                'start_date' => '2026-06-05',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-05',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk()
+            ->assertJsonPath('mail_sent', true);
+
+        Bus::assertDispatchedSync(SendHtmlMailJob::class, 2);
+        Bus::assertDispatchedSync(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
+            return in_array($this->jobProperty($job, 'to'), ['hr@example.test', 'manager@example.test'], true)
+                && $this->jobProperty($job, 'subject') === 'New Leave Application by Employee One'
+                && $this->jobProperty($job, 'cc') === [];
+        });
+    }
+
     public function test_recommend_action_uses_configured_approvers_for_notifications(): void
     {
-        DB::table('hr_leave_workflow_recipients')->insert([
-            'stage_key' => 'leave.recommended.approvers',
-            'staff_id' => 40,
-            'sort_order' => 0,
-            'is_active' => 1,
-            'created_at' => now(),
-            'updated_at' => now(),
+        $this->configureLeaveWorkflow([
+            'leave.recommended.approvers' => [40],
         ]);
 
         $leaveId = DB::table('hr_leaves_application')->insertGetId([
@@ -582,23 +648,9 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
     public function test_configured_workflow_recipient_gets_backend_permissions_without_default_stage_role(): void
     {
-        DB::table('hr_leave_workflow_recipients')->insert([
-            [
-                'stage_key' => 'leave.submitted.recommenders',
-                'staff_id' => 20,
-                'sort_order' => 0,
-                'is_active' => 1,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ],
-            [
-                'stage_key' => 'leave.recommended.approvers',
-                'staff_id' => 30,
-                'sort_order' => 0,
-                'is_active' => 1,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ],
+        $this->configureLeaveWorkflow([
+            'leave.submitted.recommenders' => [20],
+            'leave.recommended.approvers' => [30],
         ]);
 
         $leaveId = DB::table('hr_leaves_application')->insertGetId([
@@ -963,6 +1015,30 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         return $this
             ->withSession($session + ['_token' => 'test-token'])
             ->withHeader('X-CSRF-TOKEN', 'test-token');
+    }
+
+    private function configureLeaveWorkflow(array $stages): void
+    {
+        $steps = [];
+        foreach ($stages as $stageKey => $staffIds) {
+            $steps[] = [
+                'stepKey' => $stageKey,
+                'recipient_staff_ids' => $staffIds,
+            ];
+        }
+
+        $this->actingSession($this->managerSession())
+            ->putJson('/workflows/templates/leave-application', ['steps' => $steps])
+            ->assertOk();
+    }
+
+    private function jobProperty(object $job, string $property): mixed
+    {
+        $reflection = new \ReflectionClass($job);
+        $prop = $reflection->getProperty($property);
+        $prop->setAccessible(true);
+
+        return $prop->getValue($job);
     }
 
     private function hrSession(): array

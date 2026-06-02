@@ -28,6 +28,10 @@ class SalaryApiFeatureTest extends TestCase
             '--realpath' => false,
         ])->run();
         $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_06_02_090000_create_hr_salary_year_snapshots_table.php',
+            '--realpath' => false,
+        ])->run();
+        $this->artisan('migrate', [
             '--path' => 'database/migrations/2026_05_31_220000_create_hr_other_claim_tables.php',
             '--realpath' => false,
         ])->run();
@@ -46,10 +50,14 @@ class SalaryApiFeatureTest extends TestCase
 
     public function test_profile_show_update_and_recurring_allowance_replace(): void
     {
+        Carbon::setTestNow(Carbon::parse('2026-06-02 09:00:00'));
+
         $this->actingSession()
             ->getJson('/hr/salary/profile')
             ->assertOk()
-            ->assertJsonPath('profile.basicSalary', '3000');
+            ->assertJsonPath('profile.basicSalary', '3000')
+            ->assertJsonPath('profile.previousYearSnapshot.source', 'missing')
+            ->assertJsonPath('profile.previousYearSnapshot.message', '2025 snapshot not configured. Set in Salary Settings.');
 
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -59,6 +67,12 @@ class SalaryApiFeatureTest extends TestCase
                 'default_mileage_rate' => '0.70',
                 'yearly_medical_claim' => '1200',
                 'notes' => 'Confirmed by HR',
+                'previous_year_snapshot' => [
+                    'year' => '2025',
+                    'basic_salary' => '3600',
+                    'allowance_total' => '240',
+                    'increment_amount' => '100',
+                ],
                 'recurring_allowances' => [
                     ['description' => 'Phone allowance', 'amount' => '200', 'start_month' => '2026-05'],
                     ['description' => 'Internet allowance', 'amount' => '80', 'start_month' => null],
@@ -67,6 +81,11 @@ class SalaryApiFeatureTest extends TestCase
             ->assertOk()
             ->assertJsonPath('profile.basicSalary', '4200')
             ->assertJsonPath('profile.yearlyMedicalClaim', '1200')
+            ->assertJsonPath('profile.previousYearSnapshot.source', 'manual')
+            ->assertJsonPath('profile.previousYearSnapshot.basicSalary', '3600')
+            ->assertJsonPath('profile.previousYearSnapshot.allowanceTotal', '240')
+            ->assertJsonPath('profile.previousYearSnapshot.incrementAmount', '100')
+            ->assertJsonPath('profile.previousYearSnapshot.total', '3940')
             ->assertJsonPath('profile.recurringAllowances.0.description', 'Phone allowance');
 
         $this->actingSession()
@@ -77,13 +96,82 @@ class SalaryApiFeatureTest extends TestCase
                 'default_mileage_rate' => '0.60',
                 'yearly_medical_claim' => '900',
                 'notes' => '',
+                'previous_year_snapshot' => [
+                    'year' => '2025',
+                    'basic_salary' => '3700',
+                    'allowance_total' => '260',
+                    'increment_amount' => '120',
+                ],
                 'recurring_allowances' => [
                     ['description' => 'Meal allowance', 'amount' => '120', 'start_month' => null],
                 ],
             ])
             ->assertOk()
             ->assertJsonCount(1, 'profile.recurringAllowances')
+            ->assertJsonPath('profile.previousYearSnapshot.total', '4080')
             ->assertJsonPath('profile.recurringAllowances.0.description', 'Meal allowance');
+    }
+
+    public function test_salary_profile_previous_year_snapshot_prefers_approved_december_record(): void
+    {
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->putJson('/hr/salary/profile', [
+                'basic_salary' => '4200',
+                'effective_month' => '2026-05',
+                'default_mileage_rate' => '0.60',
+                'yearly_medical_claim' => '1200',
+                'previous_year_snapshot' => [
+                    'year' => '2025',
+                    'basic_salary' => '3500',
+                    'allowance_total' => '150',
+                    'increment_amount' => '75',
+                ],
+                'recurring_allowances' => [],
+            ])
+            ->assertOk()
+            ->assertJsonPath('profile.previousYearSnapshot.source', 'manual');
+
+        $recordId = DB::table('hr_salary_applications')->insertGetId([
+            'staff_id' => 10,
+            'salary_month' => '2025-12',
+            'salary_month_label' => 'December 2025',
+            'basic_salary' => 3800,
+            'claims_total' => 250,
+            'employee_deductions' => 410,
+            'employer_contributions' => 520,
+            'payable_salary' => 3640,
+            'status' => 'Approved',
+            'deductions_json' => json_encode(['employeeTotal' => 410, 'employerTotal' => 520]),
+            'submitted_at' => now(),
+            'approved_at' => now(),
+            'approved_by' => 40,
+            'approved_status' => 'Approved',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('hr_salary_claims')->insert([
+            'application_id' => $recordId,
+            'client_claim_id' => 'allowance-december',
+            'type' => 'Allowance',
+            'claim_date' => '2025-12-01',
+            'description' => 'Phone allowance',
+            'amount' => 250,
+            'sort_order' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingSession()
+            ->getJson('/hr/salary/profile')
+            ->assertOk()
+            ->assertJsonPath('profile.previousYearSnapshot.source', 'auto')
+            ->assertJsonPath('profile.previousYearSnapshot.sourceLabel', 'Approved Dec 2025 salary record')
+            ->assertJsonPath('profile.previousYearSnapshot.editable', false)
+            ->assertJsonPath('profile.previousYearSnapshot.basicSalary', '3800')
+            ->assertJsonPath('profile.previousYearSnapshot.allowanceTotal', '250')
+            ->assertJsonPath('profile.previousYearSnapshot.incrementAmount', '0')
+            ->assertJsonPath('profile.previousYearSnapshot.total', '4050');
     }
 
     public function test_application_create_replace_and_attachment_owner_access(): void
@@ -298,7 +386,7 @@ class SalaryApiFeatureTest extends TestCase
             ->assertNotFound();
     }
 
-    public function test_financial_salary_claims_pdf_export_is_available_to_privileged_roles(): void
+    public function test_financial_salary_claims_pdf_export_is_available_to_workflow_participants(): void
     {
         $response = $this->submitSalary([
             [
@@ -313,6 +401,16 @@ class SalaryApiFeatureTest extends TestCase
         ])->assertOk();
         $recordId = $response->json('record.id');
 
+        $checkStepId = $this->salaryWorkflowStepId('check');
+        DB::table('workflow_step_recipients')->insert([
+            'step_id' => $checkStepId,
+            'staff_id' => 30,
+            'sort_order' => 0,
+            'active' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
         $pdf = $this->actingSession(3, 30, ['Manager'])
             ->get("/hr/salary/financial-records/{$recordId}/claims-pdf")
             ->assertOk()
@@ -320,6 +418,10 @@ class SalaryApiFeatureTest extends TestCase
             ->assertHeader('Content-Disposition', 'inline; filename="salary-claims-may-2026.pdf"');
 
         $this->assertStringStartsWith('%PDF', $pdf->getContent());
+
+        $this->actingSession(4, 40, ['System Admin'])
+            ->get("/hr/salary/financial-records/{$recordId}/claims-pdf")
+            ->assertForbidden();
 
         $this->actingSession(1, 10, ['Staff'])
             ->get("/hr/salary/financial-records/{$recordId}/claims-pdf")
@@ -352,7 +454,7 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('message', 'Payslip is available from 01-Jun-2026 after salary month closes.');
     }
 
-    public function test_salary_payslip_pdf_export_is_available_after_month_close_to_owner_and_financial_roles(): void
+    public function test_salary_payslip_pdf_export_is_available_after_month_close_to_owner_and_past_approver(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-06-01 09:00:00'));
 
@@ -385,7 +487,7 @@ class SalaryApiFeatureTest extends TestCase
 
         $this->assertStringStartsWith('%PDF', $pdf->getContent());
 
-        $financialPdf = $this->actingSession(3, 30, ['Manager'])
+        $financialPdf = $this->actingSession(4, 40, ['System Admin'])
             ->get("/hr/salary/financial-records/{$recordId}/payslip-pdf")
             ->assertOk()
             ->assertHeader('Content-Type', 'application/pdf')
@@ -397,9 +499,43 @@ class SalaryApiFeatureTest extends TestCase
             ->get("/hr/salary/records/{$recordId}/payslip-pdf")
             ->assertNotFound();
 
+        $this->actingSession(3, 30, ['Manager'])
+            ->get("/hr/salary/financial-records/{$recordId}/payslip-pdf")
+            ->assertForbidden();
+
         $this->actingSession(1, 10, ['Staff'])
             ->get("/hr/salary/financial-records/{$recordId}/payslip-pdf")
             ->assertForbidden();
+    }
+
+    public function test_salary_claim_pdf_template_renders_previous_year_reference_values_or_settings_notice(): void
+    {
+        $html = $this->salaryClaimPdfHtml([
+            'year' => '2025',
+            'available' => true,
+            'basicSalary' => '3600',
+            'allowanceTotal' => '240',
+            'incrementAmount' => '100',
+            'total' => '3940',
+            'message' => '',
+        ]);
+
+        $this->assertStringContainsString('3,600.00', $html);
+        $this->assertStringContainsString('240.00', $html);
+        $this->assertStringContainsString('100.00', $html);
+        $this->assertStringContainsString('3,940.00', $html);
+
+        $missingHtml = $this->salaryClaimPdfHtml([
+            'year' => '2025',
+            'available' => false,
+            'message' => '2025 snapshot not configured. Set in Salary Settings.',
+        ]);
+
+        $this->assertStringContainsString(
+            '2025 snapshot not configured. Set in Salary Settings.',
+            $missingHtml,
+        );
+        $this->assertStringNotContainsString('2025 data not configured yet', $missingHtml);
     }
 
     public function test_paid_month_cannot_be_replaced(): void
@@ -848,9 +984,7 @@ class SalaryApiFeatureTest extends TestCase
             ])
             ->assertOk();
 
-        $checkStepId = DB::table('workflow_template_steps')
-            ->where('step_key', 'check')
-            ->value('id');
+        $checkStepId = $this->salaryWorkflowStepId('check');
         DB::table('workflow_step_recipients')->insert([
             'step_id' => $checkStepId,
             'staff_id' => 30,
@@ -866,6 +1000,8 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonCount(2, 'records')
             ->assertJsonPath('records.0.staffId', 20)
             ->assertJsonPath('records.0.staffName', 'Other Staff')
+            ->assertJsonPath('records.0.canViewSalaryDetails', true)
+            ->assertJsonPath('records.0.salaryRestricted', false)
             ->assertJsonPath('records.0.workflow.availableActions.0.action', 'check')
             ->assertJsonPath('records.0.workflow.availableActions.0.tone', 'info')
             ->assertJsonPath('records.0.workflow.availableActions.1.action', 'reject')
@@ -874,12 +1010,21 @@ class SalaryApiFeatureTest extends TestCase
         $this->actingSession(4, 40, ['System Admin'])
             ->getJson('/hr/salary/financial-records')
             ->assertOk()
-            ->assertJsonPath('records.0.workflow.availableActions.0.action', 'check')
-            ->assertJsonPath('records.0.workflow.availableActions.1.action', 'reject');
+            ->assertJsonPath('records.0.staffId', null)
+            ->assertJsonPath('records.0.staffName', 'Restricted')
+            ->assertJsonPath('records.0.basicSalary', null)
+            ->assertJsonPath('records.0.payableSalary', null)
+            ->assertJsonPath('records.0.canViewSalaryDetails', false)
+            ->assertJsonPath('records.0.salaryRestricted', true)
+            ->assertJsonPath('records.0.workflow.availableActions', []);
 
         $this->actingSession(5, 50, ['Bank'])
             ->getJson('/hr/salary/financial-records')
             ->assertOk()
+            ->assertJsonPath('records.0.staffName', 'Restricted')
+            ->assertJsonPath('records.0.claimsTotal', null)
+            ->assertJsonPath('records.0.deductions', null)
+            ->assertJsonPath('records.0.canViewSalaryDetails', false)
             ->assertJsonPath('records.0.workflow.availableActions', []);
 
         $this->actingSession(1, 10, ['Staff'])
@@ -887,10 +1032,57 @@ class SalaryApiFeatureTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_unassigned_manager_sees_redacted_financial_salary_records(): void
+    {
+        $response = $this->submitSalary([])->assertOk();
+        $recordId = $response->json('record.id');
+        $instanceId = $response->json('record.workflow.instanceId');
+
+        $checkStepId = $this->salaryWorkflowStepId('check');
+        DB::table('workflow_step_recipients')->insert([
+            'step_id' => $checkStepId,
+            'staff_id' => 50,
+            'sort_order' => 0,
+            'active' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->getJson('/hr/salary/financial-records')
+            ->assertOk()
+            ->assertJsonPath('records.0.staffName', 'Restricted')
+            ->assertJsonPath('records.0.staffCode', '')
+            ->assertJsonPath('records.0.basicSalary', null)
+            ->assertJsonPath('records.0.employeeDeductions', null)
+            ->assertJsonPath('records.0.canViewSalaryDetails', false)
+            ->assertJsonPath('records.0.workflow.availableActions', []);
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/financial-records/{$recordId}/action", [
+                'action' => 'check',
+                'remarks' => 'Direct bypass attempt',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You are not assigned to this workflow step.');
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/workflows/instances/{$instanceId}/actions", [
+                'action' => 'check',
+                'remarks' => 'Workflow bypass attempt',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You are not assigned to this workflow step.');
+    }
+
     public function test_financial_salary_records_can_be_checked_and_approved(): void
     {
         $response = $this->submitSalary([])->assertOk();
         $recordId = $response->json('record.id');
+        $this->assignSalaryWorkflowRecipient('check', 30);
+        $this->assignSalaryWorkflowRecipient('approve', 40);
 
         $this->actingSession(3, 30, ['Manager'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -964,6 +1156,8 @@ class SalaryApiFeatureTest extends TestCase
     {
         $response = $this->submitSalary([])->assertOk();
         $instanceId = $response->json('record.workflow.instanceId');
+        $this->assignSalaryWorkflowRecipient('check', 30);
+        $this->assignSalaryWorkflowRecipient('approve', 30);
 
         $this->actingSession(1, 10, ['Manager'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -1026,7 +1220,7 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('message', 'Rejected salary records cannot be actioned further.');
     }
 
-    public function test_system_admin_can_action_own_salary_workflow(): void
+    public function test_system_admin_cannot_action_own_salary_workflow_without_assignment_bypass(): void
     {
         $response = $this->actingSession(4, 40, ['System Admin'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -1043,13 +1237,14 @@ class SalaryApiFeatureTest extends TestCase
             ->assertOk();
         $recordId = $response->json('record.id');
         $instanceId = $response->json('record.workflow.instanceId');
+        $this->assignSalaryWorkflowRecipient('check', 40);
 
         $this->actingSession(4, 40, ['System Admin'])
             ->getJson('/hr/salary/financial-records')
             ->assertOk()
             ->assertJsonPath('records.0.id', $recordId)
-            ->assertJsonPath('records.0.workflow.availableActions.0.action', 'check')
-            ->assertJsonPath('records.0.workflow.availableActions.1.action', 'reject');
+            ->assertJsonPath('records.0.staffName', 'Restricted')
+            ->assertJsonPath('records.0.workflow.availableActions', []);
 
         $this->actingSession(4, 40, ['System Admin'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -1057,9 +1252,8 @@ class SalaryApiFeatureTest extends TestCase
                 'action' => 'check',
                 'remarks' => 'Admin checked own submitted salary',
             ])
-            ->assertOk()
-            ->assertJsonPath('record.status', 'Checked')
-            ->assertJsonPath('record.checkedBy', 40);
+            ->assertForbidden()
+            ->assertJsonPath('message', 'The maker cannot check or approve their own salary application.');
     }
 
     private function submitSalary(array $claims, array $attachments = [])
@@ -1086,6 +1280,62 @@ class SalaryApiFeatureTest extends TestCase
                 'claims' => json_encode($claims),
                 'attachments' => $attachments,
             ]);
+    }
+
+    private function salaryWorkflowStepId(string $stepKey): int
+    {
+        return (int) DB::table('workflow_template_steps as step')
+            ->join('workflow_templates as template', 'template.id', '=', 'step.template_id')
+            ->where('template.process_key', 'salary-application')
+            ->where('step.step_key', $stepKey)
+            ->value('step.id');
+    }
+
+    private function assignSalaryWorkflowRecipient(string $stepKey, int $staffId): void
+    {
+        DB::table('workflow_step_recipients')->insert([
+            'step_id' => $this->salaryWorkflowStepId($stepKey),
+            'staff_id' => $staffId,
+            'sort_order' => 0,
+            'active' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function salaryClaimPdfHtml(array $previousYearReference): string
+    {
+        return view('pdf.salary-claims-report', [
+            'record' => [
+                'id' => 1,
+                'staffId' => 10,
+                'staffName' => 'Staff Example',
+                'staffCode' => 'STA',
+                'salaryMonth' => 'May 2026',
+                'salaryMonthValue' => '2026-05',
+                'basicSalary' => 4200,
+                'claimsTotal' => 0,
+                'employeeDeductions' => 0,
+                'employerContributions' => 0,
+                'payableSalary' => 4200,
+                'status' => 'Submitted',
+                'deductions' => [],
+                'submittedAt' => '2026-05-31 10:00:00',
+            ],
+            'claims' => [],
+            'generatedAt' => Carbon::parse('2026-06-01 09:00:00'),
+            'claimDate' => '2026-05-31 10:00:00',
+            'applicantSignature' => [],
+            'approverSignature' => [],
+            'vehicle' => '-',
+            'mileageRate' => 0.6,
+            'medicalBalance' => [
+                'currentLeft' => 0,
+                'afterClaim' => 0,
+            ],
+            'previousYearReference' => $previousYearReference,
+            'logoDataUri' => null,
+        ])->render();
     }
 
     private function submitOtherClaim(array $claims, array $attachments = [], array $overrides = [])

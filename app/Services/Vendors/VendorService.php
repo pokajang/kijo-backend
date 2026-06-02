@@ -17,9 +17,7 @@ use App\Http\Requests\Vendor\PermanentDeleteVendorRequest;
 use App\Http\Requests\Vendor\ReactivateVendorRequest;
 use App\Http\Requests\Vendor\StoreVendorPaymentRequest;
 use App\Http\Requests\Vendor\StoreVendorRequest;
-use App\Http\Requests\Vendor\UpdateVendorPaymentWorkflowSettingsRequest;
 use App\Http\Requests\Vendor\UpdateVendorRequest;
-use Illuminate\Http\Request;
 
 class VendorService
 {
@@ -36,11 +34,6 @@ class VendorService
     private function vendorPaymentService(): VendorPaymentService
     {
         return app(VendorPaymentService::class);
-    }
-
-    private function vendorPaymentWorkflowService(): VendorPaymentWorkflowService
-    {
-        return app(VendorPaymentWorkflowService::class);
     }
 
     public function index(ListVendorsRequest $request)
@@ -101,16 +94,6 @@ class VendorService
     public function paidPaymentsForVendor(ListVendorPaymentsRequest $request, int $vendorId)
     {
         return $this->vendorPaymentService()->paidPaymentsForVendor($request, $vendorId);
-    }
-
-    public function paymentWorkflowSettings(Request $request)
-    {
-        return $this->vendorPaymentWorkflowService()->index($request);
-    }
-
-    public function updatePaymentWorkflowSettings(UpdateVendorPaymentWorkflowSettingsRequest $request)
-    {
-        return $this->vendorPaymentWorkflowService()->update($request);
     }
 
     public function storePayment(StoreVendorPaymentRequest $request)

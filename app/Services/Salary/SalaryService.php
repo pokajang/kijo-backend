@@ -80,6 +80,14 @@ class SalaryService extends PdfRenderer
                     'updated_at' => now(),
                 ]);
             }
+
+            if (array_key_exists('previous_year_snapshot', $data)) {
+                $this->saveManualPreviousYearSnapshot(
+                    $staffId,
+                    (string) $data['effective_month'],
+                    $data['previous_year_snapshot'] ?? [],
+                );
+            }
         });
 
         return response()->json([
@@ -140,12 +148,20 @@ class SalaryService extends PdfRenderer
             $request,
         );
         $records = $records
-            ->map(fn (object $record): array => $this->recordPayload(
-                $record,
-                includeClaims: false,
-                request: $request,
-                workflowPayload: $workflowPayloads[(int) $record->id] ?? null,
-            ))
+            ->map(function (object $record) use ($request, $workflowPayloads): array {
+                $workflowPayload = $workflowPayloads[(int) $record->id] ?? null;
+                $canViewSalaryDetails = $this->canViewFinancialSalaryDetails($request, $record);
+                $payload = $this->recordPayload(
+                    $record,
+                    includeClaims: false,
+                    request: $request,
+                    workflowPayload: $workflowPayload,
+                );
+
+                return $canViewSalaryDetails
+                    ? $payload + ['canViewSalaryDetails' => true, 'salaryRestricted' => false]
+                    : $this->redactedFinancialSalaryPayload($payload);
+            })
             ->all();
 
         return response()->json(['status' => 'success', 'records' => $records]);
@@ -235,6 +251,10 @@ class SalaryService extends PdfRenderer
         if (! $record) {
             abort(404, 'Salary record not found.');
         }
+        $this->workflowService->ensureSalaryWorkflowForExistingRecord($record);
+        if (! $this->canViewFinancialSalaryDetails($request, $record)) {
+            abort(403, 'You are not authorized to view this salary record.');
+        }
 
         return $this->salaryClaimsPdfResponse($request, $record);
     }
@@ -277,6 +297,10 @@ class SalaryService extends PdfRenderer
 
         if (! $record) {
             abort(404, 'Salary record not found.');
+        }
+        $this->workflowService->ensureSalaryWorkflowForExistingRecord($record);
+        if (! $this->canViewFinancialSalaryDetails($request, $record)) {
+            abort(403, 'You are not authorized to view this salary record.');
         }
 
         return $this->salaryPayslipPdfResponse($request, $record);
@@ -334,6 +358,10 @@ class SalaryService extends PdfRenderer
                 'thisClaim' => $medicalClaimTotal,
                 'afterClaim' => (float) $this->money(max(0, $medicalCurrentLeft - $medicalClaimTotal)),
             ],
+            'previousYearReference' => $this->previousYearSalaryReference(
+                (int) $record->staff_id,
+                (string) $record->salary_month,
+            ),
             'logoDataUri' => $this->companyLogoDataUri(),
         ])->render();
 
@@ -1269,18 +1297,178 @@ class SalaryService extends PdfRenderer
             ->sum('amount'));
     }
 
+    private function saveManualPreviousYearSnapshot(int $staffId, string $effectiveMonth, array $snapshot): void
+    {
+        if (! Schema::hasTable('hr_salary_year_snapshots')) {
+            return;
+        }
+
+        $year = $this->previousYearForMonth($effectiveMonth);
+        if ($this->approvedDecemberSalaryRecord($staffId, $year)) {
+            return;
+        }
+
+        $hasSnapshotValues = collect([
+            $snapshot['basic_salary'] ?? null,
+            $snapshot['allowance_total'] ?? null,
+            $snapshot['increment_amount'] ?? null,
+        ])->contains(fn ($value): bool => trim((string) $value) !== '');
+
+        if (! $hasSnapshotValues) {
+            DB::table('hr_salary_year_snapshots')
+                ->where('staff_id', $staffId)
+                ->where('year', $year)
+                ->delete();
+
+            return;
+        }
+
+        $snapshotPayload = [
+            'basic_salary' => $this->money($snapshot['basic_salary'] ?? 0),
+            'allowance_total' => $this->money($snapshot['allowance_total'] ?? 0),
+            'increment_amount' => $this->money($snapshot['increment_amount'] ?? 0),
+            'updated_at' => now(),
+        ];
+
+        $existingSnapshot = DB::table('hr_salary_year_snapshots')
+            ->where('staff_id', $staffId)
+            ->where('year', $year)
+            ->first();
+
+        if ($existingSnapshot) {
+            DB::table('hr_salary_year_snapshots')
+                ->where('id', $existingSnapshot->id)
+                ->update($snapshotPayload);
+
+            return;
+        }
+
+        DB::table('hr_salary_year_snapshots')->insert([
+            ...$snapshotPayload,
+            'staff_id' => $staffId,
+            'year' => $year,
+            'created_at' => now(),
+        ]);
+    }
+
+    private function previousYearSalaryReference(int $staffId, string $salaryMonth): array
+    {
+        $year = $this->previousYearForMonth($salaryMonth);
+        $missingMessage = "{$year} snapshot not configured. Set in Salary Settings.";
+
+        $decemberRecord = $this->approvedDecemberSalaryRecord($staffId, $year);
+
+        if ($decemberRecord) {
+            $allowanceTotal = (float) DB::table('hr_salary_claims')
+                ->where('application_id', (int) $decemberRecord->id)
+                ->where('type', 'Allowance')
+                ->sum('amount');
+
+            return $this->previousYearReferencePayload(
+                $year,
+                (float) $decemberRecord->basic_salary,
+                $allowanceTotal,
+                0,
+                'auto',
+                "Approved Dec {$year} salary record",
+                false,
+            );
+        }
+
+        if (Schema::hasTable('hr_salary_year_snapshots')) {
+            $manualSnapshot = DB::table('hr_salary_year_snapshots')
+                ->where('staff_id', $staffId)
+                ->where('year', $year)
+                ->first();
+
+            if ($manualSnapshot) {
+                return $this->previousYearReferencePayload(
+                    $year,
+                    (float) $manualSnapshot->basic_salary,
+                    (float) $manualSnapshot->allowance_total,
+                    (float) $manualSnapshot->increment_amount,
+                    'manual',
+                    'Manual snapshot from Salary Settings',
+                    true,
+                );
+            }
+        }
+
+        return [
+            'year' => (string) $year,
+            'source' => 'missing',
+            'sourceLabel' => 'Not configured',
+            'editable' => true,
+            'available' => false,
+            'message' => $missingMessage,
+            'basicSalary' => '',
+            'allowanceTotal' => '',
+            'incrementAmount' => '',
+            'total' => '',
+        ];
+    }
+
+    private function approvedDecemberSalaryRecord(int $staffId, int $year): ?object
+    {
+        return DB::table('hr_salary_applications')
+            ->where('staff_id', $staffId)
+            ->where('salary_month', $year.'-12')
+            ->where('status', 'Approved')
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function previousYearReferencePayload(
+        int $year,
+        float $basicSalary,
+        float $allowanceTotal,
+        float $incrementAmount,
+        string $source,
+        string $sourceLabel,
+        bool $editable,
+    ): array {
+        $basicSalary = (float) $this->money($basicSalary);
+        $allowanceTotal = (float) $this->money($allowanceTotal);
+        $incrementAmount = (float) $this->money($incrementAmount);
+
+        return [
+            'year' => (string) $year,
+            'source' => $source,
+            'sourceLabel' => $sourceLabel,
+            'editable' => $editable,
+            'available' => true,
+            'message' => '',
+            'basicSalary' => $this->decimalString($basicSalary),
+            'allowanceTotal' => $this->decimalString($allowanceTotal),
+            'incrementAmount' => $this->decimalString($incrementAmount),
+            'total' => $this->decimalString($basicSalary + $allowanceTotal + $incrementAmount),
+        ];
+    }
+
+    private function previousYearForMonth(string $month): int
+    {
+        if (preg_match('/^(\d{4})-\d{2}$/', $month, $matches)) {
+            return ((int) $matches[1]) - 1;
+        }
+
+        return ((int) now()->format('Y')) - 1;
+    }
+
     private function profilePayload(int $staffId): array
     {
         $profile = DB::table('hr_salary_profiles')->where('staff_id', $staffId)->first();
         if (! $profile) {
+            $effectiveMonth = now()->format('Y-m');
+
             return [
                 'basicSalary' => '3000',
-                'effectiveMonth' => now()->format('Y-m'),
+                'effectiveMonth' => $effectiveMonth,
                 'vehicle' => '',
                 'defaultMileageRate' => '0.60',
                 'yearlyMedicalClaim' => '0.00',
                 'notes' => '',
                 'recurringAllowances' => [],
+                'previousYearSnapshot' => $this->previousYearSalaryReference($staffId, $effectiveMonth),
             ];
         }
 
@@ -1308,6 +1496,10 @@ class SalaryService extends PdfRenderer
             'yearlyMedicalClaim' => $this->decimalString($profile->yearly_medical_claim ?? 0),
             'notes' => (string) ($profile->notes ?? ''),
             'recurringAllowances' => $allowances,
+            'previousYearSnapshot' => $this->previousYearSalaryReference(
+                $staffId,
+                (string) $profile->effective_month,
+            ),
         ];
     }
 
@@ -1373,6 +1565,100 @@ class SalaryService extends PdfRenderer
             : ($workflowPayload ?? $this->workflowService->salaryWorkflowPayload((int) $record->id, $request));
 
         return $payload;
+    }
+
+    private function canViewFinancialSalaryDetails(Request $request, object $record): bool
+    {
+        $actorId = $this->staffId($request);
+        if ($actorId <= 0) {
+            return false;
+        }
+
+        if ((int) ($record->checked_by ?? 0) === $actorId || (int) ($record->approved_by ?? 0) === $actorId) {
+            return true;
+        }
+
+        $instance = DB::table('workflow_instances')
+            ->where('subject_type', 'salary_application')
+            ->where('subject_id', (int) $record->id)
+            ->first();
+        if (! $instance) {
+            return false;
+        }
+
+        $acted = DB::table('workflow_actions')
+            ->where('instance_id', (int) $instance->id)
+            ->where('actor_staff_id', $actorId)
+            ->whereIn('action', ['check', 'approve', 'reject'])
+            ->exists();
+        if ($acted) {
+            return true;
+        }
+
+        return $this->isCurrentSalaryWorkflowAssignee($request, $record, $instance);
+    }
+
+    private function isCurrentSalaryWorkflowAssignee(Request $request, object $record, object $instance): bool
+    {
+        if (! in_array((string) $record->status, ['Submitted', 'Prepared', 'Checked'], true)) {
+            return false;
+        }
+
+        if (! in_array((string) $instance->status, ['Submitted', 'Prepared', 'Checked'], true)) {
+            return false;
+        }
+
+        $actorId = $this->staffId($request);
+        if ($actorId <= 0 || $actorId === (int) ($instance->maker_staff_id ?? $record->staff_id ?? 0)) {
+            return false;
+        }
+
+        $step = $instance->current_step_id
+            ? DB::table('workflow_template_steps')->where('id', (int) $instance->current_step_id)->first()
+            : null;
+        if (! $step) {
+            return false;
+        }
+
+        $recipients = DB::table('workflow_step_recipients')
+            ->where('step_id', (int) $step->id)
+            ->where('active', 1)
+            ->pluck('staff_id')
+            ->map(fn ($staffId): int => (int) $staffId)
+            ->all();
+        if ($recipients !== []) {
+            return in_array($actorId, $recipients, true);
+        }
+
+        return false;
+    }
+
+    private function redactedFinancialSalaryPayload(array $payload): array
+    {
+        $workflow = is_array($payload['workflow'] ?? null) ? $payload['workflow'] : $payload['workflow'] ?? null;
+        if (is_array($workflow)) {
+            $workflow['makerStaffId'] = null;
+            $workflow['availableActions'] = [];
+        }
+
+        return [
+            ...$payload,
+            'staffId' => null,
+            'staffName' => 'Restricted',
+            'staffCode' => '',
+            'basicSalary' => null,
+            'claimsTotal' => null,
+            'medicalClaimsTotal' => null,
+            'employeeDeductions' => null,
+            'employerContributions' => null,
+            'payableSalary' => null,
+            'deductions' => null,
+            'draftPayload' => null,
+            'draftSavedAt' => null,
+            'workflow' => $workflow,
+            'canViewSalaryDetails' => false,
+            'salaryRestricted' => true,
+        ];
     }
 
     private function financialRecordById(int $id): array

@@ -12,6 +12,7 @@ class RealizedSalesProjectQuery
     {
         $hasProjectQuoteId = Schema::hasColumn('projects_main', 'quote_id');
         $hasProjectType = Schema::hasColumn('projects_main', 'project_type');
+        $hasProjectCreatedBy = Schema::hasColumn('projects_main', 'created_by');
         $projectNameColumn = Schema::hasColumn('projects_main', 'project_name') ? 'p.project_name' : "''";
         $projectQuoteIdColumn = $hasProjectQuoteId ? 'p.quote_id' : 'NULL';
         $projectTypeColumn = $hasProjectType ? 'p.project_type' : "''";
@@ -23,51 +24,61 @@ class RealizedSalesProjectQuery
         $hasManpowerQuotes = Schema::hasTable('quotes_manpower');
         $hasEquipmentQuotes = Schema::hasTable('quotes_equipment');
         $hasSpecialQuotes = Schema::hasTable('quotes_special');
+        $hasStaffGeneral = Schema::hasTable('staff_general');
+        $hasStaffCode = $hasStaffGeneral && Schema::hasColumn('staff_general', 'name_code');
+        $hasStaffName = $hasStaffGeneral && Schema::hasColumn('staff_general', 'full_name');
         $canJoinQuoteTables = $hasProjectQuoteId && $hasProjectType;
+        $canJoinProjectCreator = $hasProjectCreatedBy && $hasStaffGeneral;
 
         $quoteRefColumns = [];
         $serviceTitleColumns = [$projectNameColumn, "''"];
-        $staffCodeColumns = ["'UNASSIGNED'"];
-        $staffNameColumns = ["'Unassigned'"];
+        $staffCodeColumns = [];
+        $staffNameColumns = [];
         $clientNameColumns = [$projectNameColumn, "''"];
 
         if ($hasTrainingQuotes && $canJoinQuoteTables) {
             $quoteRefColumns[] = 'qt.quote_ref_no';
             $serviceTitleColumns[] = 'qt.training_title';
-            $staffCodeColumns[] = 'qt.created_by_code';
-            $staffNameColumns[] = 'qt.created_by_name';
+            $staffCodeColumns[] = "NULLIF(qt.created_by_code, '')";
+            $staffNameColumns[] = "NULLIF(qt.created_by_name, '')";
             $clientNameColumns[] = 'qt.client_name';
         }
         if ($hasIndustrialHygieneQuotes && $canJoinQuoteTables) {
             $quoteRefColumns[] = 'qh.quote_ref_no';
             $serviceTitleColumns[] = 'qh.service_title';
-            $staffCodeColumns[] = 'qh.created_by_code';
-            $staffNameColumns[] = 'qh.created_by_name';
+            $staffCodeColumns[] = "NULLIF(qh.created_by_code, '')";
+            $staffNameColumns[] = "NULLIF(qh.created_by_name, '')";
             $clientNameColumns[] = 'qh.client_name';
         }
         if ($hasManpowerQuotes && $canJoinQuoteTables) {
             $quoteRefColumns[] = 'qm.quote_ref_no';
             $serviceTitleColumns[] = 'qm.service_title';
-            $staffCodeColumns[] = 'qm.created_by_code';
-            $staffNameColumns[] = 'qm.created_by_name';
+            $staffCodeColumns[] = "NULLIF(qm.created_by_code, '')";
+            $staffNameColumns[] = "NULLIF(qm.created_by_name, '')";
             $clientNameColumns[] = 'qm.client_name';
         }
         if ($hasEquipmentQuotes && $canJoinQuoteTables) {
             $quoteRefColumns[] = 'qe.quote_ref_no';
             $serviceTitleColumns[] = "CASE WHEN qe.id IS NOT NULL THEN 'Equipment Supply' ELSE NULL END";
-            $staffCodeColumns[] = 'qe.created_by_code';
-            $staffNameColumns[] = 'qe.created_by_name';
+            $staffCodeColumns[] = "NULLIF(qe.created_by_code, '')";
+            $staffNameColumns[] = "NULLIF(qe.created_by_name, '')";
             $clientNameColumns[] = 'qe.client_name';
         }
         if ($hasSpecialQuotes && $canJoinQuoteTables) {
             $quoteRefColumns[] = 'qs.quote_ref_no';
             $serviceTitleColumns[] = 'qs.service_title';
-            $staffCodeColumns[] = 'qs.created_by_code';
-            $staffNameColumns[] = 'qs.created_by_name';
+            $staffCodeColumns[] = "NULLIF(qs.created_by_code, '')";
+            $staffNameColumns[] = "NULLIF(qs.created_by_name, '')";
             $clientNameColumns[] = 'qs.client_name';
         }
 
         $quoteRefColumns[] = "''";
+        if ($canJoinProjectCreator) {
+            $staffCodeColumns[] = $hasStaffCode ? "NULLIF(ps.name_code, '')" : 'NULL';
+            $staffNameColumns[] = $hasStaffName ? "NULLIF(ps.full_name, '')" : 'NULL';
+        }
+        $staffCodeColumns[] = "'UNASSIGNED'";
+        $staffNameColumns[] = "'Unassigned'";
         $sourceSql = Schema::hasTable('quote_inquiry_sources') && $canJoinQuoteTables
             ? "
                 COALESCE(
@@ -147,6 +158,9 @@ class RealizedSalesProjectQuery
             $base->leftJoin('quotes_special as qs', function ($join) {
                 $join->on('qs.id', '=', 'p.quote_id')->where('p.project_type', '=', 'Special Service');
             });
+        }
+        if ($canJoinProjectCreator) {
+            $base->leftJoin('staff_general as ps', 'ps.staff_id', '=', 'p.created_by');
         }
 
         $base->selectRaw("

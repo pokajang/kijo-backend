@@ -2,16 +2,13 @@
 
 namespace App\Services\Vendors;
 
-use App\Http\Requests\Vendor\UpdateVendorPaymentWorkflowSettingsRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AppNotificationService;
 use App\Services\Mail\SystemEmailBodyBuilder;
 use App\Services\Mail\SystemEmailUrlBuilder;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\ValidationException;
 
 class VendorPaymentWorkflowService
 {
@@ -37,86 +34,6 @@ class VendorPaymentWorkflowService
         'approval_enabled' => true,
         'approval_levels' => 1,
     ];
-
-    public function index(Request $request): JsonResponse
-    {
-        $canEdit = $this->hasFallbackRole($request, self::FALLBACK_ROLES);
-        $stages = $this->serializedStages();
-
-        return response()->json([
-            'status' => 'success',
-            'settings' => $this->settings(),
-            'stages' => $stages,
-            'active_staff' => $canEdit ? $this->activeStaff() : $this->staffFromStages($stages),
-            'can_edit' => $canEdit,
-        ]);
-    }
-
-    public function update(UpdateVendorPaymentWorkflowSettingsRequest $request): JsonResponse
-    {
-        $this->assertTablesAvailable();
-
-        $data = $request->validated();
-        $settings = [
-            'review_enabled' => (bool) $data['review_enabled'],
-            'review_levels' => (int) $data['review_levels'],
-            'approval_enabled' => (bool) $data['approval_enabled'],
-            'approval_levels' => (int) $data['approval_levels'],
-        ];
-        $stages = $this->normalizeStagePayload($data['stages'] ?? []);
-        $now = now();
-
-        if (! $this->centralTablesAvailable()) {
-            $this->updateLegacySettings($settings, $stages, (int) $request->session()->get('staff_id', 0) ?: null, $now);
-        } else {
-            DB::transaction(function () use ($settings, $stages, $now): void {
-            $templateId = $this->ensureCentralTemplate();
-            $stepIds = DB::table('workflow_template_steps')
-                ->where('template_id', $templateId)
-                ->pluck('id')
-                ->all();
-            if (! empty($stepIds)) {
-                DB::table('workflow_step_recipients')->whereIn('step_id', $stepIds)->update([
-                    'active' => 0,
-                    'updated_at' => $now,
-                ]);
-            }
-            DB::table('workflow_template_steps')->where('template_id', $templateId)->update([
-                'active' => 0,
-                'updated_at' => $now,
-            ]);
-
-            foreach ($this->stageDefinitions($settings) as $stage) {
-                $stepId = $this->upsertCentralStep(
-                    $templateId,
-                    $stage['stage_type'],
-                    (int) $stage['level_no'],
-                    $this->stageLabel($stage['stage_type'], (int) $stage['level_no']),
-                    $now,
-                );
-                $ids = $stages[$stage['stage_type']][$stage['level_no']] ?? [];
-                foreach ($this->validStaffIds($ids) as $index => $staffId) {
-                    DB::table('workflow_step_recipients')->updateOrInsert(
-                        ['step_id' => $stepId, 'staff_id' => $staffId],
-                        [
-                            'sort_order' => $index,
-                            'active' => 1,
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                    );
-                }
-            }
-            });
-        }
-
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Vendor payment workflow settings saved.',
-            'settings' => $this->settings(),
-            'stages' => $this->serializedStages(),
-        ]);
-    }
 
     public function settings(): array
     {
@@ -393,55 +310,6 @@ class VendorPaymentWorkflowService
         return $central;
     }
 
-    private function activeStaff(): array
-    {
-        if (! Schema::hasTable('staff_general')) {
-            return [];
-        }
-
-        return DB::table('staff_general')
-            ->whereNull('deleted_at')
-            ->whereRaw("LOWER(COALESCE(status, '')) = 'active'")
-            ->select([
-                'staff_id',
-                'full_name',
-                'name_code',
-                Schema::hasColumn('staff_general', 'email')
-                    ? DB::raw('email as email')
-                    : DB::raw('NULL as email'),
-            ])
-            ->orderBy('full_name')
-            ->get()
-            ->map(fn ($row) => $this->formatStaff($row))
-            ->values()
-            ->all();
-    }
-
-    private function staffFromStages(array $stages): array
-    {
-        $staff = [];
-
-        foreach ($stages as $stage) {
-            foreach (['recipients', 'effective_recipients'] as $key) {
-                foreach (($stage[$key] ?? []) as $recipient) {
-                    $staffId = (int) ($recipient['staff_id'] ?? 0);
-                    if ($staffId <= 0 || isset($staff[$staffId])) {
-                        continue;
-                    }
-
-                    $staff[$staffId] = [
-                        'staff_id' => $staffId,
-                        'full_name' => (string) ($recipient['full_name'] ?? ''),
-                        'name_code' => (string) ($recipient['name_code'] ?? ''),
-                        'email' => (string) ($recipient['email'] ?? ''),
-                    ];
-                }
-            }
-        }
-
-        return array_values($staff);
-    }
-
     private function activeStaffForRoles(array $roles): array
     {
         if (! Schema::hasTable('system_users') || ! Schema::hasTable('staff_general')) {
@@ -570,41 +438,6 @@ class VendorPaymentWorkflowService
         ]);
     }
 
-    private function validStaffIds(array $ids): array
-    {
-        $staffIds = array_values(array_unique(array_filter(array_map('intval', $ids))));
-        if (empty($staffIds) || ! Schema::hasTable('staff_general')) {
-            return [];
-        }
-
-        return DB::table('staff_general')
-            ->whereIn('staff_id', $staffIds)
-            ->whereNull('deleted_at')
-            ->whereRaw("LOWER(COALESCE(status, '')) = 'active'")
-            ->pluck('staff_id')
-            ->map(fn ($id) => (int) $id)
-            ->values()
-            ->all();
-    }
-
-    private function normalizeStagePayload(array $stages): array
-    {
-        $result = [];
-        foreach ($stages as $stage) {
-            $type = (string) ($stage['stage_type'] ?? '');
-            $level = (int) ($stage['level_no'] ?? 0);
-            if (! in_array($type, [self::STAGE_REVIEW, self::STAGE_APPROVAL, self::STAGE_FINANCE], true) || $level < 1) {
-                continue;
-            }
-            if ($type === self::STAGE_FINANCE) {
-                $level = 1;
-            }
-            $result[$type][$level] = (array) ($stage['recipient_staff_ids'] ?? []);
-        }
-
-        return $result;
-    }
-
     private function progress(object $payment): array
     {
         $raw = $payment->workflow_progress_json ?? null;
@@ -668,18 +501,6 @@ class VendorPaymentWorkflowService
         return ! empty(array_intersect($allowedRoles, $normalized));
     }
 
-    private function assertTablesAvailable(): void
-    {
-        if (
-            ! $this->centralTablesAvailable()
-            && (! Schema::hasTable(self::LEGACY_SETTINGS_TABLE) || ! Schema::hasTable(self::LEGACY_RECIPIENTS_TABLE))
-        ) {
-            throw ValidationException::withMessages([
-                'workflow' => 'Workflow tables are not available. Run migrations first.',
-            ]);
-        }
-    }
-
     private function legacySettings(): array
     {
         if (! Schema::hasTable(self::LEGACY_SETTINGS_TABLE)) {
@@ -696,50 +517,6 @@ class VendorPaymentWorkflowService
             'approval_enabled' => $this->boolValue($stored['approval_enabled'] ?? self::DEFAULT_SETTINGS['approval_enabled']),
             'approval_levels' => max(0, min(5, (int) ($stored['approval_levels'] ?? self::DEFAULT_SETTINGS['approval_levels']))),
         ];
-    }
-
-    private function updateLegacySettings(array $settings, array $stages, ?int $actorId, mixed $now): void
-    {
-        DB::transaction(function () use ($settings, $stages, $actorId, $now): void {
-            foreach ($settings as $key => $value) {
-                DB::table(self::LEGACY_SETTINGS_TABLE)->updateOrInsert(
-                    ['setting_key' => $key],
-                    [
-                        'setting_value' => is_bool($value) ? ($value ? '1' : '0') : (string) $value,
-                        'updated_by' => $actorId,
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ],
-                );
-            }
-
-            DB::table(self::LEGACY_RECIPIENTS_TABLE)->update([
-                'is_active' => 0,
-                'updated_by' => $actorId,
-                'updated_at' => $now,
-            ]);
-
-            foreach ($this->stageDefinitions($settings) as $stage) {
-                $ids = $stages[$stage['stage_type']][$stage['level_no']] ?? [];
-                foreach ($this->validStaffIds($ids) as $index => $staffId) {
-                    DB::table(self::LEGACY_RECIPIENTS_TABLE)->updateOrInsert(
-                        [
-                            'stage_type' => $stage['stage_type'],
-                            'level_no' => $stage['level_no'],
-                            'staff_id' => $staffId,
-                        ],
-                        [
-                            'sort_order' => $index,
-                            'is_active' => 1,
-                            'created_by' => $actorId,
-                            'updated_by' => $actorId,
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                    );
-                }
-            }
-        });
     }
 
     private function legacyConfiguredStaffIds(string $stageType, int $level): array

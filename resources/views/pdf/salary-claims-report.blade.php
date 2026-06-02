@@ -261,6 +261,16 @@
             $year = ($generatedAt ?? now())->format('Y');
         }
         $previousYear = (string) ((int) $year - 1);
+        $previousYearReference = $previousYearReference ?? [
+            'year' => $previousYear,
+            'available' => false,
+            'message' => $previousYear.' snapshot not configured. Set in Salary Settings.',
+        ];
+        $previousYear = (string) ($previousYearReference['year'] ?? $previousYear);
+        $hasPreviousYearReference = !empty($previousYearReference['available']);
+        $previousYearMissingMessage = (string) (
+            $previousYearReference['message'] ?? $previousYear.' snapshot not configured. Set in Salary Settings.'
+        );
         $claimDate = $dateTimeLabel($claimDate ?? $record['submittedAt'] ?? $generatedAt ?? now());
         $applicantSignature = $applicantSignature ?? [];
         $approverSignature = $approverSignature ?? [];
@@ -487,25 +497,38 @@
                     <td colspan="3" class="pay-summary-label">Claims total</td>
                     <td colspan="2" class="text-right pay-summary-value">{{ $plainMoney($claimTotal) }}</td>
                     <td colspan="2" class="record-purpose-cell record-purpose-label">Basic</td>
-                    <td rowspan="4" class="record-purpose-prior-note">{{ $previousYear }} data not configured yet</td>
+                    @if($hasPreviousYearReference)
+                        <td class="text-right">{{ $plainMoney($previousYearReference['basicSalary'] ?? 0) }}</td>
+                    @else
+                        <td rowspan="4" class="record-purpose-prior-note">{{ $previousYearMissingMessage }}</td>
+                    @endif
                     <td class="text-right">{{ $plainMoney($basicSalary) }}</td>
                 </tr>
                 <tr class="claim-summary-row">
                     <td colspan="3" class="pay-summary-label">Basic salary</td>
                     <td colspan="2" class="text-right pay-summary-value">{{ $plainMoney($basicSalary) }}</td>
                     <td colspan="2" class="record-purpose-cell record-purpose-label">Allowance</td>
+                    @if($hasPreviousYearReference)
+                        <td class="text-right">{{ $plainMoney($previousYearReference['allowanceTotal'] ?? 0) }}</td>
+                    @endif
                     <td class="text-right">{{ $plainMoney($allowanceTotal) }}</td>
                 </tr>
                 <tr class="claim-summary-row">
                     <td colspan="3" class="pay-summary-label">EPF</td>
                     <td colspan="2" class="text-right pay-summary-value">-{{ $plainMoney($employeeEpf) }}</td>
                     <td colspan="2" class="record-purpose-cell record-purpose-label">Increment</td>
+                    @if($hasPreviousYearReference)
+                        <td class="text-right">{{ $plainMoney($previousYearReference['incrementAmount'] ?? 0) }}</td>
+                    @endif
                     <td class="text-right">{{ $plainMoney(0) }}</td>
                 </tr>
                 <tr class="claim-summary-row">
                     <td colspan="3" class="pay-summary-label">SOCSO & SIP</td>
                     <td colspan="2" class="text-right pay-summary-value">-{{ $plainMoney($employeeSocsoSip) }}</td>
                     <td colspan="2" class="record-purpose-cell record-purpose-total">Total</td>
+                    @if($hasPreviousYearReference)
+                        <td class="text-right record-purpose-total">{{ $plainMoney($previousYearReference['total'] ?? 0) }}</td>
+                    @endif
                     <td class="text-right record-purpose-total">{{ $plainMoney($currentRecordTotal) }}</td>
                 </tr>
                 <tr class="claim-summary-row">

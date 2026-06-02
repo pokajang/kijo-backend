@@ -15,6 +15,7 @@ class WorkloadDashboardShareService
 
     public function __construct(
         private WorkloadDashboardStatsService $workloadStats,
+        private WorkloadCurrentScoreSanitizer $scoreSanitizer,
     ) {}
 
     public function create(Request $request): JsonResponse
@@ -104,6 +105,7 @@ class WorkloadDashboardShareService
                 'message' => 'Shared workload dashboard is unavailable.',
             ], 500);
         }
+        $payload = $this->scoreSanitizer->sanitizePayload($payload);
 
         $payload['share'] = [
             'expiresAt' => Carbon::parse($row->expires_at)->toIso8601String(),

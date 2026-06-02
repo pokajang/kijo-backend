@@ -577,9 +577,12 @@ class LeaveRequestService extends LeaveBaseService
             return false;
         }
 
-        $to = array_shift($emails);
+        $sent = false;
+        foreach ($emails as $email) {
+            $sent = $this->sendHtmlMailNow($email, 'Human Resource', $subject, $body, [], $presentation) || $sent;
+        }
 
-        return $this->sendHtmlMailNow($to, 'Human Resource', $subject, $body, $emails, $presentation);
+        return $sent;
     }
 
     private function leaveActionEmailBody(

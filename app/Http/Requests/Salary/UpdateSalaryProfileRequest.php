@@ -25,6 +25,11 @@ class UpdateSalaryProfileRequest extends FormRequest
             'recurring_allowances.*.description' => ['required', 'string', 'max:255'],
             'recurring_allowances.*.amount' => ['required', 'numeric', 'min:0.01', 'max:9999999.99'],
             'recurring_allowances.*.start_month' => ['nullable', 'date_format:Y-m'],
+            'previous_year_snapshot' => ['nullable', 'array'],
+            'previous_year_snapshot.year' => ['nullable', 'integer', 'min:1900', 'max:2100'],
+            'previous_year_snapshot.basic_salary' => ['nullable', 'numeric', 'min:0', 'max:9999999.99'],
+            'previous_year_snapshot.allowance_total' => ['nullable', 'numeric', 'min:0', 'max:9999999.99'],
+            'previous_year_snapshot.increment_amount' => ['nullable', 'numeric', 'min:0', 'max:9999999.99'],
         ];
     }
 }

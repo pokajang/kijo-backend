@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Console\Commands\ReconcileLeaveNotifications;
 use App\Services\Leaves\LeaveWorkflowRecipientService;
 use App\Services\Workflows\WorkflowService;
 use Illuminate\Http\Request;
@@ -33,7 +34,7 @@ use Illuminate\Support\Facades\Schema;
  *
  * APPROVED DIRECTION (remediation Phase D): stored rows are the single source of
  * truth; the live recompute is demoted to a backfill/reconcile safety net
- * ({@see \App\Console\Commands\ReconcileLeaveNotifications}). The flip to
+ * ({@see ReconcileLeaveNotifications}). The flip to
  * 'stored' is gated on the Phase D1 parity log ({@see logStaffLeavesParity()})
  * showing the stored table is trustworthy in production. While the flag remains
  * 'recompute', staff.leaves behaviour is unchanged.
@@ -789,23 +790,34 @@ class AppNotificationService
                 $request,
                 $instance,
                 $table,
+                $subjectType,
             ))
             ->count();
     }
 
-    private function canActOnSalaryWorkflowInstance(Request $request, object $instance, string $applicationTable): bool
-    {
+    private function canActOnSalaryWorkflowInstance(
+        Request $request,
+        object $instance,
+        string $applicationTable,
+        string $subjectType,
+    ): bool {
         $actorId = (int) $request->session()->get('staff_id', 0);
         if ($actorId <= 0) {
             return false;
         }
 
         $isSystemAdmin = $this->rolesMatch($request->session()->get('roles', []), ['System Admin']);
+        if ($subjectType === 'salary_application') {
+            $isSystemAdmin = false;
+        }
         if (! $isSystemAdmin && $actorId === (int) $instance->maker_staff_id) {
             return false;
         }
 
-        if (! $isSystemAdmin && ! $this->canActOnWorkflowStep($request, (int) $instance->step_id, $instance->fallback_roles)) {
+        $canActOnStep = $subjectType === 'salary_application'
+            ? $this->canActOnConfiguredWorkflowStep($request, (int) $instance->step_id)
+            : $this->canActOnWorkflowStep($request, (int) $instance->step_id, $instance->fallback_roles);
+        if (! $isSystemAdmin && ! $canActOnStep) {
             return false;
         }
 
@@ -817,6 +829,23 @@ class AppNotificationService
         }
 
         return true;
+    }
+
+    private function canActOnConfiguredWorkflowStep(Request $request, int $stepId): bool
+    {
+        $actorId = (int) $request->session()->get('staff_id', 0);
+        if ($actorId <= 0 || $stepId <= 0) {
+            return false;
+        }
+
+        $recipients = DB::table('workflow_step_recipients')
+            ->where('step_id', $stepId)
+            ->where('active', 1)
+            ->pluck('staff_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
+        return in_array($actorId, $recipients, true);
     }
 
     private function canActOnWorkflowStep(Request $request, int $stepId, mixed $fallbackRoles): bool

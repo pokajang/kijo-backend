@@ -251,7 +251,6 @@
             <td class="header-meta">
                 <div>Period: {{ $periodLabel ?? 'All available records' }}</div>
                 <div>Snapshot as of: {{ $asOfDate ?? '-' }}</div>
-                <div>Completed window: {{ $completedWindowLabel ?? 'All available completed work' }}</div>
             </td>
         </tr>
     </table>
@@ -287,7 +286,6 @@
                                 <tr>
                                     <th>Work type</th>
                                     <th class="work-type-number">Active</th>
-                                    <th class="work-type-number">Done</th>
                                     <th class="work-type-number">Effort</th>
                                 </tr>
                             </thead>
@@ -296,7 +294,6 @@
                                     <tr>
                                         <td>{{ $line['label'] }}</td>
                                         <td class="work-type-number">{{ $line['activeCount'] }}</td>
-                                        <td class="work-type-number">{{ $line['completedCount'] }}</td>
                                         <td class="work-type-number">{{ $line['effortPoints'] }}</td>
                                     </tr>
                                 @endforeach
@@ -361,25 +358,9 @@
                 @endif
 
                 @php
-                    $completedStartRows = array_slice($staff['completedTasks'], 0, 3);
-                    $completedRemainingRows = array_slice($staff['completedTasks'], 3);
                     $scoreStartRows = array_slice($staff['scoreRows'], 0, 4);
                     $scoreRemainingRows = array_slice($staff['scoreRows'], 4);
                 @endphp
-                @if(count($staff['completedTasks']))
-                    <div class="table-start-guard">
-                        <div class="subheading">Completed 5MM Tasks</div>
-                        @include('pdf.partials.workload-task-table', ['tasks' => $completedStartRows])
-                    </div>
-                    @if(count($completedRemainingRows))
-                        @include('pdf.partials.workload-task-table', ['tasks' => $completedRemainingRows, 'className' => 'table-continuation'])
-                    @endif
-                @else
-                    <div class="table-start-guard">
-                        <div class="subheading">Completed 5MM Tasks</div>
-                        <div class="empty">No completed non-project tasks in this period.</div>
-                    </div>
-                @endif
 
                 <div class="table-start-guard">
                     <div class="subheading">Score Calculation</div>

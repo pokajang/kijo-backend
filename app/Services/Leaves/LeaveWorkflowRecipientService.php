@@ -2,11 +2,8 @@
 
 namespace App\Services\Leaves;
 
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\ValidationException;
 
 class LeaveWorkflowRecipientService
 {
@@ -25,11 +22,6 @@ class LeaveWorkflowRecipientService
     private const TEMPLATE_KEY = 'leave-application';
 
     private const LEGACY_TABLE = 'hr_leave_workflow_recipients';
-
-    private const CONFIGURABLE_STAGES = [
-        self::STAGE_SUBMITTED_RECOMMENDERS,
-        self::STAGE_RECOMMENDED_APPROVERS,
-    ];
 
     private const CENTRAL_STAGES = [
         self::STAGE_SUBMITTED_RECOMMENDERS,
@@ -77,78 +69,6 @@ class LeaveWorkflowRecipientService
             'fallback' => 'Applicant and earlier workflow participants',
         ],
     ];
-
-    public function index(): JsonResponse
-    {
-        return response()->json([
-            'status' => 'success',
-            'stages' => $this->serializedStages(),
-        ]);
-    }
-
-    public function update(Request $request, array $payload): JsonResponse
-    {
-        $this->assertConfiguredTable();
-
-        $stages = $payload['stages'] ?? [];
-        $unknownStages = array_values(array_diff(array_keys($stages), self::CONFIGURABLE_STAGES));
-        if (! empty($unknownStages)) {
-            throw ValidationException::withMessages([
-                'stages' => 'Unknown leave workflow stage: '.implode(', ', $unknownStages),
-            ]);
-        }
-
-        $now = now();
-
-        if (! $this->centralTablesAvailable()) {
-            $this->updateLegacyRecipients($stages, (int) $request->session()->get('staff_id', 0) ?: null, $now);
-        } else {
-            DB::transaction(function () use ($stages, $now): void {
-            $templateId = $this->ensureCentralTemplate();
-            $stepIds = DB::table('workflow_template_steps')
-                ->where('template_id', $templateId)
-                ->pluck('id')
-                ->all();
-            if (! empty($stepIds)) {
-                DB::table('workflow_step_recipients')->whereIn('step_id', $stepIds)
-                    ->update([
-                        'active' => 0,
-                        'updated_at' => $now,
-                    ]);
-            }
-
-            $stepsByKey = DB::table('workflow_template_steps')
-                ->where('template_id', $templateId)
-                ->get()
-                ->keyBy('step_key');
-
-            foreach (self::CONFIGURABLE_STAGES as $stageKey) {
-                $step = $stepsByKey->get($stageKey);
-                if (! $step) {
-                    continue;
-                }
-                $staffIds = $this->normalizeStaffIds($stages[$stageKey] ?? []);
-                foreach ($staffIds as $index => $staffId) {
-                    DB::table('workflow_step_recipients')->updateOrInsert(
-                        ['step_id' => (int) $step->id, 'staff_id' => $staffId],
-                        [
-                            'sort_order' => $index,
-                            'active' => 1,
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                    );
-                }
-            }
-            });
-        }
-
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Leave workflow recipients updated successfully.',
-            'stages' => $this->serializedStages(),
-        ]);
-    }
 
     public function recipientsForStage(string $stageKey, array $fallbackRoles = []): array
     {
@@ -218,28 +138,6 @@ class LeaveWorkflowRecipientService
             ->map(fn ($row) => $this->formatRecipient($row))
             ->values()
             ->all();
-    }
-
-    private function serializedStages(): array
-    {
-        $recipients = $this->configuredRecipientsByStage();
-
-        return array_map(function (string $stageKey) use ($recipients): array {
-            $configuredRecipients = $recipients[$stageKey] ?? [];
-            $effectiveRecipients = ! empty($configuredRecipients)
-                ? $configuredRecipients
-                : $this->activeStaffForRoles(self::FALLBACK_ROLES[$stageKey] ?? []);
-
-            return [
-                'key' => $stageKey,
-                'label' => self::STAGES[$stageKey]['label'],
-                'description' => self::STAGES[$stageKey]['description'],
-                'fallback' => self::STAGES[$stageKey]['fallback'],
-                'recipients' => $configuredRecipients,
-                'effective_recipients' => $effectiveRecipients,
-                'using_default' => empty($configuredRecipients),
-            ];
-        }, self::CONFIGURABLE_STAGES);
     }
 
     private function configuredRecipientsByStage(): array
@@ -332,27 +230,6 @@ class LeaveWorkflowRecipientService
             ->all();
     }
 
-    private function normalizeStaffIds(array $staffIds): array
-    {
-        if (empty($staffIds)) {
-            return [];
-        }
-
-        $ids = array_values(array_unique(array_filter(array_map('intval', $staffIds))));
-        if (empty($ids) || ! Schema::hasTable('staff_general')) {
-            return [];
-        }
-
-        return DB::table('staff_general')
-            ->whereIn('staff_id', $ids)
-            ->whereNull('deleted_at')
-            ->whereRaw("LOWER(COALESCE(status, '')) = 'active'")
-            ->pluck('staff_id')
-            ->map(fn ($id) => (int) $id)
-            ->values()
-            ->all();
-    }
-
     private function formatRecipient(object $row): array
     {
         return [
@@ -370,45 +247,6 @@ class LeaveWorkflowRecipientService
         $normalized = array_map(static fn ($role): string => strtolower(trim((string) $role)), $roles);
 
         return ! empty(array_intersect($allowedRoles, $normalized));
-    }
-
-    private function assertConfiguredTable(): void
-    {
-        if (! $this->centralTablesAvailable() && ! Schema::hasTable(self::LEGACY_TABLE)) {
-            throw ValidationException::withMessages([
-                'stages' => 'Workflow recipient tables are not available. Run migrations first.',
-            ]);
-        }
-    }
-
-    private function updateLegacyRecipients(array $stages, ?int $actorId, mixed $now): void
-    {
-        DB::transaction(function () use ($stages, $actorId, $now): void {
-            DB::table(self::LEGACY_TABLE)
-                ->whereIn('stage_key', array_keys(self::STAGES))
-                ->update([
-                    'is_active' => 0,
-                    'updated_by' => $actorId,
-                    'updated_at' => $now,
-                ]);
-
-            foreach (self::CONFIGURABLE_STAGES as $stageKey) {
-                $staffIds = $this->normalizeStaffIds($stages[$stageKey] ?? []);
-                foreach ($staffIds as $index => $staffId) {
-                    DB::table(self::LEGACY_TABLE)->updateOrInsert(
-                        ['stage_key' => $stageKey, 'staff_id' => $staffId],
-                        [
-                            'sort_order' => $index,
-                            'is_active' => 1,
-                            'created_by' => $actorId,
-                            'updated_by' => $actorId,
-                            'created_at' => $now,
-                            'updated_at' => $now,
-                        ],
-                    );
-                }
-            }
-        });
     }
 
     private function legacyConfiguredRecipientsByStage(): array

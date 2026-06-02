@@ -26,6 +26,9 @@ class VendorPaymentWorkflowTest extends TestCase
             'in_app_notifications',
             'staff_general',
             'system_users',
+            'workflow_step_recipients',
+            'workflow_template_steps',
+            'workflow_templates',
             'vendor_payment_workflow_recipients',
             'vendor_payment_workflow_settings',
             'projects_main',
@@ -120,6 +123,41 @@ class VendorPaymentWorkflowTest extends TestCase
             $table->unsignedBigInteger('created_by')->nullable();
             $table->unsignedBigInteger('updated_by')->nullable();
             $table->timestamps();
+        });
+
+        Schema::create('workflow_templates', function (Blueprint $table): void {
+            $table->id();
+            $table->string('process_key', 120)->unique();
+            $table->string('label');
+            $table->string('module_key', 80);
+            $table->string('route_pattern', 191)->nullable();
+            $table->boolean('enabled')->default(true);
+            $table->timestamps();
+        });
+
+        Schema::create('workflow_template_steps', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('template_id')->constrained('workflow_templates')->cascadeOnDelete();
+            $table->string('step_key', 120);
+            $table->unsignedInteger('level_no')->default(1);
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->string('label');
+            $table->string('action_label', 80);
+            $table->json('fallback_roles')->nullable();
+            $table->boolean('active')->default(true);
+            $table->timestamps();
+            $table->unique(['template_id', 'step_key', 'level_no'], 'workflow_steps_template_key_level_unique');
+        });
+
+        Schema::create('workflow_step_recipients', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('step_id')->constrained('workflow_template_steps')->cascadeOnDelete();
+            $table->unsignedBigInteger('staff_id');
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->boolean('active')->default(true);
+            $table->timestamps();
+            $table->unique(['step_id', 'staff_id']);
+            $table->index('staff_id');
         });
 
         Schema::create('in_app_notifications', function (Blueprint $table): void {
@@ -371,7 +409,7 @@ class VendorPaymentWorkflowTest extends TestCase
     public function test_workflow_settings_can_configure_non_manager_reviewers(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => true,
                 'review_levels' => 2,
                 'approval_enabled' => false,
@@ -380,10 +418,10 @@ class VendorPaymentWorkflowTest extends TestCase
                     ['stage_type' => 'review', 'level_no' => 1, 'recipient_staff_ids' => [50]],
                     ['stage_type' => 'review', 'level_no' => 2, 'recipient_staff_ids' => [60]],
                 ],
-            ])
+            ]))
             ->assertOk()
-            ->assertJsonPath('settings.review_levels', 2)
-            ->assertJsonPath('stages.0.recipients.0.staff_id', 50);
+            ->assertJsonPath('template.settings.review_levels', 2)
+            ->assertJsonPath('template.steps.0.recipients.0.staff_id', 50);
 
         $paymentId = $this->insertPayment(['current_review_level' => 1]);
 
@@ -420,22 +458,22 @@ class VendorPaymentWorkflowTest extends TestCase
     public function test_workflow_settings_can_be_read_by_staff_but_saved_only_by_manager_or_system_admin(): void
     {
         $this->actingSession(60, ['Staff'])
-            ->getJson('/vendor-payments/workflow-settings')
+            ->getJson('/workflows/templates/vendor-payment')
             ->assertOk()
             ->assertJsonPath('can_edit', false);
 
         $this->actingSession(60, ['Staff'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => false,
                 'review_levels' => 0,
                 'approval_enabled' => false,
                 'approval_levels' => 0,
                 'stages' => [],
-            ])
+            ]))
             ->assertStatus(403);
 
         $this->actingSession(30, ['System Admin'])
-            ->getJson('/vendor-payments/workflow-settings')
+            ->getJson('/workflows/templates/vendor-payment')
             ->assertOk()
             ->assertJsonPath('can_edit', true);
     }
@@ -443,7 +481,7 @@ class VendorPaymentWorkflowTest extends TestCase
     public function test_approval_only_workflow_starts_checked_and_uses_configured_approver(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => false,
                 'review_levels' => 0,
                 'approval_enabled' => true,
@@ -451,7 +489,7 @@ class VendorPaymentWorkflowTest extends TestCase
                 'stages' => [
                     ['stage_type' => 'approval', 'level_no' => 1, 'recipient_staff_ids' => [60]],
                 ],
-            ])
+            ]))
             ->assertOk();
 
         $submitResponse = $this->actingSession(10, ['Staff'])
@@ -495,7 +533,7 @@ class VendorPaymentWorkflowTest extends TestCase
         Bus::fake([SendHtmlMailJob::class]);
 
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => true,
                 'review_levels' => 1,
                 'approval_enabled' => true,
@@ -505,7 +543,7 @@ class VendorPaymentWorkflowTest extends TestCase
                     ['stage_type' => 'approval', 'level_no' => 1, 'recipient_staff_ids' => [30]],
                     ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [50]],
                 ],
-            ])
+            ]))
             ->assertOk();
 
         $paymentId = $this->insertPayment();
@@ -539,7 +577,7 @@ class VendorPaymentWorkflowTest extends TestCase
     public function test_finance_only_workflow_starts_approved_and_notifies_finance(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => false,
                 'review_levels' => 0,
                 'approval_enabled' => false,
@@ -547,7 +585,7 @@ class VendorPaymentWorkflowTest extends TestCase
                 'stages' => [
                     ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [50]],
                 ],
-            ])
+            ]))
             ->assertOk();
 
         $submitResponse = $this->actingSession(10, ['Staff'])
@@ -578,7 +616,7 @@ class VendorPaymentWorkflowTest extends TestCase
     public function test_configured_finance_recipient_can_mark_paid_without_finance_role(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => true,
                 'review_levels' => 1,
                 'approval_enabled' => true,
@@ -586,10 +624,10 @@ class VendorPaymentWorkflowTest extends TestCase
                 'stages' => [
                     ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [50]],
                 ],
-            ])
+            ]))
             ->assertOk()
-            ->assertJsonPath('stages.2.stage_type', 'finance')
-            ->assertJsonPath('stages.2.recipients.0.staff_id', 50);
+            ->assertJsonPath('template.steps.2.stepKey', 'finance')
+            ->assertJsonPath('template.steps.2.recipients.0.staff_id', 50);
 
         $paymentId = $this->insertPayment(['status' => 'Approved']);
 
@@ -619,7 +657,7 @@ class VendorPaymentWorkflowTest extends TestCase
     public function test_inactive_configured_finance_recipient_does_not_block_fallback_finance(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => true,
                 'review_levels' => 1,
                 'approval_enabled' => true,
@@ -627,7 +665,7 @@ class VendorPaymentWorkflowTest extends TestCase
                 'stages' => [
                     ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [50]],
                 ],
-            ])
+            ]))
             ->assertOk();
 
         DB::table('staff_general')->where('staff_id', 50)->update(['status' => 'Inactive']);
@@ -661,10 +699,10 @@ class VendorPaymentWorkflowTest extends TestCase
             ->assertStatus(403);
     }
 
-    public function test_workflow_settings_reject_non_level_one_finance_stage(): void
+    public function test_central_vendor_workflow_normalizes_finance_stage_to_level_one(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => true,
                 'review_levels' => 1,
                 'approval_enabled' => true,
@@ -672,14 +710,16 @@ class VendorPaymentWorkflowTest extends TestCase
                 'stages' => [
                     ['stage_type' => 'finance', 'level_no' => 2, 'recipient_staff_ids' => [50]],
                 ],
-            ])
-            ->assertStatus(422);
+            ]))
+            ->assertOk()
+            ->assertJsonPath('template.steps.2.stepKey', 'finance')
+            ->assertJsonPath('template.steps.2.levelNo', 1);
     }
 
     public function test_payment_queue_returns_mark_paid_permission_for_configured_finance(): void
     {
         $this->actingSession(20, ['Manager'])
-            ->putJson('/vendor-payments/workflow-settings', [
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
                 'review_enabled' => true,
                 'review_levels' => 1,
                 'approval_enabled' => true,
@@ -687,7 +727,7 @@ class VendorPaymentWorkflowTest extends TestCase
                 'stages' => [
                     ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [50]],
                 ],
-            ])
+            ]))
             ->assertOk();
 
         $this->insertPayment(['status' => 'Approved']);
@@ -742,5 +782,22 @@ class VendorPaymentWorkflowTest extends TestCase
         $prop->setAccessible(true);
 
         return $prop->getValue($job);
+    }
+
+    private function vendorWorkflowPayload(array $payload): array
+    {
+        return [
+            'settings' => [
+                'review_enabled' => (bool) ($payload['review_enabled'] ?? false),
+                'review_levels' => (int) ($payload['review_levels'] ?? 0),
+                'approval_enabled' => (bool) ($payload['approval_enabled'] ?? false),
+                'approval_levels' => (int) ($payload['approval_levels'] ?? 0),
+            ],
+            'steps' => array_map(static fn (array $stage): array => [
+                'stepKey' => (string) ($stage['stage_type'] ?? ''),
+                'levelNo' => (int) ($stage['level_no'] ?? 1),
+                'recipient_staff_ids' => $stage['recipient_staff_ids'] ?? [],
+            ], $payload['stages'] ?? []),
+        ];
     }
 }

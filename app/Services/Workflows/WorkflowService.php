@@ -5,7 +5,6 @@ namespace App\Services\Workflows;
 use App\Services\Salary\SalaryWorkflowNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
@@ -22,8 +21,11 @@ class WorkflowService
     public const NEGOTIATION_TEMPLATE_KEY = 'quote-price-exception';
 
     private const SALARY_SUBJECT_TYPE = 'salary_application';
+
     private const OTHER_CLAIM_SUBJECT_TYPE = 'other_claim_application';
+
     private const SALARY_SUBMITTED_STATUS = 'Submitted';
+
     private const SALARY_PENDING_CHECK_STATUSES = ['Submitted', 'Prepared'];
 
     private const MANAGE_ROLES = ['Manager', 'System Admin'];
@@ -59,6 +61,80 @@ class WorkflowService
             'status' => 'success',
             'templates' => $templates,
             'can_edit' => $this->hasAnyRole($request, self::MANAGE_ROLES),
+        ]);
+    }
+
+    public function setupStatus(Request $request): JsonResponse
+    {
+        $templateKeys = [
+            self::SALARY_TEMPLATE_KEY,
+            self::VENDOR_TEMPLATE_KEY,
+            self::LEAVE_TEMPLATE_KEY,
+            self::NEGOTIATION_TEMPLATE_KEY,
+        ];
+        $emptyStatus = array_fill_keys($templateKeys, ['missing' => 0]);
+
+        if (
+            ! Schema::hasTable('workflow_templates')
+            || ! Schema::hasTable('workflow_template_steps')
+            || ! Schema::hasTable('workflow_step_recipients')
+        ) {
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'total_missing' => 0,
+                    'templates' => $emptyStatus,
+                ],
+            ]);
+        }
+
+        $this->ensureDefaultTemplates();
+
+        $templates = DB::table('workflow_templates')
+            ->whereIn('process_key', $templateKeys)
+            ->where('enabled', 1)
+            ->select(['id', 'process_key'])
+            ->get()
+            ->keyBy(fn (object $template): int => (int) $template->id);
+
+        $steps = DB::table('workflow_template_steps')
+            ->whereIn('template_id', $templates->keys()->all())
+            ->where('active', 1)
+            ->select(['id', 'template_id'])
+            ->get();
+
+        $recipientCounts = $steps->isEmpty()
+            ? collect()
+            : DB::table('workflow_step_recipients')
+                ->whereIn('step_id', $steps->pluck('id')->all())
+                ->where('active', 1)
+                ->select('step_id', DB::raw('COUNT(*) as recipient_count'))
+                ->groupBy('step_id')
+                ->pluck('recipient_count', 'step_id');
+
+        $missingByTemplate = array_fill_keys($templateKeys, 0);
+        foreach ($steps as $step) {
+            $template = $templates->get((int) $step->template_id);
+            if (! $template) {
+                continue;
+            }
+
+            if ((int) ($recipientCounts->get((int) $step->id) ?? 0) === 0) {
+                $missingByTemplate[(string) $template->process_key] += 1;
+            }
+        }
+
+        $templatesPayload = [];
+        foreach ($templateKeys as $key) {
+            $templatesPayload[$key] = ['missing' => (int) $missingByTemplate[$key]];
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'total_missing' => array_sum($missingByTemplate),
+                'templates' => $templatesPayload,
+            ],
         ]);
     }
 
@@ -303,8 +379,7 @@ class WorkflowService
         int $makerStaffId,
         string $subjectType,
         string $submitRemarks,
-    ): void
-    {
+    ): void {
         $this->ensureDefaultTemplates();
 
         $template = $this->templateByKey(self::SALARY_TEMPLATE_KEY);
@@ -386,8 +461,7 @@ class WorkflowService
         string $subjectType,
         string $tableName,
         string $submitRemarks,
-    ): void
-    {
+    ): void {
         $this->ensureDefaultTemplates();
 
         $applicationId = (int) $record->id;
@@ -633,10 +707,10 @@ class WorkflowService
             abort(response()->json(['status' => 'error', 'message' => 'This workflow has no current actionable step.'], 422));
         }
         $isSystemAdmin = $this->hasAnyRole($request, ['System Admin']);
-        if ($actorId <= 0 || (! $isSystemAdmin && $actorId === (int) $instance->maker_staff_id)) {
+        if ($actorId <= 0 || $actorId === (int) $instance->maker_staff_id) {
             abort(response()->json(['status' => 'error', 'message' => 'The maker cannot check or approve their own salary application.'], 403));
         }
-        if (! $this->canActOnStep($request, $step)) {
+        if (! $this->canActOnSalaryStep($request, $step)) {
             abort(response()->json(['status' => 'error', 'message' => 'You are not assigned to this workflow step.'], 403));
         }
         if ($action === 'approve' && (string) $step->step_key !== 'approve') {
@@ -688,7 +762,7 @@ class WorkflowService
             if ($checkerId <= 0 || (string) $salary->status !== 'Checked') {
                 abort(response()->json(['status' => 'error', 'message' => 'Salary record must be checked before approval.'], 422));
             }
-            if (! $isSystemAdmin && $checkerId === $actorId) {
+            if ($checkerId === $actorId) {
                 abort(response()->json(['status' => 'error', 'message' => 'Checker and approver must be different staff.'], 403));
             }
             $statusTo = 'Approved';
@@ -894,7 +968,11 @@ class WorkflowService
         }
         $actorId = $this->staffId($request);
         $isSystemAdmin = $this->hasAnyRole($request, ['System Admin']);
-        if ($actorId <= 0 || (! $isSystemAdmin && $actorId === (int) $instance->maker_staff_id) || ! $this->canActOnStep($request, $step)) {
+        $isSalary = (string) $instance->subject_type === self::SALARY_SUBJECT_TYPE;
+        $canActOnStep = $isSalary
+            ? $this->canActOnSalaryStep($request, $step)
+            : $this->canActOnStep($request, $step);
+        if ($actorId <= 0 || (($isSalary || ! $isSystemAdmin) && $actorId === (int) $instance->maker_staff_id) || ! $canActOnStep) {
             return [];
         }
 
@@ -903,7 +981,7 @@ class WorkflowService
                 ? 'hr_other_claim_applications'
                 : 'hr_salary_applications';
             $checkerId = DB::table($checkerTable)->where('id', $instance->subject_id)->value('checked_by');
-            if (! $isSystemAdmin && (int) $checkerId === $actorId) {
+            if (($isSalary || ! $isSystemAdmin) && (int) $checkerId === $actorId) {
                 return [];
             }
         }
@@ -936,6 +1014,23 @@ class WorkflowService
         }
 
         return $this->hasAnyRole($request, $this->decodeJsonArray($step->fallback_roles));
+    }
+
+    private function canActOnSalaryStep(Request $request, object $step): bool
+    {
+        $actorId = $this->staffId($request);
+        if ($actorId <= 0) {
+            return false;
+        }
+
+        $recipients = DB::table('workflow_step_recipients')
+            ->where('step_id', $step->id)
+            ->where('active', 1)
+            ->pluck('staff_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
+        return in_array($actorId, $recipients, true);
     }
 
     private function nextStep(int $templateId, int $sortOrder): ?object

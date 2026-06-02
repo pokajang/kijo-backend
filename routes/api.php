@@ -73,6 +73,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('notifications/consume-entity', [AppNotificationController::class, 'consumeEntity']);
     Route::post('notifications/consume-route-group', [AppNotificationController::class, 'consumeRouteGroup']);
 
+    Route::get('workflows/setup-status', [WorkflowController::class, 'setupStatus']);
     Route::get('workflows/templates', [WorkflowController::class, 'templates']);
     Route::get('workflows/templates/{key}', [WorkflowController::class, 'template']);
     Route::put('workflows/templates/{key}', [WorkflowController::class, 'updateTemplate'])->middleware('role:Manager,System Admin');
@@ -264,8 +265,6 @@ Route::middleware('auth.session')->group(function () {
     Route::get('vendor-projects', [VendorController::class, 'projectVendors']);
     Route::get('vendor-payments', [VendorController::class, 'listPayments']);
     Route::get('vendor-payments/by-vendor', [VendorController::class, 'vendorPayments']);
-    Route::get('vendor-payments/workflow-settings', [VendorController::class, 'paymentWorkflowSettings']);
-    Route::put('vendor-payments/workflow-settings', [VendorController::class, 'updatePaymentWorkflowSettings'])->middleware('role:Manager,System Admin');
     Route::get('vendor-payments/paid-by-vendor', [VendorController::class, 'paidPaymentsByVendor']);
     Route::get('vendor-payments/paid-by-vendor/{vendorId}', [VendorController::class, 'paidPaymentsForVendor'])->whereNumber('vendorId');
     Route::post('vendor-payments', [VendorController::class, 'storePayment']);
@@ -504,8 +503,6 @@ Route::middleware('auth.session')->group(function () {
     Route::post('hr/leaves', [LeaveController::class, 'createLeave']);
     Route::post('hr/leaves/{id}/action', [LeaveController::class, 'leaveAction']);
     Route::post('hr/leaves/{id}/cancel', [LeaveController::class, 'cancelLeave']);
-    Route::get('hr/leaves/workflow-recipients', [LeaveController::class, 'getWorkflowRecipients'])->middleware('role:HR,System Admin');
-    Route::put('hr/leaves/workflow-recipients', [LeaveController::class, 'updateWorkflowRecipients'])->middleware('role:HR,System Admin');
     Route::get('hr/leaves/entitlements', [LeaveController::class, 'getAllEntitlements'])->middleware('role:HR,System Admin');
     Route::get('hr/leaves/entitlements/mine', [LeaveController::class, 'getMyEntitlements']);
     Route::post('hr/leaves/entitlements', [LeaveController::class, 'assignLeavesEntitlement'])->middleware('role:HR,System Admin');

@@ -18,10 +18,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
 
     private const DEADLINE_PRESSURE_ACTIVE_BASE_CAP_RATIO = 0.35;
 
-    private const COMPLETED_ON_TIME_MULTIPLIER = 0.5;
-
-    private const COMPLETED_LATE_MULTIPLIER = 0.35;
-
     private const PROJECT_BASE_POINTS = 1.0;
 
     private const PROJECT_PROGRESS_POINTS_CAP = 2.0;
@@ -60,7 +56,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
             'generatedDate' => $generatedAt->toDateString(),
             'periodLabel' => $this->periodLabel($startDate, $endDate),
             'asOfDate' => $asOfDate !== '' ? $asOfDate : '-',
-            'completedWindowLabel' => $this->completedWindowLabel($startDate, $endDate, $asOfDate),
             'staffRows' => $this->buildStaffRows($rows, $asOfDate),
             'logoDataUri' => $this->companyLogoDataUri(),
             'fontFaceCss' => $this->arialFontFaceCss(),
@@ -94,7 +89,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
                 'workTypeBreakdown' => $this->buildWorkTypeRows($row['workTypeBreakdown'] ?? []),
                 'projects' => $this->buildProjectRows($row['projectGroups'] ?? [], $evidenceDate),
                 'otherTasks' => $this->buildTaskRows($row['otherTasks'] ?? [], $evidenceDate, false, false),
-                'completedTasks' => $this->buildTaskRows($row['completedTasks'] ?? [], $evidenceDate, true, true),
                 'scoreRows' => $this->buildScoreTableRows($row),
             ];
         }, $rows);
@@ -121,7 +115,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
                 'title' => $this->projectTitle($group, $index),
                 'value' => $this->formatCurrency($group['projectValue'] ?? 0),
                 'activityRows' => $this->buildActivityRows($group, $todayStr),
-                'completedTasks' => $this->buildTaskRows($group['completedTasks'] ?? [], $todayStr, false, true),
             ];
         }
 
@@ -132,7 +125,7 @@ class WorkloadDashboardPdfService extends PdfRenderer
     {
         $items = [];
         foreach (($group['progressUpdates'] ?? []) as $update) {
-            if (is_array($update)) {
+            if (is_array($update) && ! $this->isTaskProgressUpdate($update)) {
                 $items[] = ['type' => 'progress', 'date' => (string) ($update['progressDate'] ?? ''), 'update' => $update];
             }
         }
@@ -157,16 +150,12 @@ class WorkloadDashboardPdfService extends PdfRenderer
             }
 
             $update = $item['update'] ?? [];
-            $isTaskProgress = $this->isTaskProgressUpdate($update);
             $text = (string) ($update['progressText'] ?? '-');
-            if ($isTaskProgress) {
-                $text = $this->stripExactProjectMention($text, (string) ($update['projectName'] ?? '')) ?: '-';
-            }
 
             return [
                 'text' => $text,
                 'lapsed' => $this->formatDaysLapsed((string) ($update['progressDate'] ?? ''), $todayStr),
-                'badgeText' => $isTaskProgress ? 'Done 5MM Task' : '',
+                'badgeText' => '',
                 'badgeTone' => 'success',
             ];
         }, $items);
@@ -199,7 +188,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
         return array_map(fn (array $line): array => [
             'label' => (string) ($line['workTypeLabel'] ?? 'Unclear'),
             'activeCount' => $this->formatCount($line['activeCount'] ?? 0),
-            'completedCount' => $this->formatCount($line['completedCount'] ?? 0),
             'effortPoints' => $this->formatCount($line['effortPoints'] ?? 0),
         ], array_slice(array_values($breakdown), 0, 6));
     }
@@ -231,7 +219,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
             ['label' => 'Non-project tasks', 'title' => 'Non Project Tasks Score', 'rows' => $this->nonProjectTaskRows($row), 'empty' => 'No active non-project tasks.'],
             ['label' => 'Project responsibility', 'title' => 'Project Task / Responsibility Score', 'rows' => $this->projectContributionRows($row), 'empty' => 'No weighted project activity for this staff member.'],
             ['label' => 'Deadline pressure', 'title' => 'Deadline Pressure Score', 'rows' => $this->deadlineRows($row, $deadlineLine['points'] ?? null), 'empty' => 'No overdue or due-soon tasks.'],
-            ['label' => 'Completed work', 'title' => 'Completed Work Score', 'rows' => $this->completedWorkRows($row), 'empty' => 'No completed tasks in this period.'],
         ];
 
         $tableRows = [];
@@ -387,34 +374,13 @@ class WorkloadDashboardPdfService extends PdfRenderer
         return $deadlineRows;
     }
 
-    private function completedWorkRows(array $row): array
-    {
-        $completedTasks = $this->sortTasksByEffortDesc($this->completedTasksForRow($row));
-        $rows = [];
-        $points = $this->allocateRoundedPoints($completedTasks, fn (array $task): float => $this->effortScore($task) * $this->completedWorkMultiplier($task));
-
-        foreach ($completedTasks as $index => $task) {
-            $effortScore = $this->effortScore($task);
-            $isLate = $this->isLateCompletedTask($task);
-            $rows[] = [
-                'type' => 'line',
-                'item' => (string) ($task['title'] ?? ('Completed task '.($index + 1))),
-                'detail' => implode(', ', array_filter([
-                    ! empty($task['projectName']) ? 'Project: '.(string) $task['projectName'] : '',
-                    ! empty($task['completedAt']) ? 'Completed '.(string) $task['completedAt'] : '',
-                ])),
-                'calculation' => $this->formatCount($effortScore).' effort x '.($isLate ? '35% late completed credit' : '50% on-time completed credit'),
-                'points' => $this->formatCount($points[$index] ?? 0),
-            ];
-        }
-
-        return $rows;
-    }
-
     private function backendScoreBreakdownLines(array $row): array
     {
         return array_values(array_filter(array_map(function ($line): ?array {
             if (! is_array($line) || trim((string) ($line['label'] ?? '')) === '') {
+                return null;
+            }
+            if (strtolower(trim((string) ($line['label'] ?? ''))) === 'completed work') {
                 return null;
             }
 
@@ -485,21 +451,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
         }
 
         return round($points, 2);
-    }
-
-    private function completedTasksForRow(array $row): array
-    {
-        $tasks = $row['completedTasks'] ?? [];
-        foreach ($row['projectGroups'] ?? [] as $group) {
-            foreach ($group['completedTasks'] ?? [] as $task) {
-                if (is_array($task)) {
-                    $task['projectName'] = $task['projectName'] ?? ($group['projectName'] ?? '');
-                    $tasks[] = $task;
-                }
-            }
-        }
-
-        return $tasks;
     }
 
     private function sortTasksByEffortDesc(array $tasks): array
@@ -573,24 +524,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
         return (float) ($line['points'] ?? 0);
     }
 
-    private function completedWorkMultiplier(array $task): float
-    {
-        return $this->isLateCompletedTask($task)
-            ? self::COMPLETED_LATE_MULTIPLIER
-            : self::COMPLETED_ON_TIME_MULTIPLIER;
-    }
-
-    private function isLateCompletedTask(array $task): bool
-    {
-        $dueDate = (string) ($task['dueDate'] ?? '');
-        $completedAt = (string) ($task['completedAt'] ?? '');
-        if ($dueDate === '' || $completedAt === '') {
-            return false;
-        }
-
-        return Carbon::parse($completedAt)->startOfDay()->gt(Carbon::parse($dueDate)->startOfDay());
-    }
-
     private function periodLabel(string $startDate, string $endDate): string
     {
         if ($startDate !== '' && $endDate !== '') {
@@ -604,19 +537,6 @@ class WorkloadDashboardPdfService extends PdfRenderer
         }
 
         return 'All available records';
-    }
-
-    private function completedWindowLabel(string $startDate, string $endDate, string $asOfDate): string
-    {
-        $windowEnd = $endDate !== '' ? $endDate : $asOfDate;
-        if ($startDate !== '' && $windowEnd !== '') {
-            return "{$startDate} to {$windowEnd}";
-        }
-        if ($windowEnd !== '') {
-            return "Until {$windowEnd}";
-        }
-
-        return 'All available completed work';
     }
 
     private function staffCodeLabel(array $row): string
@@ -771,7 +691,7 @@ class WorkloadDashboardPdfService extends PdfRenderer
 
     private function isTaskProgressUpdate(array $update): bool
     {
-        return (string) ($update['sourceType'] ?? '') === 'task' || ($update['sourceTaskId'] ?? null) !== null;
+        return strtolower(trim((string) ($update['sourceType'] ?? ''))) === 'task' || ($update['sourceTaskId'] ?? null) !== null;
     }
 
     private function stripExactProjectMention(string $value, string $projectName): string
@@ -793,7 +713,7 @@ class WorkloadDashboardPdfService extends PdfRenderer
 
     private function isActiveTask(array $task): bool
     {
-        return strtolower((string) ($task['status'] ?? '')) !== 'completed';
+        return strtolower(trim((string) ($task['status'] ?? ''))) !== 'completed';
     }
 
     private function effortScore(array $task): float

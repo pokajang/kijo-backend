@@ -22,10 +22,6 @@ class WorkloadDashboardStatsService
 
     private const DEADLINE_PRESSURE_ACTIVE_BASE_CAP_RATIO = 0.35;
 
-    private const COMPLETED_ON_TIME_MULTIPLIER = 0.5;
-
-    private const COMPLETED_LATE_MULTIPLIER = 0.35;
-
     private const PROJECT_BASE_POINTS = 1.0;
 
     private const PROJECT_PROGRESS_POINTS_CAP = 2.0;
@@ -65,7 +61,7 @@ class WorkloadDashboardStatsService
 
         $staff = [];
 
-        foreach ($this->taskRows($completedWindow['startDate'], $completedWindow['endDate'], $asOfDate) as $row) {
+        foreach ($this->taskRows($asOfDate) as $row) {
             $staffKey = $this->staffKey($row->staff_id ?? null, $row->name_code ?? null, $row->full_name ?? null);
             if ($staffKey === '') {
                 continue;
@@ -73,24 +69,22 @@ class WorkloadDashboardStatsService
 
             $staffRow = &$this->ensureStaffRow($staff, $staffKey, $row->staff_id ?? null, $row->name_code ?? null, $row->full_name ?? null);
             $task = $this->normalizeTask($row, $asOf);
+            if (! $task['isActive']) {
+                unset($staffRow);
 
-            if ($task['isActive']) {
-                $staffRow['activeTasks']++;
-                $staffRow['avgDaysLapsedTotal'] += $task['daysLapsed'];
-                if ($task['isOverdue']) {
-                    $staffRow['overdueTasks']++;
-                }
-                if ($task['isDueSoon']) {
-                    $staffRow['dueSoonTasks']++;
-                }
-                if ($task['projectId'] !== null) {
-                    $staffRow['projectTaggedActiveTasks']++;
-                }
-            } else {
-                $staffRow['completedInPeriod']++;
-                if ($task['isLateCompleted']) {
-                    $staffRow['lateCompletedInPeriod']++;
-                }
+                continue;
+            }
+
+            $staffRow['activeTasks']++;
+            $staffRow['avgDaysLapsedTotal'] += $task['daysLapsed'];
+            if ($task['isOverdue']) {
+                $staffRow['overdueTasks']++;
+            }
+            if ($task['isDueSoon']) {
+                $staffRow['dueSoonTasks']++;
+            }
+            if ($task['projectId'] !== null) {
+                $staffRow['projectTaggedActiveTasks']++;
             }
 
             if ($task['projectId'] !== null) {
@@ -102,17 +96,10 @@ class WorkloadDashboardStatsService
                     $task['projectValue'],
                     $task['projectRole']
                 );
-                if ($task['isActive']) {
-                    $projectGroup['activeTasks'][] = $this->taskPayload($task);
-                } else {
-                    $projectGroup['completedTasks'][] = $this->taskPayload($task);
-                }
+                $projectGroup['activeTasks'][] = $this->taskPayload($task);
                 unset($projectGroup);
             } else {
                 $staffRow['otherTasks'][] = $this->taskPayload($task);
-                if (! $task['isActive']) {
-                    $staffRow['completedTasks'][] = $this->taskPayload($task);
-                }
             }
 
             unset($staffRow);
@@ -130,6 +117,11 @@ class WorkloadDashboardStatsService
                 $sourceTaskId = isset($row->source_task_id) && $row->source_task_id !== null
                     ? (int) $row->source_task_id
                     : null;
+                if (strtolower(trim((string) ($row->source_type ?? ''))) === 'task' || $sourceTaskId !== null) {
+                    unset($staffRow);
+
+                    continue;
+                }
                 if ($this->hasMatchingActiveProjectTask($staffRow, $projectId, $sourceTaskId)) {
                     unset($staffRow);
 
@@ -172,17 +164,19 @@ class WorkloadDashboardStatsService
 
             $row = $this->applyWeightedScore($row);
 
-            $row['projectGroups'] = array_values(array_map(function (array $group): array {
+            $row['projectGroups'] = array_values(array_filter(array_map(function (array $group): array {
                 usort($group['activeTasks'], fn ($a, $b) => strcmp((string) $this->taskLatestDate($b), (string) $this->taskLatestDate($a)));
-                usort($group['completedTasks'], fn ($a, $b) => strcmp((string) $this->taskLatestDate($b), (string) $this->taskLatestDate($a)));
                 usort($group['progressUpdates'], fn ($a, $b) => strcmp((string) ($b['progressDate'] ?? ''), (string) ($a['progressDate'] ?? '')));
 
                 return $group;
-            }, $row['projectGroups']));
+            }, $row['projectGroups']), function (array $group): bool {
+                return count($group['activeTasks'] ?? []) > 0
+                    || (int) ($group['scoreableProgressCount'] ?? 0) > 0;
+            }));
 
             usort($row['projectGroups'], function (array $a, array $b): int {
-                $activityDelta = (count($b['activeTasks']) + count($b['progressUpdates']) + count($b['completedTasks']))
-                    <=> (count($a['activeTasks']) + count($a['progressUpdates']) + count($a['completedTasks']));
+                $activityDelta = (count($b['activeTasks']) + count($b['progressUpdates']))
+                    <=> (count($a['activeTasks']) + count($a['progressUpdates']));
                 if ($activityDelta !== 0) {
                     return $activityDelta;
                 }
@@ -192,7 +186,6 @@ class WorkloadDashboardStatsService
             $row['projectGroupCount'] = count($row['projectGroups']);
 
             usort($row['otherTasks'], fn ($a, $b) => strcmp((string) $this->taskLatestDate($b), (string) $this->taskLatestDate($a)));
-            usort($row['completedTasks'], fn ($a, $b) => strcmp((string) $this->taskLatestDate($b), (string) $this->taskLatestDate($a)));
             $row['workTypeBreakdown'] = $this->workTypeBreakdownForRow($row);
 
             return $row;
@@ -220,7 +213,7 @@ class WorkloadDashboardStatsService
         ];
     }
 
-    private function taskRows(string $completedStartDate, string $completedEndDate, string $asOfDate)
+    private function taskRows(string $asOfDate)
     {
         if (! Schema::hasTable('tasks')) {
             return collect();
@@ -286,29 +279,17 @@ class WorkloadDashboardStatsService
                 : DB::raw('0 as is_project_collaborator'),
         ]);
 
-        $query->where(function ($snapshotQuery) use ($completedStartDate, $completedEndDate, $asOfDate): void {
-            $snapshotQuery
-                ->where(function ($activeQuery) use ($asOfDate): void {
-                    $activeQuery
-                        ->whereDate('t.created_at', '<=', $asOfDate)
-                        ->where(function ($statusQuery) use ($asOfDate): void {
-                            $statusQuery
-                                ->whereRaw('LOWER(COALESCE(t.status, \'\')) <> ?', ['completed'])
-                                ->orWhereNull('t.completed_at')
-                                ->orWhereDate('t.completed_at', '>', $asOfDate);
-                        });
-                })
-                ->orWhere(function ($completedQuery) use ($completedStartDate, $completedEndDate): void {
-                    $completedQuery
-                        ->whereRaw('LOWER(COALESCE(t.status, \'\')) = ?', ['completed'])
-                        ->whereNotNull('t.completed_at')
-                        ->whereDate('t.completed_at', '<=', $completedEndDate);
-
-                    if ($completedStartDate !== '') {
-                        $completedQuery->whereDate('t.completed_at', '>=', $completedStartDate);
-                    }
-                });
-        });
+        $query->whereDate('t.created_at', '<=', $asOfDate)
+            ->where(function ($statusQuery) use ($asOfDate): void {
+                $statusQuery
+                    ->whereRaw("LOWER(TRIM(COALESCE(t.status, ''))) <> ?", ['completed'])
+                    ->orWhere(function ($completedAfterSnapshotQuery) use ($asOfDate): void {
+                        $completedAfterSnapshotQuery
+                            ->whereRaw("LOWER(TRIM(COALESCE(t.status, ''))) = ?", ['completed'])
+                            ->whereNotNull('t.completed_at')
+                            ->whereDate('t.completed_at', '>', $asOfDate);
+                    });
+            });
 
         return $query->get();
     }
@@ -536,7 +517,7 @@ class WorkloadDashboardStatsService
 
     private function normalizeTask(object $row, Carbon $asOf): array
     {
-        $status = (string) ($row->status ?? '');
+        $status = trim((string) ($row->status ?? ''));
         $isCompletedStatus = strtolower($status) === 'completed';
         $createdAt = $this->dateOnly($row->created_at ?? '');
         $dueDate = $this->dateOnly($row->due_date ?? '');
@@ -674,16 +655,8 @@ class WorkloadDashboardStatsService
                 ];
             }
 
-            $isActive = array_key_exists('isActive', $task)
-                ? (bool) $task['isActive']
-                : strtolower((string) ($task['status'] ?? '')) !== 'completed';
-
             $breakdown[$workType]['taskCount']++;
-            if ($isActive) {
-                $breakdown[$workType]['activeCount']++;
-            } else {
-                $breakdown[$workType]['completedCount']++;
-            }
+            $breakdown[$workType]['activeCount']++;
             $breakdown[$workType]['effortPoints'] = $this->roundPoints(
                 (float) $breakdown[$workType]['effortPoints'] + $this->taskEffortScore($task)
             );
@@ -708,7 +681,7 @@ class WorkloadDashboardStatsService
     {
         $tasks = $row['otherTasks'] ?? [];
         foreach ($row['projectGroups'] ?? [] as $group) {
-            array_push($tasks, ...($group['activeTasks'] ?? []), ...($group['completedTasks'] ?? []));
+            array_push($tasks, ...($group['activeTasks'] ?? []));
         }
 
         return array_values(array_filter($tasks, fn ($task): bool => is_array($task)));
@@ -783,13 +756,11 @@ class WorkloadDashboardStatsService
         $nonProjectTaskPressure = $this->roundPoints($nonProjectTaskPressure);
         $projectResponsibilityPressure = $this->roundPoints($projectResponsibilityPressure);
         $activeWorkloadBase = $nonProjectTaskPressure + $projectResponsibilityPressure;
-        $completedWorkPressure = $this->completedWorkPoints($this->completedTasksForRow($row));
         $deadlinePressure = $this->cappedDeadlinePressure($rawDeadlinePressure, $activeWorkloadBase);
         $row['scoreBreakdown'] = [
             ['label' => 'Non-project tasks', 'points' => $nonProjectTaskPressure],
             ['label' => 'Project responsibility', 'points' => $projectResponsibilityPressure],
             ['label' => 'Deadline pressure', 'points' => $deadlinePressure],
-            ['label' => 'Completed work', 'points' => $completedWorkPressure],
         ];
         $row['score'] = $this->roundPoints(array_sum(array_map(fn (array $line): float => (float) $line['points'], $row['scoreBreakdown'])));
 
@@ -808,18 +779,8 @@ class WorkloadDashboardStatsService
 
     private function isTaskLinkedProgressUpdate(array $update): bool
     {
-        return (string) ($update['sourceType'] ?? '') === 'task'
+        return strtolower(trim((string) ($update['sourceType'] ?? ''))) === 'task'
             || ($update['sourceTaskId'] ?? null) !== null;
-    }
-
-    private function completedWorkPoints(array $tasks): float
-    {
-        $points = 0.0;
-        foreach ($this->sortTasksByEffortDesc($tasks) as $task) {
-            $points += $this->taskEffortScore($task) * $this->completedWorkMultiplier($task);
-        }
-
-        return $this->roundPoints($points);
     }
 
     private function cappedDeadlinePressure(float $rawDeadlinePressure, float $activeWorkloadBase): float
@@ -835,34 +796,6 @@ class WorkloadDashboardStatsService
             self::DEADLINE_PRESSURE_FIXED_CAP,
             $activeBaseCap
         ));
-    }
-
-    private function completedWorkMultiplier(array $task): float
-    {
-        return $this->isLateCompletedTask($task)
-            ? self::COMPLETED_LATE_MULTIPLIER
-            : self::COMPLETED_ON_TIME_MULTIPLIER;
-    }
-
-    private function isLateCompletedTask(array $task): bool
-    {
-        $dueDate = (string) ($task['dueDate'] ?? '');
-        $completedAt = (string) ($task['completedAt'] ?? '');
-        if ($dueDate === '' || $completedAt === '') {
-            return false;
-        }
-
-        return Carbon::parse($completedAt)->startOfDay()->gt(Carbon::parse($dueDate)->startOfDay());
-    }
-
-    private function completedTasksForRow(array $row): array
-    {
-        $tasks = $row['completedTasks'] ?? [];
-        foreach ($row['projectGroups'] ?? [] as $group) {
-            array_push($tasks, ...($group['completedTasks'] ?? []));
-        }
-
-        return $tasks;
     }
 
     private function sortTasksByEffortDesc(array $tasks): array
@@ -938,7 +871,7 @@ class WorkloadDashboardStatsService
 
     private function isActiveTask(array $task): bool
     {
-        return strtolower((string) ($task['status'] ?? '')) !== 'completed';
+        return strtolower(trim((string) ($task['status'] ?? ''))) !== 'completed';
     }
 
     private function applyDateRange($query, string $column, string $startDate, string $endDate): void
