@@ -25,7 +25,7 @@ class StoreIhQuoteRequest extends FormRequest
             'pic_email'          => ['required', 'string', 'max:2000'],
             'pic_phone'          => ['required', 'string', 'max:2000'],
             'pic_position'       => ['required', 'string', 'max:2000'],
-            'service_id'         => ['nullable', 'integer'],
+            'service_id'         => ['required', 'integer'],
             'service_title'      => ['required', 'string', 'max:255'],
             'service_code'       => ['required', 'string', 'max:255'],
             'site_address'       => ['nullable', 'string', 'max:1000'],

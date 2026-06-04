@@ -27,7 +27,7 @@ class UpdateManpowerQuoteRequest extends FormRequest
             'pic_email'       => ['required', 'string', 'max:2000'],
             'pic_phone'       => ['required', 'string', 'max:2000'],
             'pic_position'    => ['required', 'string', 'max:2000'],
-            'mp_id'           => ['nullable', 'integer'],
+            'mp_id'           => ['required', 'integer'],
             'service_title'   => ['required', 'string', 'max:255'],
             'service_code'    => ['required', 'string', 'max:255'],
             'manpower_rate_type' => $this->manpowerRateTypeRules(),

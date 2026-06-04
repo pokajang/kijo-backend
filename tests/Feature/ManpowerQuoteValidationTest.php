@@ -60,6 +60,7 @@ class ManpowerQuoteValidationTest extends TestCase
             'pic_email' => 'pic@example.test',
             'pic_phone' => '60123456789',
             'pic_position' => 'Manager',
+            'mp_id' => 1,
             'service_title' => 'HSE Executive',
             'service_code' => 'HSE',
             'manpower_rate_type' => 'hse_executive',

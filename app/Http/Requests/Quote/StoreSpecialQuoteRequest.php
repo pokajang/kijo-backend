@@ -25,7 +25,7 @@ class StoreSpecialQuoteRequest extends FormRequest
             'pic_email'                => ['required', 'string', 'max:2000'],
             'pic_phone'                => ['required', 'string', 'max:2000'],
             'pic_position'             => ['required', 'string', 'max:2000'],
-            'sp_id'                    => ['nullable', 'integer'],
+            'sp_id'                    => ['required', 'integer'],
             'service_title'            => ['required', 'string', 'max:255'],
             'service_code'             => ['required', 'string', 'max:255'],
             'general_remarks'          => ['nullable', 'string', 'max:2000'],

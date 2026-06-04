@@ -7,7 +7,9 @@ use App\Http\Requests\Quote\UpdateTrainingQuoteRequest;
 use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 class TrainingQuoteService
@@ -84,7 +86,7 @@ class TrainingQuoteService
                 ...(Schema::hasColumn($table, 'training_rate_type') ? ['training_rate_type' => $data['training_rate_type'] ?? null] : []),
                 'payment_method' => $data['payment_method'],
                 'proposed_date' => $data['proposed_date'] ?? null,
-                'proposed_end_date' => $data['proposed_end_date'] ?? null,
+                ...(Schema::hasColumn($table, 'proposed_end_date') ? ['proposed_end_date' => $data['proposed_end_date'] ?? null] : []),
                 'to_be_confirmed' => isset($data['to_be_confirmed']) ? (int) $data['to_be_confirmed'] : 0,
                 'venue' => $data['venue'] ?? null,
                 'remarks' => $data['remarks'] ?? null,
@@ -137,8 +139,7 @@ class TrainingQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
-            report($e);
-            return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
+            return $this->databaseErrorResponse($e, $this->trainingQuoteFailureContext($data));
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
         }
@@ -200,7 +201,7 @@ class TrainingQuoteService
                 ...(Schema::hasColumn('quotes_training', 'training_rate_type') ? ['training_rate_type' => $data['training_rate_type'] ?? null] : []),
                 'payment_method' => $data['payment_method'],
                 'proposed_date' => $data['proposed_date'] ?? null,
-                'proposed_end_date' => $data['proposed_end_date'] ?? null,
+                ...(Schema::hasColumn('quotes_training', 'proposed_end_date') ? ['proposed_end_date' => $data['proposed_end_date'] ?? null] : []),
                 'to_be_confirmed' => isset($data['to_be_confirmed']) ? (int) $data['to_be_confirmed'] : 0,
                 'venue' => $data['venue'] ?? null,
                 'remarks' => $data['remarks'] ?? null,
@@ -250,8 +251,7 @@ class TrainingQuoteService
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
-            report($e);
-            return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
+            return $this->databaseErrorResponse($e, $this->trainingQuoteFailureContext($data, $id));
         }
 
         $this->auditLog->log($request, "Updated training quote ID #{$id} by {$nameCode}" . ($isRevision ? ' (revision)' : ''));
@@ -303,5 +303,75 @@ class TrainingQuoteService
             'hrd_amount' => $hrdAmount,
             'grand_total' => round($subtotal + $sstAmount + $hrdAmount, 2),
         ];
+    }
+
+    private function databaseErrorResponse(\Throwable $e, array $context = []): JsonResponse
+    {
+        report($e);
+
+        $errorInfo = $e instanceof QueryException ? ($e->errorInfo ?? []) : [];
+        Log::error('Training quote database save failed.', [
+            ...$context,
+            'exception' => $e::class,
+            'sql_state' => $errorInfo[0] ?? null,
+            'driver_code' => $errorInfo[1] ?? null,
+        ]);
+
+        [$message, $status] = $this->friendlyDatabaseError($e);
+
+        return response()->json(['status' => 'error', 'message' => $message], $status);
+    }
+
+    private function friendlyDatabaseError(\Throwable $e): array
+    {
+        if (!$e instanceof QueryException) {
+            return ['Database error.', 500];
+        }
+
+        $message = strtolower($e->getMessage());
+
+        if (str_contains($message, 'training_id') && str_contains($message, 'null')) {
+            return ['Please select a valid training topic before saving.', 422];
+        }
+
+        if (str_contains($message, 'data too long')) {
+            return ['Some quotation details are too long for storage. Please shorten the text and try again.', 422];
+        }
+
+        if (str_contains($message, 'incorrect string value')) {
+            return ['Some quotation details contain unsupported symbols. Please remove unusual characters and try again.', 422];
+        }
+
+        if (str_contains($message, 'out of range')) {
+            return ['One of the quotation amounts is too large. Please check the pricing values and try again.', 422];
+        }
+
+        if (str_contains($message, 'unknown column')) {
+            return ['Quotation database schema is not up to date. Please run migrations.', 500];
+        }
+
+        return ['Database error.', 500];
+    }
+
+    private function trainingQuoteFailureContext(array $data, ?int $quoteId = null): array
+    {
+        return [
+            'quote_id' => $quoteId,
+            'training_id' => $data['training_id'] ?? null,
+            'proposal_id' => $data['proposal_id'] ?? null,
+            'training_title_length' => $this->stringLength($data['training_title'] ?? ''),
+            'venue_length' => $this->stringLength($data['venue'] ?? ''),
+            'payment_method_length' => $this->stringLength($data['payment_method'] ?? ''),
+            'pricing_basis' => $data['pricing_basis'] ?? null,
+            'duration_per_session' => $data['duration_per_session'] ?? null,
+            'proposal_language' => $data['proposal_language'] ?? null,
+        ];
+    }
+
+    private function stringLength(mixed $value): int
+    {
+        $text = (string) ($value ?? '');
+
+        return function_exists('mb_strlen') ? mb_strlen($text) : strlen($text);
     }
 }

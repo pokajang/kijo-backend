@@ -29,7 +29,7 @@ class UpdateTrainingQuoteRequest extends FormRequest
             'pic_snapshot.email'               => ['nullable', 'string', 'max:2000'],
             'pic_snapshot.mobile_number'       => ['nullable', 'string', 'max:2000'],
             'pic_snapshot.position'            => ['nullable', 'string', 'max:2000'],
-            'training_id'                      => ['nullable', 'integer'],
+            'training_id'                      => ['required', 'integer'],
             'training_title'                   => ['required', 'string', 'max:255'],
             'training_type'                    => ['required', 'string', 'max:100'],
             'payment_method'                   => ['required', 'string', 'max:100'],
