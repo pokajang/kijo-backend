@@ -64,6 +64,12 @@ class LeaveController extends Controller
     }
 
 
+        public function getEntitlementHistory(Request $request): JsonResponse
+    {
+        return $this->leaveService()->getEntitlementHistory($request);
+    }
+
+
         public function assignLeavesEntitlement(AssignEntitlementRequest $request): JsonResponse
     {
         return $this->leaveService()->assignLeavesEntitlement($request);

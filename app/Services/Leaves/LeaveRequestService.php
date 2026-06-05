@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class LeaveRequestService extends LeaveBaseService
 {
@@ -93,8 +94,7 @@ class LeaveRequestService extends LeaveBaseService
 
         $year = (int) $request->query('year', 0);
 
-        $leaves = DB::table('hr_leaves_application as hla')
-            ->select([
+        $columns = [
                 'hla.*',
                 'sg.full_name as applicant_name',
                 'sg.name_code as applicant_code',
@@ -104,7 +104,18 @@ class LeaveRequestService extends LeaveBaseService
                 'approver.name_code as approver_code',
                 'canceller.full_name as canceller_name',
                 'canceller.name_code as canceller_code',
-            ])
+        ];
+
+        $columns[] = Schema::hasColumn('staff_general', 'status')
+            ? 'sg.status as applicant_status'
+            : DB::raw('NULL as applicant_status');
+
+        if (Schema::hasColumn('staff_general', 'terminated_at')) {
+            $columns[] = 'sg.terminated_at as applicant_terminated_at';
+        }
+
+        $leaves = DB::table('hr_leaves_application as hla')
+            ->select($columns)
             ->leftJoin('staff_general as sg', 'hla.staff_id', '=', 'sg.staff_id')
             ->leftJoin('staff_general as reviewer', 'hla.reviewed_by', '=', 'reviewer.staff_id')
             ->leftJoin('staff_general as approver', 'hla.approved_by', '=', 'approver.staff_id')
@@ -348,6 +359,10 @@ class LeaveRequestService extends LeaveBaseService
             'approve' => 'Your Leave Application Has Been Approved',
             'reject' => 'Your Leave Application Has Been Rejected',
         ];
+        $copySubjectMap = [
+            'approve' => "Leave Application by {$applicantNameStr} Has Been Approved",
+            'reject' => "Leave Application by {$applicantNameStr} Has Been Rejected",
+        ];
         $actionLabel = match ($action) {
             'recommend' => 'Recommended',
             'approve' => 'Approved',
@@ -394,11 +409,13 @@ class LeaveRequestService extends LeaveBaseService
                 [],
                 [(int) $leave->staff_id],
             );
+            $copySubject = $copySubjectMap[$action];
+            $copyPresentation = $this->emailBody()->presentation('Leave', $copySubject, 'Workflow update', $copySubject);
             $this->sendHtmlMailToRecipients(
                 $stageRecipients,
-                $subjectMap[$action],
+                $copySubject,
                 $copyBody,
-                $actionPresentation,
+                $copyPresentation,
             );
         }
 
@@ -435,6 +452,14 @@ class LeaveRequestService extends LeaveBaseService
             }
 
             $previousStatus = (string) $leave->status;
+            if (strtolower($previousStatus) === 'cancelled') {
+                DB::commit();
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Leave application is already cancelled.',
+                ]);
+            }
 
             DB::table('hr_leaves_application')->where('id', $leaveId)->update([
                 'status' => 'Cancelled',
@@ -572,14 +597,25 @@ class LeaveRequestService extends LeaveBaseService
 
     private function sendHtmlMailToRecipients(array $recipients, string $subject, string $body, array $presentation = []): bool
     {
-        $emails = $this->workflowRecipients()->emailAddresses($recipients);
-        if (empty($emails)) {
-            return false;
-        }
-
         $sent = false;
-        foreach ($emails as $email) {
-            $sent = $this->sendHtmlMailNow($email, 'Human Resource', $subject, $body, [], $presentation) || $sent;
+        $seen = [];
+        foreach ($recipients as $recipient) {
+            $email = trim((string) ($recipient['email'] ?? ''));
+            $key = strtolower($email);
+            if ($email === '' || isset($seen[$key]) || ! $this->isValidEmail($email)) {
+                continue;
+            }
+            $seen[$key] = true;
+
+            $recipientName = trim((string) ($recipient['full_name'] ?? ''));
+            if ($recipientName === '') {
+                $recipientName = trim((string) ($recipient['name_code'] ?? ''));
+            }
+            if ($recipientName === '') {
+                $recipientName = 'KIJO User';
+            }
+
+            $sent = $this->sendHtmlMailNow($email, $recipientName, $subject, $body, [], $presentation) || $sent;
         }
 
         return $sent;
@@ -979,12 +1015,12 @@ class LeaveRequestService extends LeaveBaseService
                 'module_key' => 'staff.leaves',
                 'entity_type' => 'leave_application',
                 'entity_id' => $leaveId,
-                'type' => 'leave.cancelled',
-                'title' => 'Leave request cancelled',
-                'message' => 'A pending leave request was cancelled.',
-                'route' => "/staff/leaves/records/{$leaveId}",
-                'severity' => 'info',
-            ]);
+                    'type' => 'leave.cancelled',
+                    'title' => 'Leave request cancelled',
+                    'message' => 'A leave request was cancelled.',
+                    'route' => "/staff/leaves/records/{$leaveId}",
+                    'severity' => 'info',
+                ]);
         }
 
         if ((int) $leave->staff_id !== $actorId) {

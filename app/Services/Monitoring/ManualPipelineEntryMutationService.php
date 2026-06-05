@@ -204,9 +204,8 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 return response()->json(['status' => 'error', 'message' => 'Manual entry not found.'], 404);
             }
 
-            $staffId = (int) $request->session()->get('staff_id', 0);
-            if ((int) ($entry->created_by ?? 0) !== $staffId && (int) ($entry->owner_staff_id ?? 0) !== $staffId) {
-                return response()->json(['status' => 'error', 'message' => 'You can only update your own manual entries.'], 403);
+            if (!$this->canManageEntry($request, $entry)) {
+                return response()->json(['status' => 'error', 'message' => 'You are not allowed to update this manual entry.'], 403);
             }
 
             $data = $request->validate([
@@ -321,9 +320,8 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 return response()->json(['status' => 'error', 'message' => 'Manual entry not found.'], 404);
             }
 
-            $staffId = (int) $request->session()->get('staff_id', 0);
-            if ((int) ($entry->created_by ?? 0) !== $staffId && (int) ($entry->owner_staff_id ?? 0) !== $staffId) {
-                return response()->json(['status' => 'error', 'message' => 'You can only delete your own manual entries.'], 403);
+            if (!$this->canManageEntry($request, $entry)) {
+                return response()->json(['status' => 'error', 'message' => 'You are not allowed to delete this manual entry.'], 403);
             }
 
             if (!empty($entry->photo_path)) {

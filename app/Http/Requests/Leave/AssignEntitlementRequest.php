@@ -12,7 +12,7 @@ class AssignEntitlementRequest extends FormRequest
     {
         return [
             'staff_id' => ['required', 'integer', 'min:1'],
-            'year'     => ['required', 'integer', 'min:2020'],
+            'year'     => ['required', 'integer', 'min:1900'],
             'type'     => ['required', 'string', 'max:100'],
             'days'     => ['required', 'numeric', 'min:0'],
         ];

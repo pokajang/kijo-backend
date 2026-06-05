@@ -1077,6 +1077,31 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('message', 'You are not assigned to this workflow step.');
     }
 
+    public function test_salary_workflow_uses_fallback_roles_when_no_step_recipients_are_configured(): void
+    {
+        $response = $this->submitSalary([])->assertOk();
+        $recordId = $response->json('record.id');
+        $instanceId = $response->json('record.workflow.instanceId');
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->getJson('/hr/salary/financial-records')
+            ->assertOk()
+            ->assertJsonPath('records.0.id', $recordId)
+            ->assertJsonPath('records.0.canViewSalaryDetails', true)
+            ->assertJsonPath('records.0.workflow.availableActions.0.action', 'check')
+            ->assertJsonPath('records.0.workflow.availableActions.1.action', 'reject');
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/workflows/instances/{$instanceId}/actions", [
+                'action' => 'check',
+                'remarks' => 'Fallback checker',
+            ])
+            ->assertOk()
+            ->assertJsonPath('record.status', 'Checked')
+            ->assertJsonPath('record.checkedBy', 30);
+    }
+
     public function test_financial_salary_records_can_be_checked_and_approved(): void
     {
         $response = $this->submitSalary([])->assertOk();

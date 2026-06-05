@@ -158,6 +158,20 @@ abstract class ManualPipelineEntryBaseService
             && strtoupper((string) ($entry->owner_staff_code ?? '')) === $staffCode;
     }
 
+    protected function canManageEntry(Request $request, $entry): bool
+    {
+        if ($this->canViewOtherStaff($request)) {
+            return true;
+        }
+
+        $staffId = (int) $request->session()->get('staff_id', 0);
+
+        return $staffId > 0 && (
+            (int) ($entry->created_by ?? 0) === $staffId ||
+            (int) ($entry->owner_staff_id ?? 0) === $staffId
+        );
+    }
+
     protected function resolveOwner(Request $request, $requestedCode): array
     {
         $requestedStaffCode = $this->normalizeStaffCode($requestedCode);

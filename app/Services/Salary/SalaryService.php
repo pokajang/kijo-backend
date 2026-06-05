@@ -1630,7 +1630,7 @@ class SalaryService extends PdfRenderer
             return in_array($actorId, $recipients, true);
         }
 
-        return false;
+        return $this->hasAnyRole($request, $this->decodeJson($step->fallback_roles));
     }
 
     private function redactedFinancialSalaryPayload(array $payload): array
@@ -1860,6 +1860,27 @@ class SalaryService extends PdfRenderer
     private function staffId(Request $request): int
     {
         return (int) $request->session()->get('staff_id', 0);
+    }
+
+    private function hasAnyRole(Request $request, array $roles): bool
+    {
+        $allowed = array_map(static fn ($role): string => strtolower(trim((string) $role)), $roles);
+        if (empty($allowed)) {
+            return false;
+        }
+
+        $sessionRoles = $request->session()->get('roles', []);
+        if (is_string($sessionRoles)) {
+            $decoded = json_decode($sessionRoles, true);
+            $sessionRoles = is_array($decoded) ? $decoded : [$sessionRoles];
+        }
+
+        $current = array_map(
+            static fn ($role): string => strtolower(trim((string) $role)),
+            is_array($sessionRoles) ? $sessionRoles : [$sessionRoles],
+        );
+
+        return ! empty(array_intersect($allowed, $current));
     }
 
     private function generatorCode(Request $request): string

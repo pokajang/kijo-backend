@@ -41,6 +41,9 @@ class StaffDirectoryService extends StaffBaseService
         if ($hasStatusColumn) {
             $columns[] = 'status';
         }
+        if (Schema::hasColumn('staff_general', 'terminated_at')) {
+            $columns[] = 'terminated_at';
+        }
 
         $query = DB::table('staff_general')
             ->select($columns)

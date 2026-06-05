@@ -1030,7 +1030,11 @@ class WorkflowService
             ->map(fn ($id): int => (int) $id)
             ->all();
 
-        return in_array($actorId, $recipients, true);
+        if (! empty($recipients)) {
+            return in_array($actorId, $recipients, true);
+        }
+
+        return $this->hasAnyRole($request, $this->decodeJsonArray($step->fallback_roles));
     }
 
     private function nextStep(int $templateId, int $sortOrder): ?object

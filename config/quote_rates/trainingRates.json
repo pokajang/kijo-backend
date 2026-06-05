@@ -18,14 +18,15 @@
       "label": "Client Site - Special Trainer",
       "pricingBasis": "per_session",
       "unitCost": 5000,
-      "rateLabel": "RM 5,000.00 / day"
+      "rateLabel": "Reference RM 5,000.00 / day",
+      "enforceRateFloors": false
     },
     "client_site_special_approval": {
       "label": "Special Training / Special Client",
       "pricingBasis": "per_session",
       "unitCost": 5000,
-      "rateLabel": "RM 5,000.00 minimum; management approval required",
-      "requiresManagementApproval": true
+      "rateLabel": "Reference RM 5,000.00 / day",
+      "enforceRateFloors": false
     },
     "safex_individual_aesp": {
       "label": "SAFEX Individual - AESP",

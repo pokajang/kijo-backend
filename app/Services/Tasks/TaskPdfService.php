@@ -7,6 +7,15 @@ use Illuminate\Support\Facades\DB;
 
 class TaskPdfService extends TaskBaseService
 {
+    private const MAX_PDF_TASKS = 750;
+
+    private function tooManyTasksPdfResponse(int $taskCount)
+    {
+        return response()->json([
+            'status' => 'error',
+            'message' => "PDF export is limited to " . self::MAX_PDF_TASKS . " tasks. This selection contains {$taskCount} tasks. Please choose a shorter period or staff filter, or use CSV for larger exports.",
+        ], 422);
+    }
 
     public function exportAllTasksPdf(Request $request)
     {
@@ -55,6 +64,11 @@ class TaskPdfService extends TaskBaseService
             }
             if ($year > 0) {
                 $query->whereYear('t.created_at', $year);
+            }
+
+            $taskCount = (clone $query)->count();
+            if ($taskCount > self::MAX_PDF_TASKS) {
+                return $this->tooManyTasksPdfResponse($taskCount);
             }
 
             $tasks = $query->get();
@@ -158,6 +172,11 @@ class TaskPdfService extends TaskBaseService
             }
             if ($year > 0) {
                 $query->whereYear('t.created_at', $year);
+            }
+
+            $taskCount = (clone $query)->count();
+            if ($taskCount > self::MAX_PDF_TASKS) {
+                return $this->tooManyTasksPdfResponse($taskCount);
             }
 
             $tasks = $query->get();

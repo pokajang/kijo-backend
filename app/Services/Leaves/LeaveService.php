@@ -56,6 +56,11 @@ class LeaveService
         return $this->leaveEntitlementService()->getMyEntitlements($request);
     }
 
+    public function getEntitlementHistory(Request $request): JsonResponse
+    {
+        return $this->leaveEntitlementService()->getEntitlementHistory($request);
+    }
+
     public function assignLeavesEntitlement(AssignEntitlementRequest $request): JsonResponse
     {
         return $this->leaveEntitlementService()->assignLeavesEntitlement($request);

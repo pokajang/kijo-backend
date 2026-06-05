@@ -4,7 +4,6 @@ namespace App\Http\Requests\Quote;
 
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
-use Illuminate\Support\Facades\DB;
 
 trait ValidatesTrainingRateFloor
 {
@@ -37,11 +36,7 @@ trait ValidatesTrainingRateFloor
                 return;
             }
 
-            if (!empty($rate['requiresManagementApproval']) && !$this->hasApprovedPriceException()) {
-                $validator->errors()->add(
-                    'training_rate_type',
-                    'This training rate requires management approval before quotation.'
-                );
+            if (($rate['enforceRateFloors'] ?? true) === false) {
                 return;
             }
 
@@ -79,23 +74,6 @@ trait ValidatesTrainingRateFloor
                 );
             }
         });
-    }
-
-    private function hasApprovedPriceException(): bool
-    {
-        $id = (int) $this->input('price_exception_request_id', 0);
-        if ($id > 0) {
-            return true;
-        }
-
-        $quoteId = (int) ($this->route('id') ?? 0);
-        if ($quoteId <= 0) {
-            return false;
-        }
-
-        return (int) DB::table('quotes_training')
-            ->where('id', $quoteId)
-            ->value('price_exception_request_id') > 0;
     }
 
     private function allowedTrainingRateTypes(): array

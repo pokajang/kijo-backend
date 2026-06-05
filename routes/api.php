@@ -505,6 +505,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('hr/leaves/{id}/cancel', [LeaveController::class, 'cancelLeave']);
     Route::get('hr/leaves/entitlements', [LeaveController::class, 'getAllEntitlements'])->middleware('role:HR,System Admin');
     Route::get('hr/leaves/entitlements/mine', [LeaveController::class, 'getMyEntitlements']);
+    Route::get('hr/leaves/entitlements/history', [LeaveController::class, 'getEntitlementHistory'])->middleware('role:HR,System Admin');
     Route::post('hr/leaves/entitlements', [LeaveController::class, 'assignLeavesEntitlement'])->middleware('role:HR,System Admin');
     Route::put('hr/leaves/entitlements/{id}', [LeaveController::class, 'updateEntitlement'])->middleware('role:HR,System Admin');
     Route::delete('hr/leaves/entitlements/{id}', [LeaveController::class, 'deleteEntitlement'])->middleware('role:HR,System Admin');

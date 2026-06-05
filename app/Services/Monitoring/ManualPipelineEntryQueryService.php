@@ -21,7 +21,6 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
         $segmentType = trim((string) $request->input('segment_type', ''));
         $serviceCategory = $this->normalizeServiceCategory($request->input('service_category'));
         $search = trim((string) $request->input('q', ''));
-        $sessionStaffId = (int) $request->session()->get('staff_id', 0);
 
         $query = DB::table('monitoring_manual_pipeline_entries')
             ->orderByDesc('entry_date')
@@ -61,21 +60,23 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
             });
         }
 
-        return $query->limit(1000)->get()->map(fn($entry) => $this->mapEntry($entry, $sessionStaffId))->all();
+        return $query->limit(1000)->get()->map(fn($entry) => $this->mapEntry($request, $entry))->all();
     }
 
     public function find(Request $request, int $id): ?array
     {
         $entry = DB::table('monitoring_manual_pipeline_entries')->where('id', $id)->first();
-        if (!$entry) {
+        if (!$entry || !$this->canViewEntry($request, $entry)) {
             return null;
         }
 
-        return $this->mapEntry($entry, (int) $request->session()->get('staff_id', 0));
+        return $this->mapEntry($request, $entry);
     }
 
-    private function mapEntry($entry, int $sessionStaffId): array
+    private function mapEntry(Request $request, $entry): array
     {
+        $canManage = $this->canManageEntry($request, $entry);
+
         return [
             'id' => (int) $entry->id,
             'recordSource' => 'manual',
@@ -96,16 +97,8 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
             'ownerStaffName' => (string) ($entry->owner_staff_name ?? ''),
             'createdByCode' => (string) ($entry->created_by_code ?? ''),
             'createdAt' => (string) ($entry->created_at ?? ''),
-            'canUpdate' => $sessionStaffId > 0
-                && (
-                    (int) ($entry->created_by ?? 0) === $sessionStaffId
-                    || (int) ($entry->owner_staff_id ?? 0) === $sessionStaffId
-                ),
-            'canDelete' => $sessionStaffId > 0
-                && (
-                    (int) ($entry->created_by ?? 0) === $sessionStaffId
-                    || (int) ($entry->owner_staff_id ?? 0) === $sessionStaffId
-                ),
+            'canUpdate' => $canManage,
+            'canDelete' => $canManage,
         ];
     }
 

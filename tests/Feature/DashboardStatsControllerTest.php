@@ -638,6 +638,194 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(20, (int) $detailResponse->json('entry.legalAssessmentId'));
     }
 
+    public function test_management_users_can_manage_manual_pipeline_entries_for_other_staff(): void
+    {
+        $createResponse = $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
+            'entry_type' => 'lead',
+            'entry_date' => '2026-05-18',
+            'source' => 'WhatsApp Personal',
+            'owner_staff_code' => 'BOB',
+            'segment_type' => '',
+            'service_category' => null,
+            'estimated_rm' => null,
+            'prospect_name' => 'Bob Manual Lead',
+            'notes' => 'Created by admin for BOB',
+        ]);
+
+        $createResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $entryId = (int) DB::table('monitoring_manual_pipeline_entries')
+            ->where('prospect_name', 'Bob Manual Lead')
+            ->value('id');
+        $this->assertGreaterThan(0, $entryId);
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'id' => $entryId,
+            'owner_staff_id' => 2,
+            'owner_staff_code' => 'BOB',
+            'created_by' => 1,
+            'created_by_code' => 'AZA',
+        ]);
+
+        $recordsResponse = $this->authenticatedPost('/stats/monitoring-manual-pipeline-entries', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+            'staff_code' => 'BOB',
+        ]);
+
+        $recordsResponse->assertOk()->assertJsonPath('status', 'success');
+        $record = collect($recordsResponse->json('entries'))->firstWhere('id', $entryId);
+        $this->assertNotNull($record);
+        $this->assertTrue((bool) $record['canUpdate']);
+        $this->assertTrue((bool) $record['canDelete']);
+
+        $detailResponse = $this->authenticatedGet("/stats/monitoring-manual-pipeline-entry/{$entryId}");
+
+        $detailResponse->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('entry.id', $entryId)
+            ->assertJsonPath('entry.canUpdate', true)
+            ->assertJsonPath('entry.canDelete', true);
+
+        $updateResponse = $this->authenticatedPost("/stats/monitoring-manual-pipeline-entry/{$entryId}", [
+            'entry_type' => 'qualified',
+            'entry_date' => '2026-05-19',
+            'source' => 'Email Personal',
+            'segment_type' => 'tender',
+            'service_category' => '',
+            'estimated_rm' => '',
+            'prospect_name' => 'Bob Manual Lead Updated',
+            'notes' => 'Updated by admin',
+        ]);
+
+        $updateResponse->assertOk()->assertJsonPath('status', 'success');
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'id' => $entryId,
+            'entry_type' => 'qualified',
+            'prospect_name' => 'Bob Manual Lead Updated',
+            'entry_date' => '2026-05-19',
+            'source' => 'Email Personal',
+            'segment_type' => 'tender',
+            'notes' => 'Updated by admin',
+        ]);
+
+        $deleteResponse = $this
+            ->withSession([
+                '_token' => 'test-csrf-token',
+                'user_id' => 1,
+                'staff_id' => 1,
+                'name_code' => 'AZA',
+                'full_name' => 'Azam Bin Husain',
+                'roles' => ['System Admin'],
+            ])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/stats/monitoring-manual-pipeline-entry/{$entryId}");
+
+        $deleteResponse->assertOk()->assertJsonPath('status', 'success');
+        $this->assertDatabaseMissing('monitoring_manual_pipeline_entries', [
+            'id' => $entryId,
+        ]);
+    }
+
+    public function test_non_management_users_cannot_manage_manual_pipeline_entries_for_other_staff(): void
+    {
+        DB::table('system_users')->insert([
+            'id' => 2,
+            'staff_id' => 2,
+            'email' => 'dashboard-staff@example.test',
+            'role' => json_encode(['Staff']),
+            'is_active' => 1,
+        ]);
+
+        $session = [
+            '_token' => 'test-csrf-token',
+            'user_id' => 2,
+            'staff_id' => 2,
+            'name_code' => 'BOB',
+            'full_name' => 'Bob Tester',
+            'roles' => ['Staff'],
+        ];
+
+        $this
+            ->withSession($session)
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/stats/monitoring-manual-pipeline-entry', [
+                'entry_type' => 'lead',
+                'entry_date' => '2026-05-18',
+                'source' => 'WhatsApp Personal',
+                'owner_staff_code' => 'AZA',
+                'prospect_name' => 'Forbidden Aza Manual Lead',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You are not allowed to add manual entries for another staff member.');
+
+        DB::table('monitoring_manual_pipeline_entries')->insert([
+            'entry_type' => 'lead',
+            'prospect_name' => 'Aza Private Manual Lead',
+            'entry_date' => '2026-05-18',
+            'source' => 'WhatsApp Personal',
+            'segment_type' => null,
+            'service_category' => null,
+            'estimated_rm' => null,
+            'owner_staff_id' => 1,
+            'owner_staff_code' => 'AZA',
+            'owner_staff_name' => 'Azam Bin Husain',
+            'created_by' => 1,
+            'created_by_code' => 'AZA',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $entryId = (int) DB::table('monitoring_manual_pipeline_entries')
+            ->where('prospect_name', 'Aza Private Manual Lead')
+            ->value('id');
+
+        $this
+            ->withSession($session)
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/stats/monitoring-manual-pipeline-entries', [
+                'start_date' => '2026-05-01',
+                'end_date' => '2026-05-31',
+                'staff_code' => 'AZA',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You are not allowed to view monitoring data for another staff member.');
+
+        $this
+            ->withSession($session)
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->getJson("/stats/monitoring-manual-pipeline-entry/{$entryId}")
+            ->assertNotFound()
+            ->assertJsonPath('message', 'Pipeline entry not found.');
+
+        $this
+            ->withSession($session)
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/stats/monitoring-manual-pipeline-entry/{$entryId}", [
+                'entry_type' => 'qualified',
+                'entry_date' => '2026-05-19',
+                'source' => 'Email Personal',
+                'segment_type' => '',
+                'service_category' => '',
+                'estimated_rm' => '',
+                'prospect_name' => 'Aza Private Manual Lead Updated',
+                'notes' => 'Should not update',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You are not allowed to update this manual entry.');
+
+        $this
+            ->withSession($session)
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/stats/monitoring-manual-pipeline-entry/{$entryId}")
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You are not allowed to delete this manual entry.');
+
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'id' => $entryId,
+            'prospect_name' => 'Aza Private Manual Lead',
+        ]);
+    }
+
     public function test_financial_open_receivables_are_scoped_by_as_of_date(): void
     {
         $totalsResponse = $this->authenticatedPost('/stats/monthly-income-statement', [
