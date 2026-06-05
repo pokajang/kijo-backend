@@ -17,105 +17,41 @@ trait MonitoringStatsCoreHelpers
 
     private function baseQuoteLifecycleQuery(): Builder
     {
-        $training = DB::table('quotes_training')->selectRaw("
-            id AS quote_id,
-            quote_ref_no,
-            'Training' AS service_group,
-            training_title AS service_title,
-            created_by_id AS staff_id,
-            created_by_name AS staff_name,
-            created_by_code AS staff_code,
-            client_name,
-            created_at,
-            updated_at,
-            award_date,
-            status AS quote_status,
-            grand_total AS value,
-            attach_proposal,
-            remarks,
-            NULL AS inquiry_remarks,
-            status_remarks
-        ");
+        $nullText = $this->monitoringQuoteLifecycleNullTextSql();
+        $training = DB::table('quotes_training')->selectRaw($this->monitoringQuoteLifecycleSelectSql(
+            'Training',
+            $this->monitoringQuoteLifecycleTextSql('training_title'),
+            $this->monitoringQuoteLifecycleTextSql('remarks'),
+            $nullText
+        ));
 
-        $ih = DB::table('quotes_ih')->selectRaw("
-            id AS quote_id,
-            quote_ref_no,
-            'Industrial Hygiene' AS service_group,
-            service_title AS service_title,
-            created_by_id AS staff_id,
-            created_by_name AS staff_name,
-            created_by_code AS staff_code,
-            client_name,
-            created_at,
-            updated_at,
-            award_date,
-            status AS quote_status,
-            grand_total AS value,
-            attach_proposal,
-            NULL AS remarks,
-            inquiry_remarks,
-            status_remarks
-        ");
+        $ih = DB::table('quotes_ih')->selectRaw($this->monitoringQuoteLifecycleSelectSql(
+            'Industrial Hygiene',
+            $this->monitoringQuoteLifecycleTextSql('service_title'),
+            $nullText,
+            $this->monitoringQuoteLifecycleTextSql('inquiry_remarks')
+        ));
 
-        $manpower = DB::table('quotes_manpower')->selectRaw("
-            id AS quote_id,
-            quote_ref_no,
-            'Manpower Supply' AS service_group,
-            service_title AS service_title,
-            created_by_id AS staff_id,
-            created_by_name AS staff_name,
-            created_by_code AS staff_code,
-            client_name,
-            created_at,
-            updated_at,
-            award_date,
-            status AS quote_status,
-            grand_total AS value,
-            attach_proposal,
-            NULL AS remarks,
-            inquiry_remarks,
-            status_remarks
-        ");
+        $manpower = DB::table('quotes_manpower')->selectRaw($this->monitoringQuoteLifecycleSelectSql(
+            'Manpower Supply',
+            $this->monitoringQuoteLifecycleTextSql('service_title'),
+            $nullText,
+            $this->monitoringQuoteLifecycleTextSql('inquiry_remarks')
+        ));
 
-        $special = DB::table('quotes_special')->selectRaw("
-            id AS quote_id,
-            quote_ref_no,
-            'Special Service' AS service_group,
-            service_title AS service_title,
-            created_by_id AS staff_id,
-            created_by_name AS staff_name,
-            created_by_code AS staff_code,
-            client_name,
-            created_at,
-            updated_at,
-            award_date,
-            status AS quote_status,
-            grand_total AS value,
-            attach_proposal,
-            general_remarks AS remarks,
-            inquiry_remarks,
-            status_remarks
-        ");
+        $special = DB::table('quotes_special')->selectRaw($this->monitoringQuoteLifecycleSelectSql(
+            'Special Service',
+            $this->monitoringQuoteLifecycleTextSql('service_title'),
+            $this->monitoringQuoteLifecycleTextSql('general_remarks'),
+            $this->monitoringQuoteLifecycleTextSql('inquiry_remarks')
+        ));
 
-        $equipment = DB::table('quotes_equipment')->selectRaw("
-            id AS quote_id,
-            quote_ref_no,
-            'Equipment Supply' AS service_group,
-            'Equipment Supply' AS service_title,
-            created_by_id AS staff_id,
-            created_by_name AS staff_name,
-            created_by_code AS staff_code,
-            client_name,
-            created_at,
-            updated_at,
-            award_date,
-            status AS quote_status,
-            grand_total AS value,
-            attach_proposal,
-            NULL AS remarks,
-            inquiry_remarks,
-            status_remarks
-        ");
+        $equipment = DB::table('quotes_equipment')->selectRaw($this->monitoringQuoteLifecycleSelectSql(
+            'Equipment Supply',
+            $this->monitoringQuoteLifecycleLiteralSql('Equipment Supply'),
+            $nullText,
+            $this->monitoringQuoteLifecycleTextSql('inquiry_remarks')
+        ));
 
         $base = $training
             ->unionAll($ih)
@@ -124,6 +60,80 @@ trait MonitoringStatsCoreHelpers
             ->unionAll($equipment);
 
         return DB::query()->fromSub($base, 'quote_lifecycle');
+    }
+
+    private function monitoringQuoteLifecycleSelectSql(
+        string $serviceGroup,
+        string $serviceTitleSql,
+        string $remarksSql,
+        string $inquiryRemarksSql
+    ): string {
+        return sprintf(
+            '
+            id AS quote_id,
+            %s AS quote_ref_no,
+            %s AS service_group,
+            %s AS service_title,
+            created_by_id AS staff_id,
+            %s AS staff_name,
+            %s AS staff_code,
+            %s AS client_name,
+            created_at,
+            updated_at,
+            award_date,
+            %s AS quote_status,
+            grand_total AS value,
+            %s AS attach_proposal,
+            %s AS remarks,
+            %s AS inquiry_remarks,
+            %s AS status_remarks
+        ',
+            $this->monitoringQuoteLifecycleTextSql('quote_ref_no'),
+            $this->monitoringQuoteLifecycleLiteralSql($serviceGroup),
+            $serviceTitleSql,
+            $this->monitoringQuoteLifecycleTextSql('created_by_name'),
+            $this->monitoringQuoteLifecycleTextSql('created_by_code'),
+            $this->monitoringQuoteLifecycleTextSql('client_name'),
+            $this->monitoringQuoteLifecycleTextSql('status'),
+            $this->monitoringQuoteLifecycleTextSql('attach_proposal'),
+            $remarksSql,
+            $inquiryRemarksSql,
+            $this->monitoringQuoteLifecycleTextSql('status_remarks')
+        );
+    }
+
+    private function monitoringQuoteLifecycleTextSql(string $expression): string
+    {
+        if (! $this->monitoringQuoteLifecycleUsesMySqlCollation()) {
+            return $expression;
+        }
+
+        return "CONVERT({$expression} USING utf8mb4) COLLATE utf8mb4_unicode_ci";
+    }
+
+    private function monitoringQuoteLifecycleLiteralSql(string $value): string
+    {
+        $escaped = str_replace("'", "''", $value);
+
+        if (! $this->monitoringQuoteLifecycleUsesMySqlCollation()) {
+            return "'{$escaped}'";
+        }
+
+        return "_utf8mb4'{$escaped}' COLLATE utf8mb4_unicode_ci";
+    }
+
+    private function monitoringQuoteLifecycleNullTextSql(): string
+    {
+        if (! $this->monitoringQuoteLifecycleUsesMySqlCollation()) {
+            return 'NULL';
+        }
+
+        return 'CAST(NULL AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci';
+    }
+
+    private function monitoringQuoteLifecycleUsesMySqlCollation(): bool
+    {
+        return in_array(DB::getDriverName(), ['mysql', 'mariadb'], true);
     }
 
     private function monitoringMonthContext(Request $request): array
