@@ -263,18 +263,21 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(1300.0, (float) $historicalResponse->json('yearToDateCompanyTotalRm'));
     }
 
-    public function test_conversion_uses_quote_created_cohort_and_awarded_or_won_status(): void
+    public function test_conversion_uses_quote_created_cohort_and_realized_projects(): void
     {
-        $response = $this->authenticatedPost('/stats/conversion-rate-by-source', [
+        $dateRange = [
             'start_date' => '2026-03-01',
             'end_date' => '2026-03-31',
-        ]);
+        ];
+
+        $response = $this->authenticatedPost('/stats/conversion-rate-by-source', $dateRange);
 
         $response->assertOk()->assertJsonPath('status', 'success');
 
         $rows = collect($response->json('conversionRateBySource'));
         $email = $rows->firstWhere('sourceName', 'Email');
         $whatsapp = $rows->firstWhere('sourceName', 'WhatsApp');
+        $website = $rows->firstWhere('sourceName', 'Website');
 
         $this->assertSame(1, (int) $email['convertedCount']);
         $this->assertSame(1, (int) $email['totalQuotes']);
@@ -282,6 +285,34 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(1, (int) $whatsapp['convertedCount']);
         $this->assertSame(2, (int) $whatsapp['totalQuotes']);
         $this->assertSame(50.0, (float) $whatsapp['conversionRate']);
+        $this->assertSame(1, (int) $website['convertedCount']);
+        $this->assertSame(1, (int) $website['totalQuotes']);
+        $this->assertSame(100.0, (float) $website['conversionRate']);
+
+        $serviceResponse = $this->authenticatedPost('/stats/conversion-rate-by-service', $dateRange);
+        $serviceResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $serviceRows = collect($serviceResponse->json('conversionRateByService'));
+        $training = $serviceRows->firstWhere('serviceGroup', 'Training');
+        $industrialHygiene = $serviceRows->firstWhere('serviceGroup', 'IH');
+
+        $this->assertSame(2, (int) $training['convertedCount']);
+        $this->assertSame(3, (int) $training['totalQuotes']);
+        $this->assertSame(66.7, (float) $training['conversionRate']);
+        $this->assertSame(1, (int) $industrialHygiene['convertedCount']);
+        $this->assertSame(1, (int) $industrialHygiene['totalQuotes']);
+        $this->assertSame(100.0, (float) $industrialHygiene['conversionRate']);
+
+        $staffResponse = $this->authenticatedPost('/stats/conversion-rate-by-staff', $dateRange);
+        $staffResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $staffRows = collect($staffResponse->json('conversionRateByStaff'));
+        $azam = $staffRows->firstWhere('staffCode', 'AZA');
+
+        $this->assertSame(3, (int) $azam['convertedCount']);
+        $this->assertSame(4, (int) $azam['totalQuotes']);
+        $this->assertSame(75.0, (float) $azam['conversionRate']);
+        $this->assertSame(2, (int) $staffResponse->json('activeStaffCount'));
     }
 
     public function test_inquiry_source_count_and_value_share_quote_fact_source(): void
@@ -303,6 +334,70 @@ class DashboardStatsControllerTest extends TestCase
 
         $this->assertSame(2, (int) $whatsappCount['count']);
         $this->assertSame(3999.0, (float) $whatsappValue['totalValue']);
+    }
+
+    public function test_crm_quotation_stats_share_quote_fact_source(): void
+    {
+        $dateRange = [
+            'start_date' => '2026-03-01',
+            'end_date' => '2026-03-31',
+        ];
+
+        $monthlyValueResponse = $this->authenticatedPost('/stats/monthly-quote-value', $dateRange);
+        $monthlyCountResponse = $this->authenticatedPost('/stats/monthly-quote-count', $dateRange);
+        $serviceMonthResponse = $this->authenticatedPost('/stats/monthly-quote-value-by-service', $dateRange);
+        $serviceValueResponse = $this->authenticatedPost('/stats/quote-value-by-service', $dateRange);
+        $staffCountResponse = $this->authenticatedPost('/stats/quote-count-by-person', $dateRange);
+        $staffValueResponse = $this->authenticatedPost('/stats/quote-value-by-person', $dateRange);
+        $inquiryCountResponse = $this->authenticatedPost('/stats/inquiry', $dateRange);
+        $inquiryValueResponse = $this->authenticatedPost('/stats/inquiry-by-values', $dateRange);
+
+        foreach ([
+            $monthlyValueResponse,
+            $monthlyCountResponse,
+            $serviceMonthResponse,
+            $serviceValueResponse,
+            $staffCountResponse,
+            $staffValueResponse,
+            $inquiryCountResponse,
+            $inquiryValueResponse,
+        ] as $response) {
+            $response->assertOk()->assertJsonPath('status', 'success');
+        }
+
+        $marchValue = collect($monthlyValueResponse->json('monthlyQuoteValue'))->firstWhere('month', '2026-03');
+        $marchCount = collect($monthlyCountResponse->json('monthlyQuoteCount'))->firstWhere('month', '2026-03');
+
+        $this->assertSame(6299.0, (float) $marchValue['amount']);
+        $this->assertSame(4, (int) $marchCount['count']);
+
+        $this->assertSame(['2026-03'], $serviceMonthResponse->json('months'));
+        $serviceMonths = collect($serviceMonthResponse->json('monthlyStats'));
+        $trainingMonth = $serviceMonths->firstWhere('serviceGroup', 'Training');
+        $ihMonth = $serviceMonths->firstWhere('serviceGroup', 'IH');
+
+        $this->assertSame([4299.0], array_map('floatval', $trainingMonth['monthlyValues']));
+        $this->assertSame(4299.0, (float) $trainingMonth['totalValue']);
+        $this->assertSame([2000.0], array_map('floatval', $ihMonth['monthlyValues']));
+        $this->assertSame(2000.0, (float) $ihMonth['totalValue']);
+
+        $serviceValues = collect($serviceValueResponse->json('quoteValueByService'));
+        $this->assertSame(4299.0, (float) $serviceValues->firstWhere('serviceGroup', 'Training')['totalValue']);
+        $this->assertSame(2000.0, (float) $serviceValues->firstWhere('serviceGroup', 'IH')['totalValue']);
+
+        $staffCount = collect($staffCountResponse->json('quoteCountByPerson'))->firstWhere('staffCode', 'AZA');
+        $staffValue = collect($staffValueResponse->json('quoteValueByPerson'))->firstWhere('staffCode', 'AZA');
+
+        $this->assertSame(4, (int) $staffCount['quoteCount']);
+        $this->assertSame(6299.0, (float) $staffValue['totalValue']);
+
+        $inquiryCounts = collect($inquiryCountResponse->json('inquiryStats'));
+        $inquiryValues = collect($inquiryValueResponse->json('inquiryStatsByValues'));
+
+        $this->assertSame(2, (int) $inquiryCounts->firstWhere('source', 'WhatsApp')['count']);
+        $this->assertSame(1, (int) $inquiryCounts->firstWhere('source', 'Email')['count']);
+        $this->assertSame(3999.0, (float) $inquiryValues->firstWhere('source', 'WhatsApp')['totalValue']);
+        $this->assertSame(2000.0, (float) $inquiryValues->firstWhere('source', 'Email')['totalValue']);
     }
 
     public function test_monitoring_pipeline_tools_combines_crm_and_manual_negotiations(): void
