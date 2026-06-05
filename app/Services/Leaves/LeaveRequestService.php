@@ -435,6 +435,14 @@ class LeaveRequestService extends LeaveBaseService
             }
 
             $previousStatus = (string) $leave->status;
+            if (strtolower($previousStatus) === 'cancelled') {
+                DB::commit();
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Leave application is already cancelled.',
+                ]);
+            }
 
             DB::table('hr_leaves_application')->where('id', $leaveId)->update([
                 'status' => 'Cancelled',
@@ -979,12 +987,12 @@ class LeaveRequestService extends LeaveBaseService
                 'module_key' => 'staff.leaves',
                 'entity_type' => 'leave_application',
                 'entity_id' => $leaveId,
-                'type' => 'leave.cancelled',
-                'title' => 'Leave request cancelled',
-                'message' => 'A pending leave request was cancelled.',
-                'route' => "/staff/leaves/records/{$leaveId}",
-                'severity' => 'info',
-            ]);
+                    'type' => 'leave.cancelled',
+                    'title' => 'Leave request cancelled',
+                    'message' => 'A leave request was cancelled.',
+                    'route' => "/staff/leaves/records/{$leaveId}",
+                    'severity' => 'info',
+                ]);
         }
 
         if ((int) $leave->staff_id !== $actorId) {

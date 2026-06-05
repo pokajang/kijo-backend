@@ -939,6 +939,58 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         );
     }
 
+    public function test_cancel_already_cancelled_leave_is_idempotent(): void
+    {
+        Bus::fake();
+
+        DB::table('hr_leaves_allocation')->insert([
+            'staff_id' => 10,
+            'leave_type' => 'Annual',
+            'year' => 2026,
+            'total_days' => 14,
+            'used_days' => 3,
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Already cancelled leave',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Cancelled',
+            'applied_at' => '2026-05-20 09:15:00',
+            'cancelled_by' => 10,
+            'cancelled_at' => '2026-05-21 11:00:00',
+        ]);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson("/hr/leaves/{$leaveId}/cancel", ['id' => $leaveId])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('message', 'Leave application is already cancelled.');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Cancelled',
+            'cancelled_by' => 10,
+            'cancelled_at' => '2026-05-21 11:00:00',
+        ]);
+        $this->assertEquals(
+            '3',
+            (string) DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Annual')
+                ->where('year', 2026)
+                ->value('used_days'),
+        );
+        $this->assertSame(0, DB::table('in_app_notifications')->count());
+        $this->assertSame(0, DB::table('user_activities')->count());
+        Bus::assertNotDispatched(SendHtmlMailJob::class);
+    }
+
     public function test_vendor_payment_approve_and_delete_require_manager_role(): void
     {
         $paymentId = DB::table('vendor_payments')->insertGetId([
