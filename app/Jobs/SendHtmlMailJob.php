@@ -16,11 +16,11 @@ class SendHtmlMailJob implements ShouldQueue
 
     /**
      * Retry policy. NOTE: $tries/$backoff only take effect when the job is
-     * QUEUED via SendHtmlMailJob::dispatch() (e.g. feedback, tool requests,
-     * staff account mail). Callers that use ::dispatchSync() - leave/vendor/
-     * negotiation workflow mail - run the handler inline on the current
-     * request and bypass the queue worker, so these properties do not apply
-     * to them; those callers handle failures with their own try/catch.
+     * QUEUED via SendHtmlMailJob::dispatch() (e.g. tool requests, staff
+     * account mail). Callers that use ::dispatchSync() - leave/vendor/
+     * negotiation/feedback workflow mail - run the handler inline on the
+     * current request and bypass the queue worker, so these properties do not
+     * apply to them; those callers handle failures with their own try/catch.
      */
     public int $tries = 3;
     public int $backoff = 60;

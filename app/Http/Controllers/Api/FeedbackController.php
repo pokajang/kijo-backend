@@ -11,6 +11,7 @@ use App\Services\Mail\SystemEmailBodyBuilder;
 use App\Services\Mail\SystemEmailUrlBuilder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class FeedbackController extends Controller
 {
@@ -68,29 +69,42 @@ class FeedbackController extends Controller
 
         $this->auditLog->log($request, "Submitted feedback ticket #{$feedbackId}");
 
-        SendHtmlMailJob::dispatch(
-            'azam@amiosh.com',
-            'System Admin',
-            'New System Ticket Submitted',
-            $this->emailBody()->render([
-                'intro' => 'A new system ticket has been submitted in KIJO.',
-                'status' => ['label' => 'New Ticket', 'tone' => 'warning'],
-                'detailsHeading' => 'Ticket Details',
-                'details' => [
-                    'Submitted By' => "{$nameCode} (ID: {$staffId})",
-                    'Feedback' => $feedback,
-                ],
-                'actionUrl' => $this->emailUrls()->frontendUrl("/support/feedback/{$feedbackId}"),
-                'actionLabel' => 'Open system ticket',
-                'signOff' => false,
-            ]),
-            [],
-            null,
-            null,
-            $this->emailBody()->presentation('System Ticket', 'New System Ticket Submitted', 'Action required', 'A new system ticket has been submitted in KIJO.'),
-        );
+        $mailSent = true;
+        $mailMessage = 'Feedback submitted successfully.';
 
-        return response()->json(['status' => 'success', 'message' => 'Feedback submitted successfully.']);
+        try {
+            SendHtmlMailJob::dispatchSync(
+                'azam@amiosh.com',
+                'System Admin',
+                'New System Ticket Submitted',
+                $this->emailBody()->render([
+                    'intro' => 'A new system ticket has been submitted in KIJO.',
+                    'status' => ['label' => 'New Ticket', 'tone' => 'warning'],
+                    'detailsHeading' => 'Ticket Details',
+                    'details' => [
+                        'Submitted By' => "{$nameCode} (ID: {$staffId})",
+                        'Feedback' => $feedback,
+                    ],
+                    'actionUrl' => $this->emailUrls()->frontendUrl("/support/feedback/{$feedbackId}"),
+                    'actionLabel' => 'Open system ticket',
+                    'signOff' => false,
+                ]),
+                [],
+                null,
+                null,
+                $this->emailBody()->presentation('System Ticket', 'New System Ticket Submitted', 'Action required', 'A new system ticket has been submitted in KIJO.'),
+            );
+        } catch (Throwable $e) {
+            report($e);
+            $mailSent = false;
+            $mailMessage = 'Feedback submitted successfully, but the email notification could not be sent.';
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'message' => $mailMessage,
+            'mail_sent' => $mailSent,
+        ]);
     }
 
     public function update(UpdateFeedbackRequest $request, int $id)

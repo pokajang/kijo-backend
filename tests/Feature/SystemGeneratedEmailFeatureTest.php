@@ -87,7 +87,7 @@ class SystemGeneratedEmailFeatureTest extends TestCase
         ]);
     }
 
-    public function test_feedback_submission_queues_standardized_system_ticket_email(): void
+    public function test_feedback_submission_sends_standardized_system_ticket_email_inline(): void
     {
         Bus::fake([SendHtmlMailJob::class]);
 
@@ -96,9 +96,10 @@ class SystemGeneratedEmailFeatureTest extends TestCase
                 'feedback' => 'Please review <script>alert("x")</script>',
             ])
             ->assertOk()
-            ->assertJsonPath('status', 'success');
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('mail_sent', true);
 
-        Bus::assertDispatched(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
+        Bus::assertDispatchedSync(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
             $body = (string) $this->jobProperty($job, 'body');
             $presentation = (array) $this->jobProperty($job, 'presentation');
 
