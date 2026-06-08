@@ -28,7 +28,6 @@
         .quote-table td { border: 0.5px solid #000; padding: 4px 5px; vertical-align: top; text-align: left; }
         .quote-table .label { width: 35%; font-weight: 700; }
         .quote-table .value { width: 65%; }
-        .muted { font-size: 9pt; color: #6c757d; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
         .page-break { page-break-before: always; height: 0; margin: 0; padding: 0; }
@@ -121,12 +120,8 @@
                 </td>
             </tr>
             <tr>
-                <td class="label">{{ $L('unit_cost', 'Unit Cost') }}</td>
-                <td class="value">RM {{ number_format($unitPrice, 2) }} per unit</td>
-            </tr>
-            <tr>
                 <td class="label">{{ $L('amount', 'Amount') }}</td>
-                <td class="value">RM {{ number_format($grossSubtotal, 2) }} <span class="muted">({{ $subtotalDetail }})</span></td>
+                <td class="value">RM {{ number_format($grossSubtotal, 2) }} lumpsum</td>
             </tr>
             @if($discountAmount > 0)
                 <tr>

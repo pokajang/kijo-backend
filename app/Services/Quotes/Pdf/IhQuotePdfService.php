@@ -60,12 +60,6 @@ class IhQuotePdfService
         $subTotalNet = $grossSubtotal - $discountAmount;
         $showNetSubtotal = $discountAmount > 0 && $sstAmount > 0;
 
-        $serviceCostBasis = $sampleCount . ' ' . $sampleUnit . ' x ' . $workUnitsForCalc . ' work unit(s) x RM ' . number_format($unitPrice, 2) . '/unit';
-        $subtotalDetail = $serviceCostBasis;
-        if ($travelCharge > 0) {
-            $subtotalDetail .= ' + RM ' . number_format($travelCharge, 2) . ' travel';
-        }
-
         $appendProposal = (int) ($quote->attach_proposal ?? 0) === 1 && (int) ($quote->service_id ?? 0) > 0;
         $proposalTitle = '';
         $proposalSections = [];
@@ -146,9 +140,7 @@ class IhQuotePdfService
             'sampleUnit' => $sampleUnit,
             'workUnitsDisplay' => $workUnitsDisplay,
             'remarksHtml' => $remarksHtml,
-            'unitPrice' => $unitPrice,
             'grossSubtotal' => $grossSubtotal,
-            'subtotalDetail' => $subtotalDetail,
             'discountAmount' => $discountAmount,
             'showNetSubtotal' => $showNetSubtotal,
             'subTotalNet' => $subTotalNet,
