@@ -3,6 +3,7 @@
 namespace App\Services\Stats;
 
 use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -87,7 +88,7 @@ class RealizedSalesProjectQuery
                         FROM quote_inquiry_sources qis
                         WHERE qis.quote_id = p.quote_id
                           AND qis.service_type = 'Training'
-                          AND p.project_type = 'Training'
+                          AND LOWER(p.project_type) LIKE '%training%'
                         ORDER BY qis.id DESC
                         LIMIT 1
                     ),
@@ -96,7 +97,7 @@ class RealizedSalesProjectQuery
                         FROM quote_inquiry_sources qis
                         WHERE qis.quote_id = p.quote_id
                           AND qis.service_type = 'Industrial Hygiene'
-                          AND p.project_type = 'Industrial Hygiene'
+                          AND (LOWER(p.project_type) LIKE '%industrial%' OR LOWER(p.project_type) LIKE '%ih%')
                         ORDER BY qis.id DESC
                         LIMIT 1
                     ),
@@ -105,7 +106,7 @@ class RealizedSalesProjectQuery
                         FROM quote_inquiry_sources qis
                         WHERE qis.quote_id = p.quote_id
                           AND qis.service_type = 'Manpower Supply'
-                          AND p.project_type = 'Manpower Supply'
+                          AND (LOWER(p.project_type) LIKE '%manpower%' OR LOWER(p.project_type) LIKE '%man power%')
                         ORDER BY qis.id DESC
                         LIMIT 1
                     ),
@@ -114,7 +115,7 @@ class RealizedSalesProjectQuery
                         FROM quote_inquiry_sources qis
                         WHERE qis.quote_id = p.quote_id
                           AND qis.service_type = 'Equipment Supply'
-                          AND p.project_type = 'Equipment Supply'
+                          AND LOWER(p.project_type) LIKE '%equipment%'
                         ORDER BY qis.id DESC
                         LIMIT 1
                     ),
@@ -123,7 +124,7 @@ class RealizedSalesProjectQuery
                         FROM quote_inquiry_sources qis
                         WHERE qis.quote_id = p.quote_id
                           AND qis.service_type = 'Special Service'
-                          AND p.project_type = 'Special Service'
+                          AND LOWER(p.project_type) LIKE '%special%'
                         ORDER BY qis.id DESC
                         LIMIT 1
                     ),
@@ -186,6 +187,25 @@ class RealizedSalesProjectQuery
     public function realizedStatusPredicate(string $column = 'project_status'): string
     {
         return "LOWER({$column}) IN ('active', 'completed')";
+    }
+
+    public function realizedProjectsBySource(?string $start, ?string $end): Collection
+    {
+        $query = $this->projectFacts()
+            ->selectRaw("
+                COALESCE(NULLIF(inquiry_source, ''), 'Unattributed') AS inquiry_source,
+                COUNT(*) AS awarded_count,
+                SUM(value) AS total_awarded
+            ")
+            ->whereRaw($this->realizedStatusPredicate())
+            ->whereNotNull('award_date')
+            ->groupByRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed')");
+
+        if ($start && $end) {
+            $query->whereBetween(DB::raw('DATE(award_date)'), [$start, $end]);
+        }
+
+        return $query->get();
     }
 
     public function quoteHasRealizedProjectPredicate(string $quoteAlias = 'quote_facts'): string

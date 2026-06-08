@@ -89,6 +89,108 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(800.0, (float) $bob['totalAwarded']);
     }
 
+    public function test_conversion_count_and_realized_value_by_source_share_award_date_projects(): void
+    {
+        DB::table('all_quotes')->insert(collect(range(8, 13))->map(fn (int $quoteId) => [
+            'service_group' => 'Training',
+            'quote_id' => $quoteId,
+            'created_at' => '2026-05-12 10:00:00',
+            'award_date' => $quoteId <= 12 ? '2026-05-18' : null,
+            'staff_id' => 1,
+            'staff_name' => 'Azam Bin Husain',
+            'staff_code' => 'AZA',
+            'client_id' => $quoteId,
+            'client_name' => 'Client '.$quoteId,
+            'quote_status' => $quoteId <= 12 ? 'Awarded' : 'Pending',
+            'value' => $quoteId * 1000,
+            'inquiry_source' => 'WhatsApp Training',
+        ])->all());
+        DB::table('quotes_training')->insert(collect(range(8, 13))->map(fn (int $quoteId) => [
+            'id' => $quoteId,
+            'created_by_code' => 'AZA',
+            'created_by_name' => 'Azam Bin Husain',
+        ])->all());
+        DB::table('quote_inquiry_sources')->insert(collect(range(8, 13))->map(fn (int $quoteId) => [
+            'quote_id' => $quoteId,
+            'service_type' => 'Training',
+            'source' => 'WhatsApp Training',
+        ])->all());
+        DB::table('projects_main')->insert([
+            [
+                'id' => 130,
+                'project_name' => 'WhatsApp Training Project 1',
+                'quote_id' => 8,
+                'project_type' => 'Training Programme',
+                'quote_value' => 7000,
+                'award_date' => '2026-05-18',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 131,
+                'project_name' => 'WhatsApp Training Project 2',
+                'quote_id' => 9,
+                'project_type' => 'Training',
+                'quote_value' => 8000,
+                'award_date' => '2026-05-19',
+                'status' => 'completed',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 132,
+                'project_name' => 'WhatsApp Training Project 3',
+                'quote_id' => 10,
+                'project_type' => 'Training',
+                'quote_value' => 9000,
+                'award_date' => '2026-05-20',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 133,
+                'project_name' => 'WhatsApp Training Project 4',
+                'quote_id' => 11,
+                'project_type' => 'Training',
+                'quote_value' => 10000,
+                'award_date' => '2026-05-21',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 134,
+                'project_name' => 'WhatsApp Training Outside Range',
+                'quote_id' => 12,
+                'project_type' => 'Training',
+                'quote_value' => 11000,
+                'award_date' => '2026-06-01',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+        ]);
+
+        $dateRange = [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ];
+
+        $conversionResponse = $this->authenticatedPost('/stats/conversion-rate-by-source', $dateRange);
+        $awardedResponse = $this->authenticatedPost('/stats/awarded-value-by-source', $dateRange);
+
+        $conversionResponse->assertOk()->assertJsonPath('status', 'success');
+        $awardedResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $conversion = collect($conversionResponse->json('conversionRateBySource'))
+            ->firstWhere('sourceName', 'WhatsApp Training');
+        $awarded = collect($awardedResponse->json('awardValueBySource'))
+            ->firstWhere('sourceName', 'WhatsApp Training');
+
+        $this->assertSame(4, (int) $conversion['convertedCount']);
+        $this->assertSame(6, (int) $conversion['totalQuotes']);
+        $this->assertSame(66.7, (float) $conversion['conversionRate']);
+        $this->assertSame(34000.0, (float) $awarded['systemAwarded']);
+        $this->assertSame(34000.0, (float) $awarded['awardedValue']);
+    }
+
     public function test_manual_closed_save_requires_revenue_complete_fields_and_normalizes_individual(): void
     {
         $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
@@ -263,7 +365,7 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(1300.0, (float) $historicalResponse->json('yearToDateCompanyTotalRm'));
     }
 
-    public function test_conversion_uses_quote_created_cohort_and_realized_projects(): void
+    public function test_conversion_source_count_uses_award_date_while_other_conversion_views_keep_quote_cohort(): void
     {
         $dateRange = [
             'start_date' => '2026-03-01',
@@ -279,12 +381,12 @@ class DashboardStatsControllerTest extends TestCase
         $whatsapp = $rows->firstWhere('sourceName', 'WhatsApp');
         $website = $rows->firstWhere('sourceName', 'Website');
 
-        $this->assertSame(1, (int) $email['convertedCount']);
+        $this->assertSame(0, (int) $email['convertedCount']);
         $this->assertSame(1, (int) $email['totalQuotes']);
-        $this->assertSame(100.0, (float) $email['conversionRate']);
-        $this->assertSame(1, (int) $whatsapp['convertedCount']);
+        $this->assertSame(0.0, (float) $email['conversionRate']);
+        $this->assertSame(0, (int) $whatsapp['convertedCount']);
         $this->assertSame(2, (int) $whatsapp['totalQuotes']);
-        $this->assertSame(50.0, (float) $whatsapp['conversionRate']);
+        $this->assertSame(0.0, (float) $whatsapp['conversionRate']);
         $this->assertSame(1, (int) $website['convertedCount']);
         $this->assertSame(1, (int) $website['totalQuotes']);
         $this->assertSame(100.0, (float) $website['conversionRate']);

@@ -61,28 +61,52 @@ class ConversionDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $convertedPredicate = $this->realizedSalesProjectQuery()->quoteHasRealizedProjectPredicate();
-            $query = $this->baseQuoteFactsQuery()
+            $realizedQuery = $this->realizedSalesProjectQuery();
+            $denominatorRows = $this->baseQuoteFactsQuery()
                 ->selectRaw("
                     COALESCE(NULLIF(inquiry_source, ''), 'Unattributed') AS inquiry_source,
-                    COUNT(*) AS total_quotes,
-                    SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END) AS awarded_count,
-                    ROUND(
-                        SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END)
-                        * 100.0 / NULLIF(COUNT(*), 0), 1
-                    ) AS conversion_rate
+                    COUNT(*) AS total_quotes
                 ")
-                ->groupByRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed')")
-                ->orderByDesc('conversion_rate');
+                ->groupByRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed')");
             if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
+                $denominatorRows->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
             }
-            $rows = $query->get()->map(fn ($r) => [
-                'sourceName' => $r->inquiry_source,
-                'convertedCount' => (int) $r->awarded_count,
-                'totalQuotes' => (int) $r->total_quotes,
-                'conversionRate' => (float) $r->conversion_rate,
-            ]);
+
+            $rowsBySource = [];
+            foreach ($denominatorRows->get() as $r) {
+                $key = (string) ($r->inquiry_source ?: 'Unattributed');
+                $rowsBySource[$key] = [
+                    'sourceName' => $key,
+                    'convertedCount' => 0,
+                    'totalQuotes' => (int) $r->total_quotes,
+                ];
+            }
+
+            foreach ($realizedQuery->realizedProjectsBySource($start, $end) as $r) {
+                $key = (string) ($r->inquiry_source ?: 'Unattributed');
+                if (! isset($rowsBySource[$key])) {
+                    $rowsBySource[$key] = [
+                        'sourceName' => $key,
+                        'convertedCount' => 0,
+                        'totalQuotes' => 0,
+                    ];
+                }
+                $rowsBySource[$key]['convertedCount'] = (int) $r->awarded_count;
+            }
+
+            $rows = collect(array_values($rowsBySource))
+                ->map(function (array $row): array {
+                    $totalQuotes = (int) $row['totalQuotes'];
+                    $convertedCount = (int) $row['convertedCount'];
+
+                    return array_merge($row, [
+                        'conversionRate' => $totalQuotes > 0
+                            ? round($convertedCount * 100.0 / $totalQuotes, 1)
+                            : 0.0,
+                    ]);
+                })
+                ->sortByDesc('conversionRate')
+                ->values();
 
             return response()->json(['status' => 'success', 'conversionRateBySource' => $rows]);
         } catch (\Throwable $e) {

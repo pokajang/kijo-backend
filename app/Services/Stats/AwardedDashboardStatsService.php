@@ -113,17 +113,8 @@ class AwardedDashboardStatsService
         [$start, $end] = $this->parseDates($request);
         try {
             $realizedQuery = $this->realizedSalesProjectQuery();
-            $systemRows = $realizedQuery->projectFacts()
-                ->selectRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed') AS inquiry_source, SUM(value) AS total_awarded")
-                ->whereRaw($realizedQuery->realizedStatusPredicate())
-                ->whereNotNull('award_date')
-                ->groupByRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed')")
-                ->orderByDesc('total_awarded');
-            if ($start && $end) {
-                $systemRows->whereBetween(DB::raw('DATE(award_date)'), [$start, $end]);
-            }
             $rows = [];
-            foreach ($systemRows->get() as $r) {
+            foreach ($realizedQuery->realizedProjectsBySource($start, $end) as $r) {
                 $key = (string) ($r->inquiry_source ?: 'Unattributed');
                 $rows[$key] = [
                     'sourceName' => $key,
