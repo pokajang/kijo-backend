@@ -2,23 +2,14 @@
 
 namespace App\Services\Projects;
 
-use App\Http\Requests\Project\AddCollaboratorRequest;
-use App\Http\Requests\Project\AddExpenseRequest;
-use App\Http\Requests\Project\AddProgressRequest;
-use App\Http\Requests\Project\AssignVendorRequest;
 use App\Http\Requests\Project\CloseProjectRequest;
 use App\Http\Requests\Project\StoreProjectRequest;
-use App\Http\Requests\Project\UpdateProgressRequest;
 use App\Http\Requests\Project\UpdateProjectRequest;
 use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
 
 class ProjectMutationService
 {
@@ -33,9 +24,9 @@ class ProjectMutationService
             return response()->json(['status' => 'error', 'message' => 'Unauthorized.'], 403);
         }
 
-        $data        = $request->validated();
+        $data = $request->validated();
         $projectType = trim($data['project_type'] ?? '');
-        $typeLower   = strtolower($projectType);
+        $typeLower = strtolower($projectType);
 
         $quoteType = null;
         if ($typeLower !== '') {
@@ -53,19 +44,19 @@ class ProjectMutationService
         }
 
         $insert = [
-            'client_id'          => $data['client_id'],
-            'project_name'       => $data['project_name'],
-            'project_type'       => $projectType,
-            'quote_type'         => $quoteType,
-            'po_loa_number'      => $data['po_loa_number'] ?? '',
-            'quote_value'        => $data['quote_value'] ?? 0.00,
-            'award_date'         => $data['award_date'] ?? null,
+            'client_id' => $data['client_id'],
+            'project_name' => $data['project_name'],
+            'project_type' => $projectType,
+            'quote_type' => $quoteType,
+            'po_loa_number' => $data['po_loa_number'] ?? '',
+            'quote_value' => $data['quote_value'] ?? 0.00,
+            'award_date' => $data['award_date'] ?? null,
             'service_start_date' => $data['service_start_date'] ?? null,
-            'service_end_date'   => $data['service_end_date'] ?? null,
-            'description'        => $data['description'] ?? '',
-            'status'             => 'Active',
-            'created_at'         => now(),
-            'created_by'         => $staffId,
+            'service_end_date' => $data['service_end_date'] ?? null,
+            'description' => $data['description'] ?? '',
+            'status' => 'Active',
+            'created_at' => now(),
+            'created_by' => $staffId,
         ];
         if (Schema::hasColumn('projects_main', 'proposal_language')) {
             $insert['proposal_language'] = $data['proposal_language'] ?? 'en';
@@ -91,20 +82,20 @@ class ProjectMutationService
             return response()->json(['status' => 'error', 'message' => 'Unauthorized.'], 403);
         }
 
-        $data      = $request->validated();
+        $data = $request->validated();
         $projectId = (int) ($data['project_id'] ?? $request->input('id'));
 
         $updates = [
-            'project_name'       => $data['project_name'],
-            'project_type'       => $data['project_type'] ?? '',
-            'quote_value'        => $data['quote_value'] ?? 0.00,
-            'award_date'         => $data['award_date'] ?? null,
+            'project_name' => $data['project_name'],
+            'project_type' => $data['project_type'] ?? '',
+            'quote_value' => $data['quote_value'] ?? 0.00,
+            'award_date' => $data['award_date'] ?? null,
             'service_start_date' => $data['service_start_date'] ?? null,
-            'service_end_date'   => $data['service_end_date'] ?? null,
-            'description'        => $data['description'] ?? '',
-            'po_loa_number'      => $data['po_loa_number'] ?? '',
-            'updated_at'         => now(),
-            'updated_by'         => $staffId,
+            'service_end_date' => $data['service_end_date'] ?? null,
+            'description' => $data['description'] ?? '',
+            'po_loa_number' => $data['po_loa_number'] ?? '',
+            'updated_at' => now(),
+            'updated_by' => $staffId,
         ];
         if (Schema::hasColumn('projects_main', 'proposal_language')) {
             $updates['proposal_language'] = $data['proposal_language']
@@ -128,7 +119,7 @@ class ProjectMutationService
         $invoiceCount = DB::table('invoices')->where('project_id', $id)->count();
         if ($invoiceCount > 0) {
             return response()->json([
-                'status'  => 'error',
+                'status' => 'error',
                 'message' => 'Project is referenced in invoices. Please remove related invoices first.',
             ]);
         }
@@ -136,7 +127,7 @@ class ProjectMutationService
         $doCount = DB::table('do_details')->where('project_id', $id)->count();
         if ($doCount > 0) {
             return response()->json([
-                'status'  => 'error',
+                'status' => 'error',
                 'message' => 'Project is referenced in delivery orders. Please remove related DOs first.',
             ]);
         }
@@ -148,21 +139,21 @@ class ProjectMutationService
                 ->where('id', $id)
                 ->first();
 
-            if ($project && !empty($project->quote_id) && !empty($project->project_type)) {
-                $quoteId   = (int) $project->quote_id;
+            if ($project && ! empty($project->quote_id) && ! empty($project->project_type)) {
+                $quoteId = (int) $project->quote_id;
                 $typeLower = strtolower(trim($project->project_type));
 
                 $tableMap = [
-                    'training'          => 'quotes_training',
-                    'equipment supply'  => 'quotes_equipment',
-                    'industrial hygiene'=> 'quotes_ih',
-                    'manpower supply'   => 'quotes_manpower',
-                    'special service'   => 'quotes_special',
+                    'training' => 'quotes_training',
+                    'equipment supply' => 'quotes_equipment',
+                    'industrial hygiene' => 'quotes_ih',
+                    'manpower supply' => 'quotes_manpower',
+                    'special service' => 'quotes_special',
                 ];
 
                 if (isset($tableMap[$typeLower])) {
                     DB::table($tableMap[$typeLower])->where('id', $quoteId)->update([
-                        'status'         => 'Open',
+                        'status' => 'Open',
                         'status_remarks' => 'User deleted the project. Status reset to Open.',
                     ]);
                 }
@@ -178,7 +169,8 @@ class ProjectMutationService
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
-            return response()->json(['status' => 'error', 'message' => 'Failed to delete project: ' . $e->getMessage()]);
+
+            return response()->json(['status' => 'error', 'message' => 'Failed to delete project: '.$e->getMessage()]);
         }
 
         $this->auditLog->log($request, "Deleted project ID #{$id} and reset linked quote (if any) to 'Open'");
@@ -193,27 +185,40 @@ class ProjectMutationService
             return response()->json(['status' => 'error', 'message' => 'Unauthorized.'], 403);
         }
 
-        $data      = $request->validated();
+        $data = $request->validated();
         $projectId = (int) $data['project_id'];
         $closeType = $data['closeType'];
 
-        $exists = DB::table('projects_main')->where('id', $projectId)->exists();
-        if (!$exists) {
-            return response()->json(['status' => 'error', 'message' => 'Project not found.']);
-        }
-
         DB::beginTransaction();
         try {
+            $project = DB::table('projects_main')
+                ->where('id', $projectId)
+                ->lockForUpdate()
+                ->first(['id', 'status']);
+
+            if (! $project) {
+                DB::rollBack();
+
+                return response()->json(['status' => 'error', 'message' => 'Project not found.']);
+            }
+
+            $projectStatus = strtolower(trim((string) ($project->status ?? '')));
+            if (in_array($projectStatus, ['completed', 'terminated', 'closed'], true)) {
+                DB::rollBack();
+
+                return response()->json(['status' => 'error', 'message' => 'Project is already closed.']);
+            }
+
             DB::table('project_closing_details')->insert([
-                'project_id'  => $projectId,
-                'close_date'  => $data['closeDate'],
-                'close_type'  => $closeType,
-                'reason'      => $data['reason'],
-                'claims_ok'   => (int) ($data['claims'] ?? false),
-                'vendors_ok'  => (int) ($data['vendors'] ?? false),
+                'project_id' => $projectId,
+                'close_date' => $data['closeDate'],
+                'close_type' => $closeType,
+                'reason' => $data['reason'],
+                'claims_ok' => (int) ($data['claims'] ?? false),
+                'vendors_ok' => (int) ($data['vendors'] ?? false),
                 'services_ok' => (int) ($data['services'] ?? false),
-                'closed_by'   => $staffId,
-                'closed_at'   => now(),
+                'closed_by' => $staffId,
+                'closed_at' => now(),
             ]);
 
             DB::table('projects_main')->where('id', $projectId)->update(['status' => $closeType]);
@@ -229,7 +234,8 @@ class ProjectMutationService
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
-            return response()->json(['status' => 'error', 'message' => 'Database error: ' . $e->getMessage()]);
+
+            return response()->json(['status' => 'error', 'message' => 'Database error: '.$e->getMessage()]);
         }
 
         $this->auditLog->log($request, "Project ID #{$projectId} was marked as {$closeType}");
@@ -249,7 +255,7 @@ class ProjectMutationService
             ->where('id', $projectId)
             ->first();
 
-        if (!$project) {
+        if (! $project) {
             return response()->json(['status' => 'error', 'message' => 'Project not found.']);
         }
 
@@ -262,15 +268,15 @@ class ProjectMutationService
         }
 
         $tableMap = [
-            'Training'          => 'quotes_training',
-            'Equipment Supply'  => 'quotes_equipment',
-            'Manpower Supply'   => 'quotes_manpower',
-            'Industrial Hygiene'=> 'quotes_ih',
-            'Special Service'   => 'quotes_special',
+            'Training' => 'quotes_training',
+            'Equipment Supply' => 'quotes_equipment',
+            'Manpower Supply' => 'quotes_manpower',
+            'Industrial Hygiene' => 'quotes_ih',
+            'Special Service' => 'quotes_special',
         ];
 
         $table = $tableMap[trim((string) $project->project_type)] ?? null;
-        if (!$table) {
+        if (! $table) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported project type.']);
         }
 
@@ -286,8 +292,8 @@ class ProjectMutationService
         $staffId = (int) $request->session()->get('staff_id', 0);
         DB::table('projects_main')->where('id', $projectId)->update([
             'po_loa_number' => $refNo,
-            'updated_at'    => now(),
-            'updated_by'    => $staffId,
+            'updated_at' => now(),
+            'updated_by' => $staffId,
         ]);
 
         $this->auditLog->log($request, "Reloaded PO/LOA number for project #{$projectId}: {$refNo}");
@@ -302,20 +308,20 @@ class ProjectMutationService
         ?int $updatedBy = null,
         ?string $date = null
     ): void {
-        if (!$projectId || $activity === '') {
+        if (! $projectId || $activity === '') {
             return;
         }
 
         $staffId = $updatedBy ?? (int) $request->session()->get('staff_id', 0);
-        $date    = $date ?? now()->format('Y-m-d');
+        $date = $date ?? now()->format('Y-m-d');
 
         try {
             DB::table('project_progress')->insert([
-                'project_id'    => $projectId,
+                'project_id' => $projectId,
                 'progress_date' => $date,
                 'progress_text' => $activity,
-                'updated_by'    => $staffId ?: null,
-                'updated_on'    => now(),
+                'updated_by' => $staffId ?: null,
+                'updated_on' => now(),
             ]);
         } catch (\Throwable $e) {
             report($e);

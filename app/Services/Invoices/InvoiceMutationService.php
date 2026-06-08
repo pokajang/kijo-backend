@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Schema;
 
 class InvoiceMutationService extends InvoiceBaseService
 {
+    private const MONEY_TOLERANCE = 0.01;
+
     public function store(Request $request): JsonResponse
     {
         $request->validate([
@@ -18,6 +20,7 @@ class InvoiceMutationService extends InvoiceBaseService
             'breakdown' => 'required|array|min:1',
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
+            'close_project' => 'nullable|boolean',
         ]);
 
         $staffId = (int) $request->session()->get('staff_id', 0);
@@ -33,6 +36,7 @@ class InvoiceMutationService extends InvoiceBaseService
         $quoteId = ($quoteIdRaw !== null && $quoteIdRaw !== '') ? (int) $quoteIdRaw : null;
         $invoicePurpose = trim((string) $request->input('invoice_purpose', ''));
         $grantNo = trim((string) $request->input('grant_approval_no', ''));
+        $closeProject = filter_var($request->input('close_project', false), FILTER_VALIDATE_BOOLEAN);
 
         // Duplicate grant_no check
         if ($grantNo !== '') {
@@ -177,6 +181,9 @@ class InvoiceMutationService extends InvoiceBaseService
             }
 
             $this->insertProjectProgress($projectId, "Invoice {$refNo} created.", $request);
+            $projectClosed = $closeProject
+                ? $this->closeProjectAfterInvoice($projectId, $refNo, $invoiceDate, $staffId, $request)
+                : false;
             $this->auditLog->log($request, "Created invoice {$refNo} (service: {$serviceType}) for project {$projectId}");
 
             DB::commit();
@@ -186,6 +193,7 @@ class InvoiceMutationService extends InvoiceBaseService
                 'status' => 'success',
                 'invoice_id' => $invoiceId,
                 'invoice_ref_no' => $refNo,
+                'project_closed' => $projectClosed,
             ]);
         } catch (\Throwable $e) {
             if (DB::transactionLevel() > 0) {
@@ -367,6 +375,93 @@ class InvoiceMutationService extends InvoiceBaseService
             return CarbonImmutable::today()
                 ->addDays($paymentTermsDays)
                 ->toDateString();
+        }
+    }
+
+    private function closeProjectAfterInvoice(
+        int $projectId,
+        string $invoiceRef,
+        mixed $invoiceDate,
+        int $staffId,
+        Request $request
+    ): bool {
+        if (
+            ! Schema::hasTable('projects_main') ||
+            ! Schema::hasColumn('projects_main', 'status') ||
+            ! Schema::hasColumn('projects_main', 'quote_value')
+        ) {
+            return false;
+        }
+
+        $project = DB::table('projects_main')
+            ->where('id', $projectId)
+            ->lockForUpdate()
+            ->first(['id', 'status', 'quote_value']);
+
+        if (! $project || strtolower(trim((string) ($project->status ?? ''))) !== 'active') {
+            return false;
+        }
+
+        $quoteValue = (float) ($project->quote_value ?? 0);
+        if ($quoteValue <= 0 || ! $this->isProjectFullyInvoiced($projectId, $quoteValue)) {
+            return false;
+        }
+
+        $closeDate = $this->dateForProjectClose($invoiceDate);
+        $reason = "No further invoice expected after invoice {$invoiceRef}.";
+
+        if (Schema::hasTable('project_closing_details')) {
+            DB::table('project_closing_details')->insert([
+                'project_id' => $projectId,
+                'close_date' => $closeDate,
+                'close_type' => 'Completed',
+                'reason' => $reason,
+                'claims_ok' => 0,
+                'vendors_ok' => 0,
+                'services_ok' => 0,
+                'closed_by' => $staffId,
+                'closed_at' => now(),
+            ]);
+        }
+
+        $projectUpdates = ['status' => 'Completed'];
+        if (Schema::hasColumn('projects_main', 'updated_at')) {
+            $projectUpdates['updated_at'] = now();
+        }
+
+        DB::table('projects_main')->where('id', $projectId)->update($projectUpdates);
+
+        $nameCode = Schema::hasTable('staff_general') && Schema::hasColumn('staff_general', 'name_code')
+            ? (DB::table('staff_general')->where('staff_id', $staffId)->value('name_code') ?: "STAFF#{$staffId}")
+            : "STAFF#{$staffId}";
+
+        $this->insertProjectProgress(
+            $projectId,
+            "Project marked as Completed by {$nameCode}; no further invoice expected after invoice {$invoiceRef}.",
+            $request
+        );
+        $this->auditLog->log($request, "Project ID #{$projectId} was marked as Completed after invoice {$invoiceRef}");
+
+        return true;
+    }
+
+    private function isProjectFullyInvoiced(int $projectId, float $quoteValue): bool
+    {
+        $billedTotal = (float) DB::table('invoices')
+            ->where('project_id', $projectId)
+            ->whereRaw("LOWER(COALESCE(status, '')) NOT LIKE ?", ['%void%'])
+            ->whereRaw("LOWER(COALESCE(status, '')) NOT LIKE ?", ['%cancel%'])
+            ->sum('grand_total');
+
+        return ($quoteValue - $billedTotal) <= self::MONEY_TOLERANCE;
+    }
+
+    private function dateForProjectClose(mixed $invoiceDate): string
+    {
+        try {
+            return CarbonImmutable::parse((string) $invoiceDate)->toDateString();
+        } catch (\Throwable) {
+            return CarbonImmutable::today()->toDateString();
         }
     }
 

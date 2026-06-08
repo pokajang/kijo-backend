@@ -81,6 +81,7 @@ class ClientStatusInvoiceSyncFeatureTest extends TestCase
             'id' => 100,
             'client_id' => 10,
             'project_name' => 'Manual Manpower Project',
+            'status' => 'Active',
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -114,11 +115,219 @@ class ClientStatusInvoiceSyncFeatureTest extends TestCase
         ]);
     }
 
+    public function test_invoice_creation_can_close_project_when_requested(): void
+    {
+        DB::table('client_company')->insert([
+            'company_id' => 11,
+            'company_name' => 'Close Project Client',
+            'client_status' => 'Old',
+            'deleted_at' => null,
+        ]);
+
+        DB::table('projects_main')->insert([
+            'id' => 101,
+            'client_id' => 11,
+            'project_name' => 'Close After Invoice Project',
+            'status' => 'Active',
+            'quote_value' => 200,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('invoices')->insert([
+            'project_id' => 101,
+            'client_id' => 11,
+            'service_type' => 'Manpower Supply',
+            'invoice_ref_no' => 'INV-EXISTING',
+            'invoice_purpose' => 'Initial project invoice',
+            'grand_total' => 100,
+            'status' => 'Pending',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->actingSession()
+            ->postJson('/invoices', [
+                'project_id' => 101,
+                'service_type' => 'Manpower Supply',
+                'invoice_purpose' => 'Remaining project invoice',
+                'invoice_date' => '2026-05-26',
+                'amount' => 100,
+                'sst_amount' => 0,
+                'grand_total' => 100,
+                'payment_method' => 'Direct Payment',
+                'close_project' => true,
+                'breakdown' => [
+                    [
+                        'item_description' => 'Remaining project invoice',
+                        'unit' => 'Lot',
+                        'quantity' => 1,
+                        'unit_price' => 100,
+                        'subtotal' => 100,
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('project_closed', true);
+
+        $invoiceRef = $response->json('invoice_ref_no');
+
+        $this->assertDatabaseHas('projects_main', [
+            'id' => 101,
+            'status' => 'Completed',
+        ]);
+        $this->assertDatabaseHas('project_closing_details', [
+            'project_id' => 101,
+            'close_date' => '2026-05-26',
+            'close_type' => 'Completed',
+            'reason' => "No further invoice expected after invoice {$invoiceRef}.",
+            'closed_by' => 10,
+        ]);
+        $this->assertDatabaseHas('project_progress', [
+            'project_id' => 101,
+            'progress_text' => "Invoice {$invoiceRef} created.",
+        ]);
+        $this->assertDatabaseHas('project_progress', [
+            'project_id' => 101,
+            'progress_text' => "Project marked as Completed by STAFF#10; no further invoice expected after invoice {$invoiceRef}.",
+        ]);
+    }
+
+    public function test_invoice_creation_does_not_close_project_until_non_cancelled_invoices_cover_value(): void
+    {
+        DB::table('client_company')->insert([
+            'company_id' => 12,
+            'company_name' => 'Partially Billed Client',
+            'client_status' => 'Old',
+            'deleted_at' => null,
+        ]);
+
+        DB::table('projects_main')->insert([
+            'id' => 102,
+            'client_id' => 12,
+            'project_name' => 'Partially Billed Project',
+            'status' => 'Active',
+            'quote_value' => 1000,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('invoices')->insert([
+            [
+                'project_id' => 102,
+                'client_id' => 12,
+                'service_type' => 'Manpower Supply',
+                'invoice_ref_no' => 'INV-PARTIAL',
+                'invoice_purpose' => 'Initial partial invoice',
+                'grand_total' => 100,
+                'status' => 'Pending',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'project_id' => 102,
+                'client_id' => 12,
+                'service_type' => 'Manpower Supply',
+                'invoice_ref_no' => 'INV-CANCELLED',
+                'invoice_purpose' => 'Cancelled project invoice',
+                'grand_total' => 800,
+                'status' => 'Cancelled',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $this->actingSession()
+            ->postJson('/invoices', [
+                'project_id' => 102,
+                'service_type' => 'Manpower Supply',
+                'invoice_purpose' => 'Second partial invoice',
+                'invoice_date' => '2026-05-26',
+                'amount' => 100,
+                'sst_amount' => 0,
+                'grand_total' => 100,
+                'payment_method' => 'Direct Payment',
+                'close_project' => true,
+                'breakdown' => [
+                    [
+                        'item_description' => 'Second partial invoice',
+                        'unit' => 'Lot',
+                        'quantity' => 1,
+                        'unit_price' => 100,
+                        'subtotal' => 100,
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('project_closed', false);
+
+        $this->assertDatabaseHas('projects_main', [
+            'id' => 102,
+            'status' => 'Active',
+        ]);
+        $this->assertDatabaseMissing('project_closing_details', [
+            'project_id' => 102,
+        ]);
+    }
+
+    public function test_invoice_creation_does_not_close_non_active_project_when_requested(): void
+    {
+        DB::table('client_company')->insert([
+            'company_id' => 13,
+            'company_name' => 'Terminated Project Client',
+            'client_status' => 'Old',
+            'deleted_at' => null,
+        ]);
+
+        DB::table('projects_main')->insert([
+            'id' => 103,
+            'client_id' => 13,
+            'project_name' => 'Terminated Project',
+            'status' => 'Terminated',
+            'quote_value' => 100,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingSession()
+            ->postJson('/invoices', [
+                'project_id' => 103,
+                'service_type' => 'Manpower Supply',
+                'invoice_purpose' => 'Terminated project invoice',
+                'invoice_date' => '2026-05-26',
+                'amount' => 100,
+                'sst_amount' => 0,
+                'grand_total' => 100,
+                'payment_method' => 'Direct Payment',
+                'close_project' => true,
+                'breakdown' => [
+                    [
+                        'item_description' => 'Terminated project invoice',
+                        'unit' => 'Lot',
+                        'quantity' => 1,
+                        'unit_price' => 100,
+                        'subtotal' => 100,
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('project_closed', false);
+
+        $this->assertDatabaseHas('projects_main', [
+            'id' => 103,
+            'status' => 'Terminated',
+        ]);
+    }
+
     private function createTables(): void
     {
         Schema::dropIfExists('invoice_payment_reminder_logs');
         Schema::dropIfExists('invoice_breakdown');
         Schema::dropIfExists('invoices');
+        Schema::dropIfExists('project_closing_details');
         Schema::dropIfExists('project_progress');
         Schema::dropIfExists('projects_main');
         Schema::dropIfExists('user_activities');
@@ -135,6 +344,8 @@ class ClientStatusInvoiceSyncFeatureTest extends TestCase
             $table->increments('id');
             $table->integer('client_id')->nullable();
             $table->string('project_name')->nullable();
+            $table->string('status')->nullable();
+            $table->decimal('quote_value', 12, 2)->nullable();
             $table->timestamps();
         });
 
@@ -196,6 +407,19 @@ class ClientStatusInvoiceSyncFeatureTest extends TestCase
             $table->text('progress_text');
             $table->integer('updated_by')->nullable();
             $table->timestamp('updated_on')->nullable();
+        });
+
+        Schema::create('project_closing_details', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->integer('project_id');
+            $table->date('close_date');
+            $table->string('close_type');
+            $table->text('reason');
+            $table->boolean('claims_ok')->default(false);
+            $table->boolean('vendors_ok')->default(false);
+            $table->boolean('services_ok')->default(false);
+            $table->integer('closed_by')->nullable();
+            $table->timestamp('closed_at')->nullable();
         });
 
         Schema::create('user_activities', function (Blueprint $table): void {

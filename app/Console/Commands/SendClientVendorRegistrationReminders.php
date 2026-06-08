@@ -7,6 +7,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\HtmlString;
 
 class SendClientVendorRegistrationReminders extends Command
 {
@@ -243,7 +244,7 @@ class SendClientVendorRegistrationReminders extends Command
             'rows' => array_map(fn ($item) => $this->digestRow($item), $delivery['items']),
         ])->render();
 
-        Mail::html($htmlBody, function ($message) use ($delivery, $fromAddress, $fromName, $recipientName, $subject): void {
+        Mail::send(['html' => new HtmlString($htmlBody)], [], function ($message) use ($delivery, $fromAddress, $fromName, $recipientName, $subject): void {
             $message
                 ->from($fromAddress, $fromName)
                 ->to($delivery['email'], $recipientName !== '' ? $recipientName : null)
