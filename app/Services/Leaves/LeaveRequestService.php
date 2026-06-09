@@ -30,6 +30,18 @@ class LeaveRequestService extends LeaveBaseService
             ], 422);
         }
 
+        if (strcasecmp((string) $data['status'], 'Pending') === 0) {
+            $balanceError = $this->paidLeaveBalanceError(
+                $staffId,
+                $data['type'],
+                $data['start_date'],
+                (float) $data['duration_days'],
+            );
+            if ($balanceError) {
+                return $balanceError;
+            }
+        }
+
         $leaveId = DB::table('hr_leaves_application')->insertGetId([
             'staff_id' => $staffId,
             'type' => $data['type'],
@@ -152,7 +164,7 @@ class LeaveRequestService extends LeaveBaseService
         return response()->json(['status' => 'success', 'leaves' => $leaves]);
     }
 
-    public function leaveAction(LeaveActionRequest $request): JsonResponse
+    public function leaveAction(LeaveActionRequest $request, ?int $routeId = null): JsonResponse
     {
         if (! $this->isPrivileged($request)) {
             return $this->unauthorizedResponse();
@@ -160,6 +172,9 @@ class LeaveRequestService extends LeaveBaseService
 
         $data = $request->validated();
         $leaveId = (int) $data['id'];
+        if ($routeId !== null && $routeId > 0 && $routeId !== $leaveId) {
+            return response()->json(['status' => 'error', 'message' => 'Leave ID mismatch.'], 409);
+        }
         $action = $data['action'];
         $remarks = $data['remarks'] ?? null;
         $actorId = (int) $request->session()->get('staff_id');
@@ -239,6 +254,19 @@ class LeaveRequestService extends LeaveBaseService
                     DB::rollBack();
 
                     return $this->unauthorizedLeaveActionResponse('approve this leave');
+                }
+
+                $balanceError = $this->paidLeaveBalanceError(
+                    (int) $leave->staff_id,
+                    (string) $leave->type,
+                    (string) $leave->start_date,
+                    (float) $leave->duration_days,
+                    true,
+                );
+                if ($balanceError) {
+                    DB::rollBack();
+
+                    return $balanceError;
                 }
 
                 DB::table('hr_leaves_application')->where('id', $leaveId)->update([
@@ -422,13 +450,16 @@ class LeaveRequestService extends LeaveBaseService
         return response()->json(['status' => 'success', 'message' => 'Leave action processed successfully.']);
     }
 
-    public function cancelLeave(Request $request): JsonResponse
+    public function cancelLeave(Request $request, ?int $routeId = null): JsonResponse
     {
         $request->validate(['id' => ['required', 'integer', 'min:1']]);
 
         $staffId = (int) $request->session()->get('staff_id');
         $name = (string) $request->session()->get('full_name', $request->session()->get('name_code', 'Staff'));
         $leaveId = (int) $request->input('id');
+        if ($routeId !== null && $routeId > 0 && $routeId !== $leaveId) {
+            return response()->json(['status' => 'error', 'message' => 'Leave ID mismatch.'], 409);
+        }
 
         DB::beginTransaction();
         try {
@@ -459,6 +490,15 @@ class LeaveRequestService extends LeaveBaseService
                     'status' => 'success',
                     'message' => 'Leave application is already cancelled.',
                 ]);
+            }
+
+            if (! in_array(strtolower($previousStatus), ['pending', 'approved'], true)) {
+                DB::rollBack();
+
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Leave cannot be cancelled in its current state.',
+                ], 422);
             }
 
             DB::table('hr_leaves_application')->where('id', $leaveId)->update([
@@ -687,6 +727,63 @@ class LeaveRequestService extends LeaveBaseService
         DB::table('hr_leaves_allocation')
             ->where('id', $allocation->id)
             ->update(['used_days' => $nextUsedDays]);
+    }
+
+    private function isUnpaidLeaveType(string $leaveType): bool
+    {
+        return in_array(strtolower(trim($leaveType)), ['unpaid', 'unpaid leave'], true);
+    }
+
+    private function allocationYearFromDate(string $date): int
+    {
+        return (int) date('Y', strtotime($date));
+    }
+
+    private function paidLeaveBalanceError(
+        int $staffId,
+        string $leaveType,
+        string $startDate,
+        float $durationDays,
+        bool $lockForUpdate = false,
+    ): ?JsonResponse {
+        if ($this->isUnpaidLeaveType($leaveType)) {
+            return null;
+        }
+
+        $allocationYear = $this->allocationYearFromDate($startDate);
+        $query = DB::table('hr_leaves_allocation')
+            ->where('staff_id', $staffId)
+            ->where('leave_type', $leaveType)
+            ->where('year', $allocationYear);
+
+        if ($lockForUpdate) {
+            $query->lockForUpdate();
+        }
+
+        $allocation = $query->first(['id', 'total_days', 'used_days']);
+        if (! $allocation) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "No entitlement is assigned for {$leaveType} leave in {$allocationYear}.",
+            ], 422);
+        }
+
+        $remaining = (float) $allocation->total_days - (float) $allocation->used_days;
+        if ($remaining < $durationDays) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "Insufficient {$leaveType} leave balance for {$allocationYear}. Remaining balance is ".$this->formatBalanceDays($remaining).' day(s).',
+            ], 422);
+        }
+
+        return null;
+    }
+
+    private function formatBalanceDays(float $value): string
+    {
+        $formatted = rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+
+        return $formatted === '' ? '0' : $formatted;
     }
 
     private function workflowRecipients(): LeaveWorkflowRecipientService

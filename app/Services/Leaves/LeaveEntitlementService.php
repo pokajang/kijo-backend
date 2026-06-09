@@ -8,6 +8,7 @@ use App\Http\Requests\Leave\StoreLeaveRequest;
 use App\Http\Requests\Leave\UpdateEntitlementRequest;
 use App\Jobs\SendHtmlMailJob;
 use App\Services\AuditLogService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -40,6 +41,18 @@ class LeaveEntitlementService extends LeaveBaseService
         }
 
         return $staffId ? "Staff #{$staffId}" : '-';
+    }
+
+    private function normalizeRemarks(mixed $value): ?string
+    {
+        $remarks = trim((string) ($value ?? ''));
+
+        return $remarks === '' ? null : $remarks;
+    }
+
+    private function entitlementRemarksColumnExists(): bool
+    {
+        return Schema::hasColumn('hr_leaves_allocation', 'remarks');
     }
 
     private function parseEntitlementHistoryAction(string $action): ?array
@@ -148,15 +161,21 @@ class LeaveEntitlementService extends LeaveBaseService
     {
         $staffId = (int) $request->session()->get('staff_id');
 
+        $columns = [
+            'id',
+            'leave_type',
+            'year',
+            'total_days',
+            'used_days',
+            DB::raw('(total_days - used_days) AS remaining'),
+        ];
+
+        $columns[] = $this->entitlementRemarksColumnExists()
+            ? 'remarks'
+            : DB::raw('NULL as remarks');
+
         $entitlements = DB::table('hr_leaves_allocation')
-            ->select([
-                'id',
-                'leave_type',
-                'year',
-                'total_days',
-                'used_days',
-                DB::raw('(total_days - used_days) AS remaining'),
-            ])
+            ->select($columns)
             ->where('staff_id', $staffId)
             ->orderBy('year', 'desc')
             ->orderBy('leave_type')
@@ -165,13 +184,9 @@ class LeaveEntitlementService extends LeaveBaseService
         return response()->json(['status' => 'success', 'entitlements' => $entitlements]);
     }
 
-    public function getEntitlementHistory(Request $request): JsonResponse
+    private function buildEntitlementHistory(?int $staffId = null)
     {
-        if (!$this->canManageEntitlements($request)) {
-            return $this->unauthorizedResponse();
-        }
-
-        $activities = DB::table('user_activities as ua')
+        $activitiesQuery = DB::table('user_activities as ua')
             ->leftJoin('staff_general as actor', 'ua.staff_id', '=', 'actor.staff_id')
             ->select([
                 'ua.id',
@@ -187,16 +202,34 @@ class LeaveEntitlementService extends LeaveBaseService
                     ->orWhere('ua.action', 'like', 'Updated leave entitlement #%')
                     ->orWhere('ua.action', 'like', 'Deleted leave entitlement #%');
             })
+            ->when($staffId !== null, function ($query) use ($staffId): void {
+                $query->where(function ($scoped) use ($staffId): void {
+                    $scoped
+                        ->where('ua.action', 'like', "Assigned leave entitlement #% to staff #{$staffId},%")
+                        ->orWhere('ua.action', 'like', "Assigned leave entitlement #% (staff #{$staffId},%")
+                        ->orWhere('ua.action', 'like', "Updated leave entitlement #% to staff #{$staffId},%")
+                        ->orWhere('ua.action', 'like', "Deleted leave entitlement #% (staff #{$staffId},%");
+                });
+            })
             ->orderByDesc('ua.created_at')
             ->orderByDesc('ua.id')
-            ->limit(1000)
-            ->get();
+            ->limit(1000);
+
+        $activities = $activitiesQuery->get();
 
         $parsedRows = $activities->map(function ($activity) {
             $parsed = $this->parseEntitlementHistoryAction((string) $activity->action);
 
             return $parsed ? ['activity' => $activity, 'parsed' => $parsed] : null;
-        })->filter()->values();
+        })->filter();
+
+        if ($staffId !== null) {
+            $parsedRows = $parsedRows->filter(
+                fn ($row): bool => (int) ($row['parsed']['staff_id'] ?? 0) === $staffId
+            );
+        }
+
+        $parsedRows = $parsedRows->values();
 
         $targetStaffIds = $parsedRows
             ->map(fn ($row) => $row['parsed']['staff_id'] ?? null)
@@ -211,7 +244,7 @@ class LeaveEntitlementService extends LeaveBaseService
                 ->get()
                 ->keyBy(fn ($staff) => (string) $staff->staff_id);
 
-        $history = $parsedRows->map(function ($row) use ($staffById) {
+        return $parsedRows->map(function ($row) use ($staffById) {
             $activity = $row['activity'];
             $parsed = $row['parsed'];
             $targetStaff = $parsed['staff_id']
@@ -241,6 +274,26 @@ class LeaveEntitlementService extends LeaveBaseService
                 'created_at' => $activity->created_at ? (string) $activity->created_at : null,
             ];
         })->values();
+    }
+
+    public function getEntitlementHistory(Request $request): JsonResponse
+    {
+        if (!$this->canManageEntitlements($request)) {
+            return $this->unauthorizedResponse();
+        }
+
+        $history = $this->buildEntitlementHistory();
+
+        return response()->json([
+            'status' => 'success',
+            'history' => $history,
+        ]);
+    }
+
+    public function getMyEntitlementHistory(Request $request): JsonResponse
+    {
+        $staffId = (int) $request->session()->get('staff_id');
+        $history = $staffId > 0 ? $this->buildEntitlementHistory($staffId) : collect();
 
         return response()->json([
             'status' => 'success',
@@ -256,25 +309,44 @@ class LeaveEntitlementService extends LeaveBaseService
 
         $data = $request->validated();
 
-        $exists = DB::table('hr_leaves_allocation')
-            ->where('staff_id', $data['staff_id'])
-            ->where('leave_type', $data['type'])
-            ->where('year', $data['year'])
-            ->exists();
+        try {
+            $id = DB::transaction(function () use ($data): int {
+                $exists = DB::table('hr_leaves_allocation')
+                    ->where('staff_id', $data['staff_id'])
+                    ->where('leave_type', $data['type'])
+                    ->where('year', $data['year'])
+                    ->exists();
 
-        if ($exists) {
+                if ($exists) {
+                    abort(response()->json([
+                        'status'  => 'error',
+                        'message' => 'An entitlement for this staff, leave type, and year already exists.',
+                    ], 409));
+                }
+
+                $allocation = [
+                    'staff_id'   => $data['staff_id'],
+                    'leave_type' => $data['type'],
+                    'year'       => $data['year'],
+                    'total_days' => $data['days'],
+                ];
+
+                if ($this->entitlementRemarksColumnExists()) {
+                    $allocation['remarks'] = $this->normalizeRemarks($data['remarks'] ?? null);
+                }
+
+                return DB::table('hr_leaves_allocation')->insertGetId($allocation);
+            });
+        } catch (QueryException $e) {
+            if (! $this->isUniqueConstraintViolation($e)) {
+                throw $e;
+            }
+
             return response()->json([
                 'status'  => 'error',
                 'message' => 'An entitlement for this staff, leave type, and year already exists.',
             ], 409);
         }
-
-        $id = DB::table('hr_leaves_allocation')->insertGetId([
-            'staff_id'   => $data['staff_id'],
-            'leave_type' => $data['type'],
-            'year'       => $data['year'],
-            'total_days' => $data['days'],
-        ]);
 
         $days = $this->formatHistoryDays($data['days']);
         $this->auditLog->log($request, "Assigned leave entitlement #{$id} to staff #{$data['staff_id']}, {$data['type']}, {$data['year']}, {$days} days");
@@ -286,42 +358,91 @@ class LeaveEntitlementService extends LeaveBaseService
         ]);
     }
 
-    public function updateEntitlement(UpdateEntitlementRequest $request): JsonResponse
+    public function updateEntitlement(UpdateEntitlementRequest $request, ?int $routeId = null): JsonResponse
     {
         if (!$this->canManageEntitlements($request)) {
             return $this->unauthorizedResponse();
         }
 
         $data = $request->validated();
+        if ($routeId !== null && $routeId > 0 && $routeId !== (int) $data['id']) {
+            return response()->json(['status' => 'error', 'message' => 'Entitlement ID mismatch.'], 409);
+        }
 
-        $exists = DB::table('hr_leaves_allocation')
-            ->where('staff_id', $data['staff_id'])
-            ->where('leave_type', $data['type'])
-            ->where('year', $data['year'])
-            ->where('id', '!=', $data['id'])
-            ->exists();
+        try {
+            $existing = DB::transaction(function () use ($data) {
+                $existing = DB::table('hr_leaves_allocation')
+                    ->where('id', $data['id'])
+                    ->lockForUpdate()
+                    ->first();
 
-        if ($exists) {
+                if (!$existing) {
+                    abort(response()->json(['status' => 'error', 'message' => 'Entitlement not found.'], 404));
+                }
+
+                $usedDays = (float) $existing->used_days;
+                $newDays = (float) $data['days'];
+                if ($newDays < $usedDays) {
+                    abort(response()->json([
+                        'status' => 'error',
+                        'message' => 'Entitlement days cannot be lower than used days.',
+                    ], 422));
+                }
+
+                $isLocked = $usedDays > 0 || $this->entitlementHasActiveApprovedLeave($existing);
+                $identityChanged =
+                    (int) $existing->staff_id !== (int) $data['staff_id'] ||
+                    (string) $existing->leave_type !== (string) $data['type'] ||
+                    (int) $existing->year !== (int) $data['year'];
+
+                if ($isLocked && $identityChanged) {
+                    abort(response()->json([
+                        'status' => 'error',
+                        'message' => 'Used leave entitlements cannot change staff, leave type, or year.',
+                    ], 422));
+                }
+
+                $exists = DB::table('hr_leaves_allocation')
+                    ->where('staff_id', $data['staff_id'])
+                    ->where('leave_type', $data['type'])
+                    ->where('year', $data['year'])
+                    ->where('id', '!=', $data['id'])
+                    ->exists();
+
+                if ($exists) {
+                    abort(response()->json([
+                        'status'  => 'error',
+                        'message' => 'Another entitlement for this staff, leave type, and year already exists.',
+                    ], 409));
+                }
+
+                $updates = [
+                    'staff_id'   => $data['staff_id'],
+                    'leave_type' => $data['type'],
+                    'year'       => $data['year'],
+                    'total_days' => $data['days'],
+                ];
+
+                if ($this->entitlementRemarksColumnExists()) {
+                    $updates['remarks'] = $this->normalizeRemarks($data['remarks'] ?? null);
+                }
+
+                DB::table('hr_leaves_allocation')
+                    ->where('id', $data['id'])
+                    ->update($updates);
+
+                return $existing;
+            });
+        } catch (QueryException $e) {
+            if (! $this->isUniqueConstraintViolation($e)) {
+                throw $e;
+            }
+
             return response()->json([
                 'status'  => 'error',
                 'message' => 'Another entitlement for this staff, leave type, and year already exists.',
             ], 409);
         }
-
-        $existing = DB::table('hr_leaves_allocation')->where('id', $data['id'])->first();
-
-        if (!$existing) {
-            return response()->json(['status' => 'error', 'message' => 'Entitlement not found.'], 404);
-        }
-
-        DB::table('hr_leaves_allocation')
-            ->where('id', $data['id'])
-            ->update([
-                'staff_id'   => $data['staff_id'],
-                'leave_type' => $data['type'],
-                'year'       => $data['year'],
-                'total_days' => $data['days'],
-            ]);
 
         $oldDays = $this->formatHistoryDays($existing->total_days);
         $newDays = $this->formatHistoryDays($data['days']);
@@ -354,6 +475,13 @@ class LeaveEntitlementService extends LeaveBaseService
         }
 
         $existing = DB::table('hr_leaves_allocation')->where('id', $id)->first();
+        if ($existing && ((float) $existing->used_days > 0 || $this->entitlementHasActiveApprovedLeave($existing))) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Used leave entitlements cannot be deleted.',
+            ], 422);
+        }
+
         $affected = DB::table('hr_leaves_allocation')->where('id', $id)->delete();
 
         if (!$affected) {
@@ -366,5 +494,20 @@ class LeaveEntitlementService extends LeaveBaseService
         $this->auditLog->log($request, "Deleted leave entitlement #{$id}{$details}");
 
         return response()->json(['status' => 'success', 'message' => 'Leave entitlement deleted successfully.']);
+    }
+
+    private function entitlementHasActiveApprovedLeave(object $entitlement): bool
+    {
+        return DB::table('hr_leaves_application')
+            ->where('staff_id', $entitlement->staff_id)
+            ->where('type', $entitlement->leave_type)
+            ->whereYear('start_date', (int) $entitlement->year)
+            ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) = 'approved'")
+            ->exists();
+    }
+
+    private function isUniqueConstraintViolation(QueryException $e): bool
+    {
+        return in_array((string) ($e->errorInfo[0] ?? ''), ['23000', '23505'], true);
     }
 }

@@ -36,14 +36,14 @@ class LeaveService
         return $this->leaveRequestService()->getPersonalLeavesRecord($request);
     }
 
-    public function leaveAction(LeaveActionRequest $request): JsonResponse
+    public function leaveAction(LeaveActionRequest $request, ?int $id = null): JsonResponse
     {
-        return $this->leaveRequestService()->leaveAction($request);
+        return $this->leaveRequestService()->leaveAction($request, $id);
     }
 
-    public function cancelLeave(Request $request): JsonResponse
+    public function cancelLeave(Request $request, ?int $id = null): JsonResponse
     {
-        return $this->leaveRequestService()->cancelLeave($request);
+        return $this->leaveRequestService()->cancelLeave($request, $id);
     }
 
     public function getAllEntitlements(Request $request): JsonResponse
@@ -61,14 +61,19 @@ class LeaveService
         return $this->leaveEntitlementService()->getEntitlementHistory($request);
     }
 
+    public function getMyEntitlementHistory(Request $request): JsonResponse
+    {
+        return $this->leaveEntitlementService()->getMyEntitlementHistory($request);
+    }
+
     public function assignLeavesEntitlement(AssignEntitlementRequest $request): JsonResponse
     {
         return $this->leaveEntitlementService()->assignLeavesEntitlement($request);
     }
 
-    public function updateEntitlement(UpdateEntitlementRequest $request): JsonResponse
+    public function updateEntitlement(UpdateEntitlementRequest $request, ?int $id = null): JsonResponse
     {
-        return $this->leaveEntitlementService()->updateEntitlement($request);
+        return $this->leaveEntitlementService()->updateEntitlement($request, $id);
     }
 
     public function deleteEntitlement(Request $request, ?int $id = null): JsonResponse

@@ -681,6 +681,7 @@ class KnowledgeAssistantTest extends TestCase
             $table->integer('year');
             $table->decimal('total_days', 5, 2)->default(0);
             $table->decimal('used_days', 5, 2)->default(0);
+            $table->text('remarks')->nullable();
         });
 
         Schema::create('tasks', function (Blueprint $table): void {

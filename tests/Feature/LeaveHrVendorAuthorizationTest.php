@@ -93,6 +93,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             $table->integer('year');
             $table->decimal('total_days', 8, 2)->default(0);
             $table->decimal('used_days', 8, 2)->default(0);
+            $table->text('remarks')->nullable();
         });
 
         Schema::create('hr_leaves_application', function (Blueprint $table): void {
@@ -239,8 +240,8 @@ class LeaveHrVendorAuthorizationTest extends TestCase
     public function test_leave_entitlement_management_requires_hr_but_mine_remains_self_service(): void
     {
         DB::table('hr_leaves_allocation')->insert([
-            ['staff_id' => 10, 'leave_type' => 'Annual', 'year' => 2026, 'total_days' => 14, 'used_days' => 2],
-            ['staff_id' => 40, 'leave_type' => 'Medical', 'year' => 2026, 'total_days' => 14, 'used_days' => 0],
+            ['staff_id' => 10, 'leave_type' => 'Annual', 'year' => 2026, 'total_days' => 14, 'used_days' => 0, 'remarks' => 'Prorated from joining date'],
+            ['staff_id' => 40, 'leave_type' => 'Medical', 'year' => 2026, 'total_days' => 14, 'used_days' => 0, 'remarks' => null],
         ]);
 
         $this->actingSession($this->employeeSession())
@@ -259,7 +260,8 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $this->actingSession($this->employeeSession())
             ->getJson('/hr/leaves/entitlements/mine')
             ->assertOk()
-            ->assertJsonPath('entitlements.0.leave_type', 'Annual');
+            ->assertJsonPath('entitlements.0.leave_type', 'Annual')
+            ->assertJsonPath('entitlements.0.remarks', 'Prorated from joining date');
 
         $this->actingSession($this->hrSession())
             ->getJson('/hr/leaves/entitlements')
@@ -297,6 +299,58 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         $this->assertSame('2025-12-31 00:00:00', $terminatedEntitlement['staff_terminated_at']);
     }
 
+    public function test_hr_can_assign_leave_entitlement_with_optional_remarks(): void
+    {
+        $this->actingSession($this->hrSession())
+            ->postJson('/hr/leaves/entitlements', [
+                'staff_id' => 10,
+                'type' => 'Frozen Leave',
+                'year' => 2027,
+                'days' => 3.5,
+                'remarks' => '  Carried forward from approved balance  ',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('hr_leaves_allocation', [
+            'staff_id' => 10,
+            'leave_type' => 'Frozen Leave',
+            'year' => 2027,
+            'total_days' => 3.5,
+            'remarks' => 'Carried forward from approved balance',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson('/hr/leaves/entitlements', [
+                'staff_id' => 10,
+                'type' => 'Frozen Leave',
+                'year' => 2027,
+                'days' => 3.5,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath(
+                'message',
+                'An entitlement for this staff, leave type, and year already exists.',
+            );
+
+        $this->actingSession($this->hrSession())
+            ->postJson('/hr/leaves/entitlements', [
+                'staff_id' => 10,
+                'type' => 'Medical',
+                'year' => 2027,
+                'days' => 14,
+                'remarks' => '   ',
+            ])
+            ->assertOk();
+
+        $this->assertNull(
+            DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Medical')
+                ->where('year', 2027)
+                ->value('remarks'),
+        );
+    }
+
     public function test_hr_can_update_past_year_leave_entitlements_and_audit_history_is_recorded(): void
     {
         $id = DB::table('hr_leaves_allocation')->insertGetId([
@@ -304,7 +358,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'leave_type' => 'Annual',
             'year' => 1999,
             'total_days' => 10.50,
-            'used_days' => 2,
+            'used_days' => 0,
         ]);
 
         $this->actingSession($this->hrSession())
@@ -314,6 +368,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
                 'type' => 'Frozen Leave',
                 'year' => 1999,
                 'days' => 12.25,
+                'remarks' => '  Updated after manual HR review  ',
             ])
             ->assertOk();
 
@@ -323,6 +378,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'leave_type' => 'Frozen Leave',
             'year' => 1999,
             'total_days' => 12.25,
+            'remarks' => 'Updated after manual HR review',
         ]);
 
         $this->assertDatabaseHas('user_activities', [
@@ -334,6 +390,63 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             "Updated leave entitlement #{$id} from staff #10, Annual, 1999, 10.5 days to staff #10, Frozen Leave, 1999, 12.25 days",
             DB::table('user_activities')->where('staff_id', 20)->value('action'),
         );
+    }
+
+    public function test_used_entitlement_locks_identity_delete_and_total_below_used_days(): void
+    {
+        $id = $this->grantLeaveEntitlement(totalDays: 14, usedDays: 2);
+
+        $this->actingSession($this->hrSession())
+            ->putJson("/hr/leaves/entitlements/{$id}", [
+                'id' => $id,
+                'staff_id' => 10,
+                'type' => 'Annual',
+                'year' => 2026,
+                'days' => 12,
+                'remarks' => '  Allowed used update  ',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('hr_leaves_allocation', [
+            'id' => $id,
+            'staff_id' => 10,
+            'leave_type' => 'Annual',
+            'year' => 2026,
+            'total_days' => 12,
+            'remarks' => 'Allowed used update',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->putJson("/hr/leaves/entitlements/{$id}", [
+                'id' => $id,
+                'staff_id' => 10,
+                'type' => 'Frozen Leave',
+                'year' => 2026,
+                'days' => 12,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'message',
+                'Used leave entitlements cannot change staff, leave type, or year.',
+            );
+
+        $this->actingSession($this->hrSession())
+            ->putJson("/hr/leaves/entitlements/{$id}", [
+                'id' => $id,
+                'staff_id' => 10,
+                'type' => 'Annual',
+                'year' => 2026,
+                'days' => 1.5,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Entitlement days cannot be lower than used days.');
+
+        $this->actingSession($this->hrSession())
+            ->deleteJson("/hr/leaves/entitlements/{$id}")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Used leave entitlements cannot be deleted.');
+
+        $this->assertDatabaseHas('hr_leaves_allocation', ['id' => $id]);
     }
 
     public function test_hr_leave_entitlement_history_lists_assignment_details(): void
@@ -364,6 +477,68 @@ class LeaveHrVendorAuthorizationTest extends TestCase
                 'history.0.description',
                 'Assigned leave entitlement #1 to staff #10, Frozen Leave, 1999, 3.5 days',
             );
+    }
+
+    public function test_employee_can_view_only_their_leave_entitlement_history(): void
+    {
+        $this->actingSession($this->hrSession())
+            ->postJson('/hr/leaves/entitlements', [
+                'staff_id' => 10,
+                'type' => 'Frozen Leave',
+                'year' => 2026,
+                'days' => 2,
+            ])
+            ->assertOk();
+
+        $this->actingSession($this->hrSession())
+            ->postJson('/hr/leaves/entitlements', [
+                'staff_id' => 40,
+                'type' => 'Medical',
+                'year' => 2026,
+                'days' => 14,
+            ])
+            ->assertOk();
+
+        $this->actingSession($this->employeeSession())
+            ->getJson('/hr/leaves/entitlements/history')
+            ->assertStatus(403);
+
+        $this->actingSession($this->employeeSession())
+            ->getJson('/hr/leaves/entitlements/history/mine')
+            ->assertOk()
+            ->assertJsonCount(1, 'history')
+            ->assertJsonPath('history.0.staff_id', 10)
+            ->assertJsonPath('history.0.staff', 'Employee One (EMP1)')
+            ->assertJsonPath('history.0.leave_type', 'Frozen Leave')
+            ->assertJsonPath('history.0.days', '2');
+    }
+
+    public function test_employee_entitlement_history_filters_staff_before_global_limit(): void
+    {
+        DB::table('user_activities')->insert([
+            'staff_id' => 20,
+            'name_code' => 'HR1',
+            'action' => 'Assigned leave entitlement #900 to staff #10, Frozen Leave, 2026, 2 days',
+            'created_at' => '2026-01-01 09:00:00',
+        ]);
+
+        $rows = [];
+        for ($i = 1; $i <= 1001; $i++) {
+            $rows[] = [
+                'staff_id' => 20,
+                'name_code' => 'HR1',
+                'action' => "Assigned leave entitlement #{$i} to staff #40, Medical, 2026, 1 days",
+                'created_at' => "2026-02-01 09:".str_pad((string) ($i % 60), 2, '0', STR_PAD_LEFT).':00',
+            ];
+        }
+        DB::table('user_activities')->insert($rows);
+
+        $this->actingSession($this->employeeSession())
+            ->getJson('/hr/leaves/entitlements/history/mine')
+            ->assertOk()
+            ->assertJsonCount(1, 'history')
+            ->assertJsonPath('history.0.staff_id', 10)
+            ->assertJsonPath('history.0.entitlement_id', 900);
     }
 
     public function test_hr_leave_entitlement_history_keeps_legacy_update_descriptions(): void
@@ -477,6 +652,8 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
     public function test_leave_application_reports_notification_send_result(): void
     {
+        $this->grantLeaveEntitlement();
+
         $response = $this->actingSession($this->employeeSession())
             ->postJson('/hr/leaves', [
                 'type' => 'Annual',
@@ -516,6 +693,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         // The send helper catches it, reports/logs, and returns mail_sent=false,
         // while the leave row and in-app notification are still persisted.
         Mail::shouldReceive('html')->andThrow(new \RuntimeException('SMTP unavailable'));
+        $this->grantLeaveEntitlement();
 
         $response = $this->actingSession($this->employeeSession())
             ->postJson('/hr/leaves', [
@@ -544,6 +722,84 @@ class LeaveHrVendorAuthorizationTest extends TestCase
             'recipient_staff_id' => 30,
             'entity_id' => $leaveId,
             'type' => 'leave.needs_recommendation',
+        ]);
+    }
+
+    public function test_paid_leave_submission_requires_current_year_entitlement_balance(): void
+    {
+        $payload = [
+            'type' => 'Annual',
+            'reason' => 'No entitlement',
+            'start_date' => '2026-06-09',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-09',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+        ];
+
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'No entitlement is assigned for Annual leave in 2026.');
+
+        $this->grantLeaveEntitlement(totalDays: 14, usedDays: 13.5);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'message',
+                'Insufficient Annual leave balance for 2026. Remaining balance is 0.5 day(s).',
+            );
+
+        $this->assertSame(0, DB::table('hr_leaves_application')->count());
+    }
+
+    public function test_paid_leave_draft_does_not_require_current_year_entitlement_balance(): void
+    {
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Annual',
+                'reason' => 'Draft without entitlement',
+                'start_date' => '2026-06-09',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-09',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Draft',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Draft without entitlement',
+            'status' => 'Draft',
+        ]);
+    }
+
+    public function test_unpaid_leave_submission_does_not_require_entitlement(): void
+    {
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Unpaid',
+                'reason' => 'No paid balance',
+                'start_date' => '2026-06-09',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-09',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'staff_id' => 10,
+            'type' => 'Unpaid',
+            'status' => 'Pending',
         ]);
     }
 
@@ -610,6 +866,8 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
     public function test_leave_submission_uses_configured_recommenders_for_notifications(): void
     {
+        $this->grantLeaveEntitlement();
+
         $this->configureLeaveWorkflow([
             'leave.submitted.recommenders' => [30],
         ]);
@@ -645,6 +903,7 @@ class LeaveHrVendorAuthorizationTest extends TestCase
     public function test_leave_submission_sends_individual_recommender_emails_without_cc(): void
     {
         Bus::fake([SendHtmlMailJob::class]);
+        $this->grantLeaveEntitlement();
 
         $this->configureLeaveWorkflow([
             'leave.submitted.recommenders' => [20, 30],
@@ -876,6 +1135,8 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
     public function test_leave_notification_lifecycle_moves_between_reviewer_approver_and_applicant(): void
     {
+        $this->grantLeaveEntitlement();
+
         $response = $this->actingSession($this->employeeSession())
             ->postJson('/hr/leaves', [
                 'type' => 'Annual',
@@ -1027,6 +1288,83 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         );
     }
 
+    public function test_approve_leave_rejects_missing_or_insufficient_entitlement_balance(): void
+    {
+        $missingAllocationLeaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Missing allocation at approval',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 30,
+            'reviewed_status' => 'Recommended',
+            'reviewed_at' => '2026-05-20 09:30:00',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$missingAllocationLeaveId}/action", [
+                'id' => $missingAllocationLeaveId,
+                'action' => 'approve',
+                'remarks' => 'Approved',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'No entitlement is assigned for Annual leave in 2026.');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $missingAllocationLeaveId,
+            'status' => 'Pending',
+            'approved_by' => null,
+        ]);
+
+        $this->grantLeaveEntitlement(totalDays: 1, usedDays: 0.5);
+        $insufficientLeaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Insufficient allocation at approval',
+            'start_date' => '2026-06-02',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-02',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 30,
+            'reviewed_status' => 'Recommended',
+            'reviewed_at' => '2026-05-20 09:30:00',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$insufficientLeaveId}/action", [
+                'id' => $insufficientLeaveId,
+                'action' => 'approve',
+                'remarks' => 'Approved',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'message',
+                'Insufficient Annual leave balance for 2026. Remaining balance is 0.5 day(s).',
+            );
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $insufficientLeaveId,
+            'status' => 'Pending',
+            'approved_by' => null,
+        ]);
+        $this->assertEquals(
+            '0.5',
+            (string) DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Annual')
+                ->where('year', 2026)
+                ->value('used_days'),
+        );
+    }
+
     public function test_cancel_approved_leave_reverses_integer_year_allocation_usage(): void
     {
         DB::table('hr_leaves_allocation')->insert([
@@ -1123,6 +1461,100 @@ class LeaveHrVendorAuthorizationTest extends TestCase
                 ->where('year', 2026)
                 ->value('used_days'),
         );
+    }
+
+    public function test_pending_leave_can_be_cancelled_but_rejected_leave_cannot(): void
+    {
+        $pendingLeaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Pending cancellation',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+        ]);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson("/hr/leaves/{$pendingLeaveId}/cancel", ['id' => $pendingLeaveId])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $pendingLeaveId,
+            'status' => 'Cancelled',
+            'cancelled_by' => 10,
+        ]);
+
+        $rejectedLeaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Rejected cancellation',
+            'start_date' => '2026-06-02',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-02',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Rejected',
+            'applied_at' => '2026-05-20 09:15:00',
+        ]);
+
+        $this->actingSession($this->employeeSession())
+            ->postJson("/hr/leaves/{$rejectedLeaveId}/cancel", ['id' => $rejectedLeaveId])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Leave cannot be cancelled in its current state.');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $rejectedLeaveId,
+            'status' => 'Rejected',
+            'cancelled_by' => null,
+        ]);
+    }
+
+    public function test_leave_action_cancel_and_entitlement_update_reject_route_body_id_mismatch(): void
+    {
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Annual',
+            'reason' => 'Mismatch test',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+        ]);
+
+        $this->actingSession($this->managerSession())
+            ->postJson("/hr/leaves/".($leaveId + 1).'/action', [
+                'id' => $leaveId,
+                'action' => 'recommend',
+                'remarks' => 'Mismatch',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Leave ID mismatch.');
+
+        $this->actingSession($this->employeeSession())
+            ->postJson("/hr/leaves/".($leaveId + 1).'/cancel', ['id' => $leaveId])
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Leave ID mismatch.');
+
+        $entitlementId = $this->grantLeaveEntitlement(year: 2027);
+
+        $this->actingSession($this->hrSession())
+            ->putJson("/hr/leaves/entitlements/".($entitlementId + 1), [
+                'id' => $entitlementId,
+                'staff_id' => 10,
+                'type' => 'Annual',
+                'year' => 2027,
+                'days' => 14,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Entitlement ID mismatch.');
     }
 
     public function test_cancel_already_cancelled_leave_is_idempotent(): void
@@ -1253,6 +1685,22 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         return $this
             ->withSession($session + ['_token' => 'test-token'])
             ->withHeader('X-CSRF-TOKEN', 'test-token');
+    }
+
+    private function grantLeaveEntitlement(
+        int $staffId = 10,
+        string $leaveType = 'Annual',
+        int $year = 2026,
+        float $totalDays = 14,
+        float $usedDays = 0,
+    ): int {
+        return DB::table('hr_leaves_allocation')->insertGetId([
+            'staff_id' => $staffId,
+            'leave_type' => $leaveType,
+            'year' => $year,
+            'total_days' => $totalDays,
+            'used_days' => $usedDays,
+        ]);
     }
 
     private function configureLeaveWorkflow(array $stages): void

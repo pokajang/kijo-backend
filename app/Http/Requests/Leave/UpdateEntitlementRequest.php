@@ -16,6 +16,7 @@ class UpdateEntitlementRequest extends FormRequest
             'year'     => ['required', 'integer', 'min:1900'],
             'type'     => ['required', 'string', 'max:100'],
             'days'     => ['required', 'numeric', 'min:0'],
+            'remarks'  => ['nullable', 'string', 'max:5000'],
         ];
     }
 }
