@@ -729,9 +729,9 @@ class LeaveRequestService extends LeaveBaseService
             ->update(['used_days' => $nextUsedDays]);
     }
 
-    private function isUnpaidLeaveType(string $leaveType): bool
+    private function isNonEntitlementLeaveType(string $leaveType): bool
     {
-        return in_array(strtolower(trim($leaveType)), ['unpaid', 'unpaid leave'], true);
+        return in_array(strtolower(trim($leaveType)), ['unpaid', 'unpaid leave', 'other', 'others'], true);
     }
 
     private function allocationYearFromDate(string $date): int
@@ -746,7 +746,7 @@ class LeaveRequestService extends LeaveBaseService
         float $durationDays,
         bool $lockForUpdate = false,
     ): ?JsonResponse {
-        if ($this->isUnpaidLeaveType($leaveType)) {
+        if ($this->isNonEntitlementLeaveType($leaveType)) {
             return null;
         }
 

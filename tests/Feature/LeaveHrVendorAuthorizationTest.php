@@ -803,6 +803,30 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
     }
 
+    public function test_others_leave_submission_does_not_require_entitlement(): void
+    {
+        $this->actingSession($this->employeeSession())
+            ->postJson('/hr/leaves', [
+                'type' => 'Others',
+                'reason' => 'Non entitlement leave',
+                'start_date' => '2026-06-09',
+                'start_time' => '08:30',
+                'end_date' => '2026-06-09',
+                'end_time' => '17:30',
+                'duration_days' => 1,
+                'status' => 'Pending',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'staff_id' => 10,
+            'type' => 'Others',
+            'status' => 'Pending',
+        ]);
+        $this->assertSame(0, DB::table('hr_leaves_allocation')->count());
+    }
+
     public function test_central_leave_workflow_recipients_can_be_managed_by_system_admin_only(): void
     {
         $this->actingSession($this->employeeSession())
@@ -1280,6 +1304,61 @@ class LeaveHrVendorAuthorizationTest extends TestCase
         ]);
         $this->assertEquals(
             '3',
+            (string) DB::table('hr_leaves_allocation')
+                ->where('staff_id', 10)
+                ->where('leave_type', 'Annual')
+                ->where('year', 2026)
+                ->value('used_days'),
+        );
+    }
+
+    public function test_approve_others_leave_does_not_require_or_update_entitlement_usage(): void
+    {
+        DB::table('hr_leaves_allocation')->insert([
+            'staff_id' => 10,
+            'leave_type' => 'Annual',
+            'year' => 2026,
+            'total_days' => 14,
+            'used_days' => 2,
+        ]);
+
+        $leaveId = DB::table('hr_leaves_application')->insertGetId([
+            'staff_id' => 10,
+            'type' => 'Others',
+            'reason' => 'Approved non entitlement leave',
+            'start_date' => '2026-06-01',
+            'start_time' => '08:30',
+            'end_date' => '2026-06-01',
+            'end_time' => '17:30',
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => '2026-05-20 09:15:00',
+            'reviewed_by' => 30,
+            'reviewed_status' => 'Recommended',
+            'reviewed_at' => '2026-05-20 09:30:00',
+        ]);
+
+        $this->actingSession($this->hrSession())
+            ->postJson("/hr/leaves/{$leaveId}/action", [
+                'id' => $leaveId,
+                'action' => 'approve',
+                'remarks' => 'Approved',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('hr_leaves_application', [
+            'id' => $leaveId,
+            'status' => 'Approved',
+            'approved_by' => 20,
+        ]);
+        $this->assertDatabaseMissing('hr_leaves_allocation', [
+            'staff_id' => 10,
+            'leave_type' => 'Others',
+            'year' => 2026,
+        ]);
+        $this->assertEquals(
+            '2',
             (string) DB::table('hr_leaves_allocation')
                 ->where('staff_id', 10)
                 ->where('leave_type', 'Annual')
