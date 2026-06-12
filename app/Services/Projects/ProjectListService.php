@@ -153,9 +153,13 @@ class ProjectListService
         }
 
         $equipmentQuoteIds = [];
+        $hygieneQuoteIds = [];
         foreach ($projects as $p) {
             if ($p['project_type'] === 'Equipment Supply' && ! empty($p['quote_id'])) {
                 $equipmentQuoteIds[] = $p['quote_id'];
+            }
+            if ($p['project_type'] === 'Industrial Hygiene' && ! empty($p['quote_id'])) {
+                $hygieneQuoteIds[] = $p['quote_id'];
             }
         }
         $equipmentItemsByQuote = [];
@@ -171,6 +175,20 @@ class ProjectListService
             );
             foreach ($eqRows as $row) {
                 $equipmentItemsByQuote[$row->quote_id][] = (array) $row;
+            }
+        }
+        $hygieneItemsByQuote = [];
+        if (! empty($hygieneQuoteIds) && Schema::hasTable('quotes_ih_items')) {
+            $ihPlaceholders = implode(',', array_fill(0, count($hygieneQuoteIds), '?'));
+            $ihRows = DB::select(
+                "SELECT id, quote_id, item_description, description, quantity, unit, unit_price, line_total, sort_order
+                 FROM quotes_ih_items
+                 WHERE quote_id IN ({$ihPlaceholders})
+                 ORDER BY quote_id ASC, sort_order ASC, id ASC",
+                $hygieneQuoteIds
+            );
+            foreach ($ihRows as $row) {
+                $hygieneItemsByQuote[$row->quote_id][] = (array) $row;
             }
         }
 
@@ -206,6 +224,12 @@ class ProjectListService
                 $project['equipment_items'] = $equipmentItemsByQuote[$project['quote_id']] ?? [];
             } else {
                 $project['equipment_items'] = [];
+            }
+
+            if ($project['project_type'] === 'Industrial Hygiene' && ! empty($project['quote_id'])) {
+                $project['hygiene_items'] = $hygieneItemsByQuote[$project['quote_id']] ?? [];
+            } else {
+                $project['hygiene_items'] = [];
             }
 
             unset(
@@ -469,6 +493,21 @@ class ProjectListService
             );
         } else {
             $project['equipment_items'] = [];
+        }
+
+        if ($project['project_type'] === 'Industrial Hygiene' && ! empty($project['quote_id']) && Schema::hasTable('quotes_ih_items')) {
+            $project['hygiene_items'] = array_map(
+                fn ($row) => (array) $row,
+                DB::select(
+                    'SELECT id, quote_id, item_description, description, quantity, unit, unit_price, line_total, sort_order
+                     FROM quotes_ih_items
+                     WHERE quote_id = ?
+                     ORDER BY sort_order ASC, id ASC',
+                    [(int) $project['quote_id']]
+                )
+            );
+        } else {
+            $project['hygiene_items'] = [];
         }
 
         unset(

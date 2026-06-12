@@ -24,6 +24,8 @@ class IhQuoteService
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
 
+        $quote->hygiene_items = $this->ihItems($id);
+
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
 
@@ -38,6 +40,8 @@ class IhQuoteService
         }
 
         $data     = $request->validated();
+        $lineItems = $this->normalizeIhItems($data['hygiene_items'] ?? []);
+        $totals = $this->calculateIhTotals($data, $lineItems);
         $table    = 'quotes_ih';
         $type     = 'ih';
         $lockName = "quotes_{$type}_" . date('Y');
@@ -84,11 +88,11 @@ class IhQuoteService
                 'sample_unit'       => $data['sample_unit'] ?? 'sample(s)',
                 'num_work_units'    => $this->nd($data['num_work_units'] ?? null),
                 'unit_price'        => $this->nd($data['unit_price'] ?? null),
-                'discount'          => $this->nd($data['discount'] ?? null),
-                'sst_percent'       => $this->nd($data['sst_percent'] ?? null),
-                'sst_amount'        => $this->nd($data['sst_amount'] ?? null),
-                'sub_total'         => $this->nd($data['sub_total'] ?? null),
-                'grand_total'       => $this->nd($data['grand_total'] ?? null),
+                'discount'          => $totals['discount'],
+                'sst_percent'       => $totals['sst_percent'],
+                'sst_amount'        => $totals['sst_amount'],
+                'sub_total'         => $totals['sub_total'],
+                'grand_total'       => $totals['grand_total'],
                 'inquiry_remarks'   => $data['inquiry_remarks'] ?? null,
                 'attach_proposal'   => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'status'            => 'Open',
@@ -106,6 +110,7 @@ class IhQuoteService
             }
 
             $quoteId = DB::table($table)->insertGetId($insert);
+            $this->replaceIhItems($quoteId, $lineItems);
 
             DB::commit();
         } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
@@ -116,7 +121,7 @@ class IhQuoteService
             report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
-            DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            DB::select('SELECT RELEASE_LOCK(?)', [$lockName]);
         }
 
         $this->auditLog->log($request, "Created IH quote {$refNo} (ID #{$quoteId})");
@@ -149,6 +154,11 @@ class IhQuoteService
         }
 
         $data       = $request->validated();
+        $hasLineItemsPayload = $request->exists('hygiene_items');
+        $lineItems  = $hasLineItemsPayload
+            ? $this->normalizeIhItems($data['hygiene_items'] ?? [])
+            : $this->existingIhItemsForTotals($id);
+        $totals     = $this->calculateIhTotals($data, $lineItems);
         $isRevision = $request->boolean('isRevision');
 
         $updates = [
@@ -172,11 +182,11 @@ class IhQuoteService
             'sample_unit'       => $data['sample_unit'] ?? 'sample(s)',
             'num_work_units'    => $this->nd($data['num_work_units'] ?? null),
             'unit_price'        => $this->nd($data['unit_price'] ?? null),
-            'discount'          => $this->nd($data['discount'] ?? null),
-            'sst_percent'       => $this->nd($data['sst_percent'] ?? null),
-            'sst_amount'        => $this->nd($data['sst_amount'] ?? null),
-            'sub_total'         => $this->nd($data['sub_total'] ?? null),
-            'grand_total'       => $this->nd($data['grand_total'] ?? null),
+            'discount'          => $totals['discount'],
+            'sst_percent'       => $totals['sst_percent'],
+            'sst_amount'        => $totals['sst_amount'],
+            'sub_total'         => $totals['sub_total'],
+            'grand_total'       => $totals['grand_total'],
             'inquiry_remarks'   => $data['inquiry_remarks'] ?? null,
             'attach_proposal'   => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
             'updated_at'        => now(),
@@ -191,9 +201,9 @@ class IhQuoteService
             $priceException = $this->approvedPriceException($request, 'ih', $id);
             if ($priceException) {
                 $discount = (float) $priceException->approved_discount_amount;
-                $grossSubtotal = (float) ($data['sub_total'] ?? 0);
+                $grossSubtotal = (float) $totals['sub_total'];
                 $taxableTotal = max(0, $grossSubtotal - $discount);
-                $sstAmount = round($taxableTotal * (float) ($data['sst_percent'] ?? 0) / 100, 2);
+                $sstAmount = round($taxableTotal * (float) $totals['sst_percent'] / 100, 2);
                 $updates['discount'] = $discount;
                 $updates['sst_amount'] = $sstAmount;
                 $updates['grand_total'] = round($taxableTotal + $sstAmount, 2);
@@ -208,6 +218,9 @@ class IhQuoteService
 
             DB::table('quotes_ih')->where('id', $id)->update($updates);
             $this->markPriceExceptionUsed($priceException, $id);
+            if ($hasLineItemsPayload) {
+                $this->replaceIhItems($id, $lineItems);
+            }
 
             DB::commit();
         } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
@@ -228,6 +241,118 @@ class IhQuoteService
                 'revision_no' => $updates['revision_no'] ?? $quote->revision_no,
             ],
         ]);
+    }
+
+    private function normalizeIhItems(array $items): array
+    {
+        return array_values(array_filter(array_map(function (array $item, mixed $index): ?array {
+            $title = trim((string) ($item['item_description'] ?? $item['item_name'] ?? $item['title'] ?? ''));
+            $qty = (float) ($item['quantity'] ?? 0);
+            $unitPrice = (float) ($item['unit_price'] ?? $item['unitPrice'] ?? 0);
+
+            if ($title === '' || $qty <= 0 || $unitPrice <= 0) {
+                return null;
+            }
+
+            return [
+                'item_description' => $title,
+                'description' => $item['description'] ?? null,
+                'unit' => $item['unit'] ?? null,
+                'quantity' => $qty,
+                'unit_price' => $unitPrice,
+                'line_total' => round($qty * $unitPrice, 2),
+                'sort_order' => (int) ($item['sort_order'] ?? $index),
+            ];
+        }, $items, array_keys($items))));
+    }
+
+    private function calculateIhTotals(array $data, array $lineItems): array
+    {
+        $sampleCounts = max(0, (float) ($data['sample_counts'] ?? 0));
+        $workUnits = max(1, (float) ($data['num_work_units'] ?? 0));
+        $unitPrice = max(0, (float) ($data['unit_price'] ?? 0));
+        $travelCharge = max(0, (float) ($data['travel_charge'] ?? 0));
+        $itemsTotal = array_sum(array_map(fn (array $item): float => (float) $item['line_total'], $lineItems));
+        $discount = max(0, (float) ($data['discount'] ?? 0));
+        $sstPercent = max(0, (float) ($data['sst_percent'] ?? 0));
+
+        $serviceTotal = $sampleCounts * $workUnits * $unitPrice;
+        $subTotal = round($serviceTotal + $travelCharge + $itemsTotal, 2);
+        $taxableTotal = max(0, $subTotal - $discount);
+        $sstAmount = round($taxableTotal * $sstPercent / 100, 2);
+
+        return [
+            'discount' => round($discount, 2),
+            'sst_percent' => $sstPercent,
+            'sst_amount' => $sstAmount,
+            'sub_total' => $subTotal,
+            'grand_total' => round($taxableTotal + $sstAmount, 2),
+        ];
+    }
+
+    private function replaceIhItems(int $quoteId, array $lineItems): void
+    {
+        if (! Schema::hasTable('quotes_ih_items')) {
+            if (! empty($lineItems)) {
+                throw new \RuntimeException('Industrial Hygiene additional fee storage is unavailable.');
+            }
+
+            return;
+        }
+
+        DB::table('quotes_ih_items')->where('quote_id', $quoteId)->delete();
+
+        if (empty($lineItems)) {
+            return;
+        }
+
+        $now = now();
+        DB::table('quotes_ih_items')->insert(array_map(fn (array $item): array => [
+            'quote_id' => $quoteId,
+            'item_description' => $item['item_description'],
+            'description' => $item['description'],
+            'quantity' => $item['quantity'],
+            'unit' => $item['unit'],
+            'unit_price' => $item['unit_price'],
+            'line_total' => $item['line_total'],
+            'sort_order' => $item['sort_order'],
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $lineItems));
+    }
+
+    private function ihItems(int $quoteId)
+    {
+        if (! Schema::hasTable('quotes_ih_items')) {
+            return collect();
+        }
+
+        return DB::table('quotes_ih_items')
+            ->where('quote_id', $quoteId)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get([
+                'id',
+                'quote_id',
+                'item_description',
+                'description',
+                'quantity',
+                'unit',
+                'unit_price',
+                'line_total',
+                'sort_order',
+            ]);
+    }
+
+    private function existingIhItemsForTotals(int $quoteId): array
+    {
+        $items = $this->ihItems($quoteId);
+
+        if ($items instanceof \Illuminate\Support\Collection) {
+            return $this->normalizeIhItems($items->map(fn ($item): array => (array) $item)->all());
+        }
+
+        return [];
     }
 
 }

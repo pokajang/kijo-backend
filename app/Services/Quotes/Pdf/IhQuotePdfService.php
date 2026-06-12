@@ -54,9 +54,17 @@ class IhQuotePdfService
         $sstPercentLabel = ((float) (int) $sstPercent === $sstPercent)
             ? number_format($sstPercent, 0)
             : number_format($sstPercent, 2);
+        $additionalItems = Schema::hasTable('quotes_ih_items')
+            ? DB::table('quotes_ih_items')
+                ->where('quote_id', $quoteId)
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->get(['item_description', 'description', 'quantity', 'unit', 'unit_price', 'line_total'])
+            : collect();
+        $additionalFeesTotal = $additionalItems->sum(fn ($item): float => (float) ($item->line_total ?? 0));
 
         $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice;
-        $grossSubtotal = $serviceTotal + $travelCharge;
+        $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;
         $subTotalNet = $grossSubtotal - $discountAmount;
         $showNetSubtotal = $discountAmount > 0 && $sstAmount > 0;
 
@@ -140,6 +148,10 @@ class IhQuotePdfService
             'sampleUnit' => $sampleUnit,
             'workUnitsDisplay' => $workUnitsDisplay,
             'remarksHtml' => $remarksHtml,
+            'serviceTotal' => $serviceTotal,
+            'travelCharge' => $travelCharge,
+            'additionalItems' => $additionalItems,
+            'additionalFeesTotal' => $additionalFeesTotal,
             'grossSubtotal' => $grossSubtotal,
             'discountAmount' => $discountAmount,
             'showNetSubtotal' => $showNetSubtotal,

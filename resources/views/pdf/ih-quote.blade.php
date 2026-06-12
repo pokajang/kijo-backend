@@ -123,6 +123,37 @@
                 <td class="label">{{ $L('amount', 'Amount') }}</td>
                 <td class="value">RM {{ number_format($grossSubtotal, 2) }} lumpsum</td>
             </tr>
+            <tr>
+                <td class="label">{{ $L('service_fee', 'Service Fee') }}</td>
+                <td class="value">RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}</td>
+            </tr>
+            @if((float) ($travelCharge ?? 0) > 0)
+                <tr>
+                    <td class="label">{{ $L('travel_charge_rm', 'Mob & Accom Costs') }}</td>
+                    <td class="value">RM {{ number_format((float) $travelCharge, 2) }}</td>
+                </tr>
+            @endif
+            @if(!empty($additionalItems) && count($additionalItems) > 0)
+                <tr>
+                    <td class="label">{{ $L('additional_fees', 'Additional Fees') }}</td>
+                    <td class="value">
+                        @foreach($additionalItems as $item)
+                            <div>
+                                {{ $item->item_description ?? '-' }}
+                                @if(!empty($item->description))
+                                    <span class="small-note">- {{ $item->description }}</span>
+                                @endif
+                                <br>
+                                <span class="small-note">
+                                    {{ number_format((float) ($item->quantity ?? 0), 2) }} {{ $item->unit ?? 'Lot' }}
+                                    x RM {{ number_format((float) ($item->unit_price ?? 0), 2) }}
+                                </span>
+                                <strong>RM {{ number_format((float) ($item->line_total ?? 0), 2) }}</strong>
+                            </div>
+                        @endforeach
+                    </td>
+                </tr>
+            @endif
             @if($discountAmount > 0)
                 <tr>
                     <td class="label">{{ $L('discount', 'Discount') }}</td>

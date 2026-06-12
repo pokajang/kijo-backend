@@ -11,7 +11,7 @@ class QuoteRecordConfig
     {
         return match ($service) {
             'training' => ['table' => 'quotes_training', 'project_type' => 'Training', 'child_table' => null],
-            'ih' => ['table' => 'quotes_ih', 'project_type' => 'Industrial Hygiene', 'child_table' => null],
+            'ih' => ['table' => 'quotes_ih', 'project_type' => 'Industrial Hygiene', 'child_table' => 'quotes_ih_items'],
             'manpower' => ['table' => 'quotes_manpower', 'project_type' => 'Manpower Supply', 'child_table' => null],
             'special' => ['table' => 'quotes_special', 'project_type' => 'Special Service', 'child_table' => 'quotes_special_items'],
             'equipment' => ['table' => 'quotes_equipment', 'project_type' => 'Equipment Supply', 'child_table' => 'quotes_equipment_items'],

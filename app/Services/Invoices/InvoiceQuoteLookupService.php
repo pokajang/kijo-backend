@@ -85,6 +85,13 @@ class InvoiceQuoteLookupService
         $quote->sst_amount        = (float) $quote->sst_amount;
         $quote->sub_total         = (float) $quote->sub_total;
         $quote->grand_total       = (float) $quote->grand_total;
+        $quote->hygiene_items     = Schema::hasTable('quotes_ih_items')
+            ? DB::table('quotes_ih_items')
+                ->where('quote_id', $id)
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->get(['id', 'quote_id', 'item_description', 'description', 'quantity', 'unit', 'unit_price', 'line_total', 'sort_order'])
+            : collect();
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }

@@ -74,6 +74,10 @@ class QuoteRecordDetailContextBuilder
             return $this->specialItems($id);
         }
 
+        if ($service === 'ih') {
+            return $this->ihItems($id);
+        }
+
         return [];
     }
 
@@ -144,6 +148,44 @@ class QuoteRecordDetailContextBuilder
         $query = DB::table('quotes_special_items')
             ->select($columns)
             ->where('quote_id', $id);
+        if (in_array('id', $columns, true)) {
+            $query->orderBy('id');
+        }
+
+        return $query->limit(25)->get()
+            ->map(fn (object $row): array => $this->sanitizer->detail((array) $row))
+            ->all();
+    }
+
+    private function ihItems(int $id): array
+    {
+        if (! Schema::hasTable('quotes_ih_items')) {
+            return [];
+        }
+
+        $columns = $this->existingColumns('quotes_ih_items', [
+            'id',
+            'quote_id',
+            'item_description',
+            'description',
+            'unit',
+            'quantity',
+            'unit_price',
+            'line_total',
+            'sort_order',
+            'created_at',
+            'updated_at',
+        ]);
+        if ($columns === [] || ! in_array('quote_id', $columns, true)) {
+            return [];
+        }
+
+        $query = DB::table('quotes_ih_items')
+            ->select($columns)
+            ->where('quote_id', $id);
+        if (in_array('sort_order', $columns, true)) {
+            $query->orderBy('sort_order');
+        }
         if (in_array('id', $columns, true)) {
             $query->orderBy('id');
         }

@@ -82,6 +82,32 @@ class QuoteRecordListingService
                 }
             }
 
+            if ($service === 'ih' && !empty($quoteIds) && $this->config->hasTable('quotes_ih_items')) {
+                $rows = DB::table('quotes_ih_items')
+                    ->whereIn('quote_id', $quoteIds)
+                    ->select([
+                        'id',
+                        'quote_id',
+                        'item_description',
+                        'description',
+                        'unit',
+                        'quantity',
+                        'unit_price',
+                        'line_total',
+                        'sort_order',
+                        'created_at',
+                        'updated_at',
+                    ])
+                    ->orderBy('quote_id')
+                    ->orderBy('sort_order')
+                    ->orderBy('id')
+                    ->get();
+
+                foreach ($rows as $row) {
+                    $itemsByQuote[(int) $row->quote_id][] = $row;
+                }
+            }
+
             $followups = [];
             if ($this->config->hasTable('quote_followups') && !empty($quoteIds)) {
                 $followups = DB::table('quote_followups')
@@ -111,6 +137,10 @@ class QuoteRecordListingService
                 }
                 if ($service === 'special') {
                     $quote->line_items = $itemsByQuote[(int) $quote->id] ?? [];
+                }
+                if ($service === 'ih') {
+                    $quote->line_items = $itemsByQuote[(int) $quote->id] ?? [];
+                    $quote->hygiene_items = $itemsByQuote[(int) $quote->id] ?? [];
                 }
                 return $quote;
             });

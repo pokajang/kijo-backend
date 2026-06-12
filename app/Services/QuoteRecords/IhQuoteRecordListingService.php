@@ -6,6 +6,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class IhQuoteRecordListingService
 {
@@ -65,6 +66,28 @@ class IhQuoteRecordListingService
         $ids = array_values(array_unique(array_map('intval', array_column($quotes, 'id'))));
         $ph = implode(',', array_fill(0, count($ids), '?'));
 
+        $itemsByQuote = [];
+        if (Schema::hasTable('quotes_ih_items')) {
+            $items = DB::table('quotes_ih_items')
+                ->whereIn('quote_id', $ids)
+                ->select(['id', 'quote_id', 'item_description', 'description', 'quantity', 'unit', 'unit_price', 'line_total', 'sort_order'])
+                ->orderBy('quote_id')
+                ->orderBy('sort_order')
+                ->orderBy('id')
+                ->get();
+
+            foreach ($items as $item) {
+                $itemsByQuote[(int) $item->quote_id][] = (array) $item;
+            }
+        }
+
+        foreach ($quotes as &$quote) {
+            $lineItems = $itemsByQuote[(int) ($quote['id'] ?? 0)] ?? [];
+            $quote['hygiene_items'] = $lineItems;
+            $quote['line_items'] = $lineItems;
+        }
+        unset($quote);
+
         $followups = DB::select("
             SELECT qf.id, qf.quote_id, qf.quote_type, qf.remarks, qf.follow_up_date, qf.created_by, qf.created_at
             FROM quote_followups qf
@@ -115,6 +138,9 @@ class IhQuoteRecordListingService
         DB::beginTransaction();
         try {
             DB::table('quote_inquiry_sources')->where('quote_ref_no', $quoteRefNo)->delete();
+            if (Schema::hasTable('quotes_ih_items')) {
+                DB::table('quotes_ih_items')->where('quote_id', $quoteId)->delete();
+            }
             $deleted = DB::table('quotes_ih')->where('id', $quoteId)->delete();
 
             if ($deleted === 0) {
