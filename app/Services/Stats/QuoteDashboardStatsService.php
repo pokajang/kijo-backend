@@ -2,10 +2,8 @@
 
 namespace App\Services\Stats;
 
-use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class QuoteDashboardStatsService
 {
@@ -51,22 +49,25 @@ class QuoteDashboardStatsService
         'infrastructure' => 'INFRASTRUCTURE',
     ];
 
+    private function quoteFactsQuery(): QuoteFactsQuery
+    {
+        return app(QuoteFactsQuery::class);
+    }
+
     public function quoteValueByPerson(Request $request): JsonResponse
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw('staff_code, staff_name, SUM(value) AS total_value')
-                ->groupBy('staff_code', 'staff_name')
-                ->orderByDesc('total_value');
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'staffCode' => $r->staff_code,
-                'staffName' => $r->staff_name,
-                'totalValue' => (float) $r->total_value,
-            ]);
+            $rows = $this->quoteFactsQuery()
+                ->facts($start, $end)
+                ->groupBy('staff_code')
+                ->map(fn ($staffRows) => [
+                    'staffCode' => (string) $staffRows->first()->staff_code,
+                    'staffName' => (string) $staffRows->first()->staff_name,
+                    'totalValue' => (float) $staffRows->sum('value'),
+                ])
+                ->sortByDesc('totalValue')
+                ->values();
 
             return response()->json(['status' => 'success', 'quoteValueByPerson' => $rows]);
         } catch (\Throwable $e) {
@@ -80,17 +81,15 @@ class QuoteDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw('service_group, SUM(value) AS total_value')
+            $rows = $this->quoteFactsQuery()
+                ->facts($start, $end)
                 ->groupBy('service_group')
-                ->orderByDesc('total_value');
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'serviceGroup' => $r->service_group,
-                'totalValue' => (float) $r->total_value,
-            ]);
+                ->map(fn ($serviceRows) => [
+                    'serviceGroup' => (string) $serviceRows->first()->service_group,
+                    'totalValue' => (float) $serviceRows->sum('value'),
+                ])
+                ->sortByDesc('totalValue')
+                ->values();
 
             return response()->json(['status' => 'success', 'quoteValueByService' => $rows]);
         } catch (\Throwable $e) {
@@ -104,18 +103,16 @@ class QuoteDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw('staff_code, staff_name, COUNT(*) AS quote_count')
-                ->groupBy('staff_code', 'staff_name')
-                ->orderByDesc('quote_count');
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'staffCode' => $r->staff_code,
-                'staffName' => $r->staff_name,
-                'quoteCount' => (int) $r->quote_count,
-            ]);
+            $rows = $this->quoteFactsQuery()
+                ->facts($start, $end)
+                ->groupBy('staff_code')
+                ->map(fn ($staffRows) => [
+                    'staffCode' => (string) $staffRows->first()->staff_code,
+                    'staffName' => (string) $staffRows->first()->staff_name,
+                    'quoteCount' => (int) $staffRows->count(),
+                ])
+                ->sortByDesc('quoteCount')
+                ->values();
 
             return response()->json(['status' => 'success', 'quoteCountByPerson' => $rows]);
         } catch (\Throwable $e) {
@@ -129,19 +126,15 @@ class QuoteDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw("service_group, DATE_FORMAT(created_at, '%Y-%m') AS month_key, SUM(value) AS total_value")
-                ->groupByRaw('service_group, month_key')
-                ->orderByRaw('month_key, service_group');
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-
             $grouped = [];
             $monthKeys = [];
-            foreach ($query->get() as $r) {
-                $grouped[$r->service_group][$r->month_key] = (float) $r->total_value;
-                $monthKeys[$r->month_key] = true;
+            foreach ($this->quoteFactsQuery()->facts($start, $end) as $r) {
+                $monthKey = $this->monthKey($r->created_at);
+                if ($monthKey === null) {
+                    continue;
+                }
+                $grouped[$r->service_group][$monthKey] = ($grouped[$r->service_group][$monthKey] ?? 0) + (float) $r->value;
+                $monthKeys[$monthKey] = true;
             }
 
             $months = array_keys($monthKeys);
@@ -179,17 +172,16 @@ class QuoteDashboardStatsService
     {
         [$start, $end] = $this->periodDates($request);
         try {
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') AS month, SUM(value) AS amount")
-                ->groupByRaw("DATE_FORMAT(created_at, '%Y-%m')")
-                ->orderByRaw("DATE_FORMAT(created_at, '%Y-%m') ASC");
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'month' => $r->month,
-                'amount' => (float) $r->amount,
-            ]);
+            $rows = $this->quoteFactsQuery()
+                ->facts($start, $end)
+                ->mapToGroups(fn ($row) => [$this->monthKey($row->created_at) => $row])
+                ->filter(fn ($monthRows, $month) => $month !== null && $month !== '')
+                ->map(fn ($monthRows, $month) => [
+                    'month' => $month,
+                    'amount' => (float) $monthRows->sum('value'),
+                ])
+                ->sortBy('month')
+                ->values();
 
             return response()->json(['status' => 'success', 'monthlyQuoteValue' => $rows]);
         } catch (\Throwable $e) {
@@ -203,17 +195,16 @@ class QuoteDashboardStatsService
     {
         [$start, $end] = $this->periodDates($request);
         try {
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') AS month, COUNT(*) AS count")
-                ->groupByRaw("DATE_FORMAT(created_at, '%Y-%m')")
-                ->orderByRaw("DATE_FORMAT(created_at, '%Y-%m') ASC");
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'month' => $r->month,
-                'count' => (int) $r->count,
-            ]);
+            $rows = $this->quoteFactsQuery()
+                ->facts($start, $end)
+                ->mapToGroups(fn ($row) => [$this->monthKey($row->created_at) => $row])
+                ->filter(fn ($monthRows, $month) => $month !== null && $month !== '')
+                ->map(fn ($monthRows, $month) => [
+                    'month' => $month,
+                    'count' => (int) $monthRows->count(),
+                ])
+                ->sortBy('month')
+                ->values();
 
             return response()->json(['status' => 'success', 'monthlyQuoteCount' => $rows]);
         } catch (\Throwable $e) {
@@ -221,31 +212,6 @@ class QuoteDashboardStatsService
 
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
-    }
-
-    private function baseQuoteFactsQuery(): Builder
-    {
-        // The SQL view can return more than one row per logical quote if bad legacy
-        // source rows exist. Normalize first so every downstream KPI aggregates on
-        // one quote fact instead of raw joined rows.
-        $base = DB::table('all_quotes')
-            ->selectRaw('
-                service_group,
-                quote_id,
-                MAX(created_at) AS created_at,
-                MAX(award_date) AS award_date,
-                MAX(staff_id) AS staff_id,
-                MAX(staff_name) AS staff_name,
-                MAX(staff_code) AS staff_code,
-                MAX(client_id) AS client_id,
-                MAX(client_name) AS client_name,
-                MAX(quote_status) AS quote_status,
-                MAX(value) AS value,
-                MAX(inquiry_source) AS inquiry_source
-            ')
-            ->groupBy('service_group', 'quote_id');
-
-        return DB::query()->fromSub($base, 'quote_facts');
     }
 
     private function parseDates(Request $request): array
@@ -295,5 +261,15 @@ class QuoteDashboardStatsService
         }
 
         return date('Y-m-d', $timestamp);
+    }
+
+    private function monthKey($date): ?string
+    {
+        $timestamp = strtotime((string) $date);
+        if ($timestamp === false) {
+            return null;
+        }
+
+        return date('Y-m', $timestamp);
     }
 }

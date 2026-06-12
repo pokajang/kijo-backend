@@ -57,36 +57,33 @@ class AwardedDashboardStatsService
         return app(RealizedSalesProjectQuery::class);
     }
 
+    private function normalizer(): DashboardDimensionNormalizer
+    {
+        return app(DashboardDimensionNormalizer::class);
+    }
+
     public function awardedValueByPerson(Request $request): JsonResponse
     {
         [$start, $end] = $this->parseDates($request);
         try {
             $realizedQuery = $this->realizedSalesProjectQuery();
-            $systemRows = $realizedQuery->projectFacts()
-                ->selectRaw('staff_code, staff_name, SUM(value) AS total_awarded')
-                ->whereRaw($realizedQuery->realizedStatusPredicate())
-                ->whereNotNull('award_date')
-                ->groupBy('staff_code', 'staff_name')
-                ->orderByDesc('total_awarded');
-            if ($start && $end) {
-                $systemRows->whereBetween(DB::raw('DATE(award_date)'), [$start, $end]);
-            }
             $rows = [];
-            foreach ($systemRows->get() as $r) {
-                $key = strtoupper((string) ($r->staff_code ?: 'UNASSIGNED'));
+            foreach ($realizedQuery->realizedFacts($start, $end)->groupBy('staff_code') as $staffRows) {
+                $first = $staffRows->first();
+                $key = (string) $first->staff_code;
                 $rows[$key] = [
-                    'staffCode' => $r->staff_code ?: 'UNASSIGNED',
-                    'staffName' => $r->staff_name ?: 'Unassigned',
-                    'systemAwarded' => (float) $r->total_awarded,
+                    'staffCode' => $key,
+                    'staffName' => $first->staff_name,
+                    'systemAwarded' => (float) $staffRows->sum('value'),
                     'manualAwarded' => 0.0,
                 ];
             }
             foreach ($this->manualClosedSalesByPerson($start, $end) as $r) {
-                $key = strtoupper((string) ($r->staff_code ?: 'UNASSIGNED'));
+                $key = $this->normalizer()->staffCode($r->staff_code);
                 if (! isset($rows[$key])) {
                     $rows[$key] = [
-                        'staffCode' => $r->staff_code ?: 'UNASSIGNED',
-                        'staffName' => $r->staff_name ?: 'Unassigned',
+                        'staffCode' => $key,
+                        'staffName' => $this->normalizer()->staffName($r->staff_name),
                         'systemAwarded' => 0.0,
                         'manualAwarded' => 0.0,
                     ];
@@ -114,16 +111,16 @@ class AwardedDashboardStatsService
         try {
             $realizedQuery = $this->realizedSalesProjectQuery();
             $rows = [];
-            foreach ($realizedQuery->realizedProjectsBySource($start, $end) as $r) {
-                $key = (string) ($r->inquiry_source ?: 'Unattributed');
+            foreach ($realizedQuery->realizedFacts($start, $end)->groupBy('inquiry_source') as $sourceRows) {
+                $key = (string) $sourceRows->first()->inquiry_source;
                 $rows[$key] = [
                     'sourceName' => $key,
-                    'systemAwarded' => (float) $r->total_awarded,
+                    'systemAwarded' => (float) $sourceRows->sum('value'),
                     'manualAwarded' => 0.0,
                 ];
             }
             foreach ($this->manualClosedSalesBySource($start, $end) as $r) {
-                $key = (string) ($r->source ?: 'Unattributed');
+                $key = $this->normalizer()->source($r->source);
                 if (! isset($rows[$key])) {
                     $rows[$key] = [
                         'sourceName' => $key,
@@ -153,26 +150,20 @@ class AwardedDashboardStatsService
         [$start, $end] = $this->parseDates($request);
         try {
             $realizedQuery = $this->realizedSalesProjectQuery();
-            $systemRows = $realizedQuery->projectFacts()
-                ->selectRaw('service_group, SUM(value) AS total_awarded')
-                ->whereRaw($realizedQuery->realizedStatusPredicate())
-                ->whereNotNull('award_date')
-                ->groupBy('service_group')
-                ->orderByDesc('total_awarded');
-            if ($start && $end) {
-                $systemRows->whereBetween(DB::raw('DATE(award_date)'), [$start, $end]);
-            }
             $rows = [];
-            foreach ($systemRows->get() as $r) {
-                $key = (string) ($r->service_group ?: 'Unclassified');
-                $rows[$key] = [
-                    'serviceGroup' => $key,
-                    'systemAwarded' => (float) $r->total_awarded,
-                    'manualAwarded' => 0.0,
-                ];
+            foreach ($realizedQuery->realizedFacts($start, $end)->groupBy('service_group') as $serviceRows) {
+                $key = (string) $serviceRows->first()->service_group;
+                if (! isset($rows[$key])) {
+                    $rows[$key] = [
+                        'serviceGroup' => $key,
+                        'systemAwarded' => 0.0,
+                        'manualAwarded' => 0.0,
+                    ];
+                }
+                $rows[$key]['systemAwarded'] += (float) $serviceRows->sum('value');
             }
             foreach ($this->manualClosedSalesByService($start, $end) as $r) {
-                $key = (string) ($r->service_group ?: 'Unclassified');
+                $key = $this->normalizer()->serviceGroup($r->service_group);
                 if (! isset($rows[$key])) {
                     $rows[$key] = [
                         'serviceGroup' => $key,
@@ -264,31 +255,6 @@ class AwardedDashboardStatsService
         }
     }
 
-    private function baseQuoteFactsQuery(): Builder
-    {
-        // The SQL view can return more than one row per logical quote if bad legacy
-        // source rows exist. Normalize first so every downstream KPI aggregates on
-        // one quote fact instead of raw joined rows.
-        $base = DB::table('all_quotes')
-            ->selectRaw('
-                service_group,
-                quote_id,
-                MAX(created_at) AS created_at,
-                MAX(award_date) AS award_date,
-                MAX(staff_id) AS staff_id,
-                MAX(staff_name) AS staff_name,
-                MAX(staff_code) AS staff_code,
-                MAX(client_id) AS client_id,
-                MAX(client_name) AS client_name,
-                MAX(quote_status) AS quote_status,
-                MAX(value) AS value,
-                MAX(inquiry_source) AS inquiry_source
-            ')
-            ->groupBy('service_group', 'quote_id');
-
-        return DB::query()->fromSub($base, 'quote_facts');
-    }
-
     private function manualClosedSalesByPerson(?string $start, ?string $end)
     {
         $query = $this->manualClosedSalesBaseQuery($start, $end);
@@ -342,7 +308,9 @@ class AwardedDashboardStatsService
             ->groupBy('service_category')
             ->get()
             ->map(fn ($row) => (object) [
-                'service_group' => $this->monitoringManualServiceCategoryToStatusLabel($row->service_category) ?: 'Unclassified',
+                'service_group' => $this->normalizer()->serviceGroup(
+                    $this->monitoringManualServiceCategoryToStatusLabel($row->service_category)
+                ),
                 'manual_awarded' => (float) $row->manual_awarded,
             ]);
     }

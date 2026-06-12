@@ -2,7 +2,6 @@
 
 namespace App\Services\Stats;
 
-use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -57,56 +56,28 @@ class ConversionDashboardStatsService
         return app(RealizedSalesProjectQuery::class);
     }
 
+    private function quoteFactsQuery(): QuoteFactsQuery
+    {
+        return app(QuoteFactsQuery::class);
+    }
+
     public function conversionRateBySource(Request $request): JsonResponse
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $realizedQuery = $this->realizedSalesProjectQuery();
-            $denominatorRows = $this->baseQuoteFactsQuery()
-                ->selectRaw("
-                    COALESCE(NULLIF(inquiry_source, ''), 'Unattributed') AS inquiry_source,
-                    COUNT(*) AS total_quotes
-                ")
-                ->groupByRaw("COALESCE(NULLIF(inquiry_source, ''), 'Unattributed')");
-            if ($start && $end) {
-                $denominatorRows->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-
-            $rowsBySource = [];
-            foreach ($denominatorRows->get() as $r) {
-                $key = (string) ($r->inquiry_source ?: 'Unattributed');
-                $rowsBySource[$key] = [
-                    'sourceName' => $key,
-                    'convertedCount' => 0,
-                    'totalQuotes' => (int) $r->total_quotes,
-                ];
-            }
-
-            foreach ($realizedQuery->realizedProjectsBySource($start, $end) as $r) {
-                $key = (string) ($r->inquiry_source ?: 'Unattributed');
-                if (! isset($rowsBySource[$key])) {
-                    $rowsBySource[$key] = [
-                        'sourceName' => $key,
-                        'convertedCount' => 0,
-                        'totalQuotes' => 0,
-                    ];
-                }
-                $rowsBySource[$key]['convertedCount'] = (int) $r->awarded_count;
-            }
-
-            $rows = collect(array_values($rowsBySource))
-                ->map(function (array $row): array {
-                    $totalQuotes = (int) $row['totalQuotes'];
-                    $convertedCount = (int) $row['convertedCount'];
-
-                    return array_merge($row, [
-                        'conversionRate' => $totalQuotes > 0
-                            ? round($convertedCount * 100.0 / $totalQuotes, 1)
-                            : 0.0,
-                    ]);
-                })
-                ->sortByDesc('conversionRate')
-                ->values();
+            $convertedQuoteKeys = $this->realizedSalesProjectQuery()->convertedQuoteKeysByCutoff($end);
+            $quoteFactsQuery = $this->quoteFactsQuery();
+            $rows = $this->sortConversionRows($quoteFactsQuery
+                ->facts($start, $end)
+                ->groupBy('inquiry_source')
+                ->map(fn ($sourceRows) => $this->conversionRow(
+                    [
+                        'sourceName' => (string) $sourceRows->first()->inquiry_source,
+                    ],
+                    $sourceRows,
+                    $convertedQuoteKeys,
+                    $quoteFactsQuery,
+                )));
 
             return response()->json(['status' => 'success', 'conversionRateBySource' => $rows]);
         } catch (\Throwable $e) {
@@ -120,28 +91,19 @@ class ConversionDashboardStatsService
     {
         [$start, $end] = $this->parseDates($request);
         try {
-            $convertedPredicate = $this->realizedSalesProjectQuery()->quoteHasRealizedProjectPredicate();
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw("
-                    service_group,
-                    COUNT(*) AS total_quotes,
-                    SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END) AS awarded_count,
-                    ROUND(
-                        SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END)
-                        * 100.0 / NULLIF(COUNT(*), 0), 1
-                    ) AS conversion_rate
-                ")
+            $convertedQuoteKeys = $this->realizedSalesProjectQuery()->convertedQuoteKeysByCutoff($end);
+            $quoteFactsQuery = $this->quoteFactsQuery();
+            $rows = $this->sortConversionRows($quoteFactsQuery
+                ->facts($start, $end)
                 ->groupBy('service_group')
-                ->orderByDesc('conversion_rate');
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'serviceGroup' => $r->service_group,
-                'convertedCount' => (int) $r->awarded_count,
-                'totalQuotes' => (int) $r->total_quotes,
-                'conversionRate' => (float) $r->conversion_rate,
-            ]);
+                ->map(fn ($serviceRows) => $this->conversionRow(
+                    [
+                        'serviceGroup' => (string) $serviceRows->first()->service_group,
+                    ],
+                    $serviceRows,
+                    $convertedQuoteKeys,
+                    $quoteFactsQuery,
+                )));
 
             return response()->json(['status' => 'success', 'conversionRateByService' => $rows]);
         } catch (\Throwable $e) {
@@ -156,31 +118,20 @@ class ConversionDashboardStatsService
         [$start, $end] = $this->parseDates($request);
         try {
             $activeStaffCount = $this->activeStaffCount();
-            $convertedPredicate = $this->realizedSalesProjectQuery()->quoteHasRealizedProjectPredicate();
-            $query = $this->baseQuoteFactsQuery()
-                ->selectRaw("
-                    COALESCE(NULLIF(staff_code, ''), 'UNASSIGNED') AS staff_code,
-                    COALESCE(NULLIF(staff_name, ''), 'Unassigned') AS staff_name,
-                    COUNT(*) AS total_quotes,
-                    SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END) AS awarded_count,
-                    ROUND(
-                        SUM(CASE WHEN {$convertedPredicate} THEN 1 ELSE 0 END)
-                        * 100.0 / NULLIF(COUNT(*), 0), 1
-                    ) AS conversion_rate
-                ")
-                ->groupByRaw("COALESCE(NULLIF(staff_code, ''), 'UNASSIGNED'), COALESCE(NULLIF(staff_name, ''), 'Unassigned')")
-                ->orderByDesc('conversion_rate')
-                ->orderByDesc('total_quotes');
-            if ($start && $end) {
-                $query->whereBetween(DB::raw('DATE(created_at)'), [$start, $end]);
-            }
-            $rows = $query->get()->map(fn ($r) => [
-                'staffCode' => $r->staff_code,
-                'staffName' => $r->staff_name,
-                'convertedCount' => (int) $r->awarded_count,
-                'totalQuotes' => (int) $r->total_quotes,
-                'conversionRate' => (float) $r->conversion_rate,
-            ]);
+            $convertedQuoteKeys = $this->realizedSalesProjectQuery()->convertedQuoteKeysByCutoff($end);
+            $quoteFactsQuery = $this->quoteFactsQuery();
+            $rows = $this->sortConversionRows($quoteFactsQuery
+                ->facts($start, $end)
+                ->groupBy('staff_code')
+                ->map(fn ($staffRows) => $this->conversionRow(
+                    [
+                        'staffCode' => (string) $staffRows->first()->staff_code,
+                        'staffName' => (string) $staffRows->first()->staff_name,
+                    ],
+                    $staffRows,
+                    $convertedQuoteKeys,
+                    $quoteFactsQuery,
+                )));
 
             return response()->json([
                 'status' => 'success',
@@ -192,31 +143,6 @@ class ConversionDashboardStatsService
 
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
-    }
-
-    private function baseQuoteFactsQuery(): Builder
-    {
-        // The SQL view can return more than one row per logical quote if bad legacy
-        // source rows exist. Normalize first so every downstream KPI aggregates on
-        // one quote fact instead of raw joined rows.
-        $base = DB::table('all_quotes')
-            ->selectRaw('
-                service_group,
-                quote_id,
-                MAX(created_at) AS created_at,
-                MAX(award_date) AS award_date,
-                MAX(staff_id) AS staff_id,
-                MAX(staff_name) AS staff_name,
-                MAX(staff_code) AS staff_code,
-                MAX(client_id) AS client_id,
-                MAX(client_name) AS client_name,
-                MAX(quote_status) AS quote_status,
-                MAX(value) AS value,
-                MAX(inquiry_source) AS inquiry_source
-            ')
-            ->groupBy('service_group', 'quote_id');
-
-        return DB::query()->fromSub($base, 'quote_facts');
     }
 
     private function activeStaffCount(): int
@@ -254,5 +180,37 @@ class ConversionDashboardStatsService
         }
 
         return date('Y-m-d', $timestamp);
+    }
+
+    private function conversionRow(
+        array $labels,
+        $quoteRows,
+        array $convertedQuoteKeys,
+        QuoteFactsQuery $quoteFactsQuery,
+    ): array {
+        $totalQuotes = (int) $quoteRows->count();
+        $convertedCount = (int) $quoteRows
+            ->filter(fn ($quote) => isset($convertedQuoteKeys[$quoteFactsQuery->quoteServiceKey($quote->quote_id, $quote->service_group)]))
+            ->count();
+
+        return array_merge($labels, [
+            'convertedCount' => $convertedCount,
+            'totalQuotes' => $totalQuotes,
+            'conversionRate' => $totalQuotes > 0 ? round($convertedCount * 100.0 / $totalQuotes, 1) : 0.0,
+        ]);
+    }
+
+    private function sortConversionRows($rows)
+    {
+        return $rows
+            ->sort(function (array $a, array $b): int {
+                $rateCompare = ((float) $b['conversionRate']) <=> ((float) $a['conversionRate']);
+                if ($rateCompare !== 0) {
+                    return $rateCompare;
+                }
+
+                return ((int) $b['totalQuotes']) <=> ((int) $a['totalQuotes']);
+            })
+            ->values();
     }
 }

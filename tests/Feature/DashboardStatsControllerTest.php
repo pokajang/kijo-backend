@@ -89,6 +89,106 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(800.0, (float) $bob['totalAwarded']);
     }
 
+    public function test_awarded_value_by_service_normalizes_realized_service_group_aliases(): void
+    {
+        DB::table('projects_main')->insert([
+            [
+                'id' => 140,
+                'project_name' => 'Canonical Manpower Project',
+                'quote_id' => null,
+                'project_type' => 'Manpower Supply',
+                'quote_value' => 1000,
+                'award_date' => '2026-05-10',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 141,
+                'project_name' => 'Legacy Man Power Project',
+                'quote_id' => null,
+                'project_type' => 'MAN POWER',
+                'quote_value' => 700,
+                'award_date' => '2026-05-10',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 142,
+                'project_name' => 'Canonical Special Project',
+                'quote_id' => null,
+                'project_type' => 'Special Service',
+                'quote_value' => 500,
+                'award_date' => '2026-05-10',
+                'status' => 'completed',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 143,
+                'project_name' => 'Legacy Special Project',
+                'quote_id' => null,
+                'project_type' => 'Special',
+                'quote_value' => 300,
+                'award_date' => '2026-05-10',
+                'status' => 'completed',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 144,
+                'project_name' => 'Missing Service Project',
+                'quote_id' => null,
+                'project_type' => '',
+                'quote_value' => 200,
+                'award_date' => '2026-05-10',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+        ]);
+
+        DB::table('monitoring_manual_pipeline_entries')->insert([
+            'entry_type' => 'closed',
+            'prospect_name' => 'Manual Man Power Closed',
+            'entry_date' => '2026-05-10',
+            'source' => 'Referral',
+            'segment_type' => 'individual',
+            'service_category' => 'man_power',
+            'estimated_rm' => 100,
+            'owner_staff_id' => 1,
+            'owner_staff_code' => 'AZA',
+            'owner_staff_name' => 'Azam Bin Husain',
+            'created_by' => 1,
+            'created_by_code' => 'AZA',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->authenticatedPost('/stats/awarded-value-by-service', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $rows = collect($response->json('awardValueByService'));
+
+        $this->assertNull($rows->firstWhere('serviceGroup', 'MAN POWER'));
+        $this->assertNull($rows->firstWhere('serviceGroup', 'Special'));
+
+        $manpower = $rows->firstWhere('serviceGroup', 'Manpower Supply');
+        $this->assertNotNull($manpower);
+        $this->assertSame(1700.0, (float) $manpower['systemAwarded']);
+        $this->assertSame(100.0, (float) $manpower['manualAwarded']);
+        $this->assertSame(1800.0, (float) $manpower['awardedValue']);
+
+        $special = $rows->firstWhere('serviceGroup', 'Special Service');
+        $this->assertNotNull($special);
+        $this->assertSame(800.0, (float) $special['systemAwarded']);
+        $this->assertSame(800.0, (float) $special['awardedValue']);
+
+        $unclassified = $rows->firstWhere('serviceGroup', 'Unclassified');
+        $this->assertNotNull($unclassified);
+        $this->assertSame(200.0, (float) $unclassified['awardedValue']);
+    }
+
     public function test_conversion_count_and_realized_value_by_source_share_award_date_projects(): void
     {
         DB::table('all_quotes')->insert(collect(range(8, 13))->map(fn (int $quoteId) => [
@@ -365,7 +465,7 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(1300.0, (float) $historicalResponse->json('yearToDateCompanyTotalRm'));
     }
 
-    public function test_conversion_source_count_uses_award_date_while_other_conversion_views_keep_quote_cohort(): void
+    public function test_conversion_views_share_quote_cohort_cutoff_semantics(): void
     {
         $dateRange = [
             'start_date' => '2026-03-01',
@@ -396,14 +496,14 @@ class DashboardStatsControllerTest extends TestCase
 
         $serviceRows = collect($serviceResponse->json('conversionRateByService'));
         $training = $serviceRows->firstWhere('serviceGroup', 'Training');
-        $industrialHygiene = $serviceRows->firstWhere('serviceGroup', 'IH');
+        $industrialHygiene = $serviceRows->firstWhere('serviceGroup', 'Industrial Hygiene');
 
-        $this->assertSame(2, (int) $training['convertedCount']);
+        $this->assertSame(1, (int) $training['convertedCount']);
         $this->assertSame(3, (int) $training['totalQuotes']);
-        $this->assertSame(66.7, (float) $training['conversionRate']);
-        $this->assertSame(1, (int) $industrialHygiene['convertedCount']);
+        $this->assertSame(33.3, (float) $training['conversionRate']);
+        $this->assertSame(0, (int) $industrialHygiene['convertedCount']);
         $this->assertSame(1, (int) $industrialHygiene['totalQuotes']);
-        $this->assertSame(100.0, (float) $industrialHygiene['conversionRate']);
+        $this->assertSame(0.0, (float) $industrialHygiene['conversionRate']);
 
         $staffResponse = $this->authenticatedPost('/stats/conversion-rate-by-staff', $dateRange);
         $staffResponse->assertOk()->assertJsonPath('status', 'success');
@@ -411,9 +511,9 @@ class DashboardStatsControllerTest extends TestCase
         $staffRows = collect($staffResponse->json('conversionRateByStaff'));
         $azam = $staffRows->firstWhere('staffCode', 'AZA');
 
-        $this->assertSame(3, (int) $azam['convertedCount']);
+        $this->assertSame(1, (int) $azam['convertedCount']);
         $this->assertSame(4, (int) $azam['totalQuotes']);
-        $this->assertSame(75.0, (float) $azam['conversionRate']);
+        $this->assertSame(25.0, (float) $azam['conversionRate']);
         $this->assertSame(2, (int) $staffResponse->json('activeStaffCount'));
     }
 
@@ -476,7 +576,7 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(['2026-03'], $serviceMonthResponse->json('months'));
         $serviceMonths = collect($serviceMonthResponse->json('monthlyStats'));
         $trainingMonth = $serviceMonths->firstWhere('serviceGroup', 'Training');
-        $ihMonth = $serviceMonths->firstWhere('serviceGroup', 'IH');
+        $ihMonth = $serviceMonths->firstWhere('serviceGroup', 'Industrial Hygiene');
 
         $this->assertSame([4299.0], array_map('floatval', $trainingMonth['monthlyValues']));
         $this->assertSame(4299.0, (float) $trainingMonth['totalValue']);
@@ -485,7 +585,7 @@ class DashboardStatsControllerTest extends TestCase
 
         $serviceValues = collect($serviceValueResponse->json('quoteValueByService'));
         $this->assertSame(4299.0, (float) $serviceValues->firstWhere('serviceGroup', 'Training')['totalValue']);
-        $this->assertSame(2000.0, (float) $serviceValues->firstWhere('serviceGroup', 'IH')['totalValue']);
+        $this->assertSame(2000.0, (float) $serviceValues->firstWhere('serviceGroup', 'Industrial Hygiene')['totalValue']);
 
         $staffCount = collect($staffCountResponse->json('quoteCountByPerson'))->firstWhere('staffCode', 'AZA');
         $staffValue = collect($staffValueResponse->json('quoteValueByPerson'))->firstWhere('staffCode', 'AZA');
@@ -500,6 +600,253 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(1, (int) $inquiryCounts->firstWhere('source', 'Email')['count']);
         $this->assertSame(3999.0, (float) $inquiryValues->firstWhere('source', 'WhatsApp')['totalValue']);
         $this->assertSame(2000.0, (float) $inquiryValues->firstWhere('source', 'Email')['totalValue']);
+
+        $this->assertSame(
+            (float) collect($serviceValueResponse->json('quoteValueByService'))->sum('totalValue'),
+            (float) collect($staffValueResponse->json('quoteValueByPerson'))->sum('totalValue')
+        );
+        $this->assertSame(
+            (float) collect($monthlyValueResponse->json('monthlyQuoteValue'))->sum('amount'),
+            (float) collect($inquiryValueResponse->json('inquiryStatsByValues'))->sum('totalValue')
+        );
+        $this->assertSame(
+            (int) collect($monthlyCountResponse->json('monthlyQuoteCount'))->sum('count'),
+            (int) collect($staffCountResponse->json('quoteCountByPerson'))->sum('quoteCount')
+        );
+        $this->assertSame(
+            (int) collect($monthlyCountResponse->json('monthlyQuoteCount'))->sum('count'),
+            (int) collect($inquiryCountResponse->json('inquiryStats'))->sum('count')
+        );
+    }
+
+    public function test_crm_quote_facts_normalize_aliases_staff_and_latest_source(): void
+    {
+        DB::table('all_quotes')->insert([
+            [
+                'service_group' => 'MAN POWER',
+                'quote_id' => 70,
+                'created_at' => '2026-05-12 09:00:00',
+                'award_date' => null,
+                'staff_id' => 1,
+                'staff_name' => 'Legacy Name',
+                'staff_code' => 'aza',
+                'client_id' => 70,
+                'client_name' => 'Client MP',
+                'quote_status' => 'Pending',
+                'value' => 1000,
+                'inquiry_source' => 'Old Source',
+            ],
+            [
+                'service_group' => 'Manpower Supply',
+                'quote_id' => 70,
+                'created_at' => '2026-05-12 09:00:00',
+                'award_date' => null,
+                'staff_id' => 1,
+                'staff_name' => 'Another Legacy Name',
+                'staff_code' => 'AZA',
+                'client_id' => 70,
+                'client_name' => 'Client MP',
+                'quote_status' => 'Pending',
+                'value' => 1000,
+                'inquiry_source' => 'Older Source',
+            ],
+            [
+                'service_group' => 'man_power',
+                'quote_id' => 71,
+                'created_at' => '2026-05-13 09:00:00',
+                'award_date' => null,
+                'staff_id' => 1,
+                'staff_name' => 'Typo Name',
+                'staff_code' => 'AZA',
+                'client_id' => 71,
+                'client_name' => 'Client MP 2',
+                'quote_status' => 'Pending',
+                'value' => 500,
+                'inquiry_source' => '',
+            ],
+            [
+                'service_group' => 'Special',
+                'quote_id' => 72,
+                'created_at' => '2026-05-14 09:00:00',
+                'award_date' => null,
+                'staff_id' => null,
+                'staff_name' => '',
+                'staff_code' => '',
+                'client_id' => 72,
+                'client_name' => 'Client Special',
+                'quote_status' => 'Pending',
+                'value' => 300,
+                'inquiry_source' => '',
+            ],
+            [
+                'service_group' => '',
+                'quote_id' => 73,
+                'created_at' => '2026-05-15 09:00:00',
+                'award_date' => null,
+                'staff_id' => null,
+                'staff_name' => null,
+                'staff_code' => null,
+                'client_id' => 73,
+                'client_name' => 'Client Missing',
+                'quote_status' => 'Pending',
+                'value' => 200,
+                'inquiry_source' => null,
+            ],
+        ]);
+
+        DB::table('quote_inquiry_sources')->insert([
+            ['quote_id' => 70, 'service_type' => 'Manpower Supply', 'source' => 'First Source'],
+            ['quote_id' => 70, 'service_type' => 'Manpower Supply', 'source' => 'Latest Source'],
+        ]);
+
+        DB::table('projects_main')->insert([
+            'id' => 170,
+            'project_name' => 'Legacy Man Power Project',
+            'quote_id' => 70,
+            'project_type' => 'MAN POWER',
+            'quote_value' => 1000,
+            'award_date' => '2026-05-18',
+            'status' => 'active',
+            'created_by' => 1,
+        ]);
+
+        $dateRange = [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ];
+
+        $serviceResponse = $this->authenticatedPost('/stats/quote-value-by-service', $dateRange);
+        $staffCountResponse = $this->authenticatedPost('/stats/quote-count-by-person', $dateRange);
+        $staffValueResponse = $this->authenticatedPost('/stats/quote-value-by-person', $dateRange);
+        $inquiryResponse = $this->authenticatedPost('/stats/inquiry', $dateRange);
+        $sourceResponse = $this->authenticatedPost('/stats/awarded-value-by-source', $dateRange);
+
+        foreach ([
+            $serviceResponse,
+            $staffCountResponse,
+            $staffValueResponse,
+            $inquiryResponse,
+            $sourceResponse,
+        ] as $response) {
+            $response->assertOk()->assertJsonPath('status', 'success');
+        }
+
+        $serviceRows = collect($serviceResponse->json('quoteValueByService'));
+        $this->assertNull($serviceRows->firstWhere('serviceGroup', 'MAN POWER'));
+        $this->assertNull($serviceRows->firstWhere('serviceGroup', 'man_power'));
+        $this->assertSame(1500.0, (float) $serviceRows->firstWhere('serviceGroup', 'Manpower Supply')['totalValue']);
+        $this->assertSame(300.0, (float) $serviceRows->firstWhere('serviceGroup', 'Special Service')['totalValue']);
+        $this->assertSame(200.0, (float) $serviceRows->firstWhere('serviceGroup', 'Unclassified')['totalValue']);
+
+        $staffCount = collect($staffCountResponse->json('quoteCountByPerson'));
+        $staffValue = collect($staffValueResponse->json('quoteValueByPerson'));
+        $azamCount = $staffCount->firstWhere('staffCode', 'AZA');
+        $azamValue = $staffValue->firstWhere('staffCode', 'AZA');
+        $this->assertSame('Azam Bin Husain', $azamValue['staffName']);
+        $this->assertSame(2, (int) $azamCount['quoteCount']);
+        $this->assertSame(1500.0, (float) $azamValue['totalValue']);
+        $this->assertSame(2, (int) $staffCount->firstWhere('staffCode', 'UNASSIGNED')['quoteCount']);
+
+        $inquiryRows = collect($inquiryResponse->json('inquiryStats'));
+        $this->assertSame(1, (int) $inquiryRows->firstWhere('source', 'Latest Source')['count']);
+        $this->assertSame(3, (int) $inquiryRows->firstWhere('source', 'Unattributed')['count']);
+
+        $sourceRows = collect($sourceResponse->json('awardValueBySource'));
+        $this->assertSame(1000.0, (float) $sourceRows->firstWhere('sourceName', 'Latest Source')['awardedValue']);
+    }
+
+    public function test_conversion_excludes_future_null_awards_and_manual_closed_entries(): void
+    {
+        DB::table('all_quotes')->insert(collect(range(80, 83))->map(fn (int $quoteId) => [
+            'service_group' => 'Training',
+            'quote_id' => $quoteId,
+            'created_at' => '2026-05-12 10:00:00',
+            'award_date' => null,
+            'staff_id' => 1,
+            'staff_name' => 'Azam Bin Husain',
+            'staff_code' => 'AZA',
+            'client_id' => $quoteId,
+            'client_name' => 'Conversion Client '.$quoteId,
+            'quote_status' => 'Pending',
+            'value' => 1000,
+            'inquiry_source' => 'Fallback Source',
+        ])->all());
+        DB::table('quote_inquiry_sources')->insert(collect(range(80, 83))->map(fn (int $quoteId) => [
+            'quote_id' => $quoteId,
+            'service_type' => 'Training',
+            'source' => 'Conversion Source',
+        ])->all());
+        DB::table('projects_main')->insert([
+            [
+                'id' => 180,
+                'project_name' => 'Converted Inside Cutoff',
+                'quote_id' => 80,
+                'project_type' => 'Training',
+                'quote_value' => 1000,
+                'award_date' => '2026-05-20',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 181,
+                'project_name' => 'Future Converted',
+                'quote_id' => 81,
+                'project_type' => 'Training',
+                'quote_value' => 1000,
+                'award_date' => '2026-06-01',
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+            [
+                'id' => 182,
+                'project_name' => 'Missing Award Date',
+                'quote_id' => 82,
+                'project_type' => 'Training',
+                'quote_value' => 1000,
+                'award_date' => null,
+                'status' => 'active',
+                'created_by' => 1,
+            ],
+        ]);
+        DB::table('monitoring_manual_pipeline_entries')->insert([
+            'entry_type' => 'closed',
+            'prospect_name' => 'Manual Closed Not Quote Conversion',
+            'entry_date' => '2026-05-20',
+            'source' => 'Conversion Source',
+            'segment_type' => 'individual',
+            'service_category' => 'training',
+            'estimated_rm' => 1000,
+            'owner_staff_id' => 1,
+            'owner_staff_code' => 'AZA',
+            'owner_staff_name' => 'Azam Bin Husain',
+            'created_by' => 1,
+            'created_by_code' => 'AZA',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $dateRange = [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ];
+
+        $sourceResponse = $this->authenticatedPost('/stats/conversion-rate-by-source', $dateRange);
+        $serviceResponse = $this->authenticatedPost('/stats/conversion-rate-by-service', $dateRange);
+        $staffResponse = $this->authenticatedPost('/stats/conversion-rate-by-staff', $dateRange);
+
+        foreach ([$sourceResponse, $serviceResponse, $staffResponse] as $response) {
+            $response->assertOk()->assertJsonPath('status', 'success');
+        }
+
+        $source = collect($sourceResponse->json('conversionRateBySource'))->firstWhere('sourceName', 'Conversion Source');
+        $service = collect($serviceResponse->json('conversionRateByService'))->firstWhere('serviceGroup', 'Training');
+        $staff = collect($staffResponse->json('conversionRateByStaff'))->firstWhere('staffCode', 'AZA');
+
+        foreach ([$source, $service, $staff] as $row) {
+            $this->assertSame(1, (int) $row['convertedCount']);
+            $this->assertSame(4, (int) $row['totalQuotes']);
+            $this->assertSame(25.0, (float) $row['conversionRate']);
+        }
     }
 
     public function test_monitoring_pipeline_tools_combines_crm_and_manual_negotiations(): void

@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Schema;
 
 class RealizedSalesProjectQuery
 {
+    public function __construct(private readonly DashboardDimensionNormalizer $normalizer) {}
+
     public function projectFacts(): Builder
     {
         $hasProjectQuoteId = Schema::hasColumn('projects_main', 'quote_id');
@@ -184,6 +186,41 @@ class RealizedSalesProjectQuery
         return DB::query()->fromSub($base, 'project_facts');
     }
 
+    public function realizedFacts(?string $start = null, ?string $end = null): Collection
+    {
+        $query = $this->projectFacts()
+            ->whereRaw($this->realizedStatusPredicate())
+            ->whereNotNull('award_date');
+
+        if ($start && $end) {
+            $query->whereBetween(DB::raw('DATE(award_date)'), [$start, $end]);
+        }
+
+        return $this->normalizeProjectFacts($query->get());
+    }
+
+    public function convertedQuoteKeysByCutoff(?string $end = null): array
+    {
+        $query = $this->projectFacts()
+            ->whereRaw($this->realizedStatusPredicate())
+            ->whereNotNull('award_date')
+            ->whereNotNull('quote_id');
+
+        if ($end) {
+            $query->where(DB::raw('DATE(award_date)'), '<=', $end);
+        }
+
+        return $this->normalizeProjectFacts($query->get())
+            ->filter(fn ($row) => $row->quote_id !== null && $row->quote_id !== '')
+            ->mapWithKeys(fn ($row) => [$this->quoteServiceKey($row->quote_id, $row->service_group) => true])
+            ->all();
+    }
+
+    public function quoteServiceKey($quoteId, $serviceGroup): string
+    {
+        return $this->normalizer->serviceKey($serviceGroup).'|'.(string) $quoteId;
+    }
+
     public function realizedStatusPredicate(string $column = 'project_status'): string
     {
         return "LOWER({$column}) IN ('active', 'completed')";
@@ -219,7 +256,7 @@ class RealizedSalesProjectQuery
                   AND (
                     (LOWER({$quoteAlias}.service_group) LIKE '%training%' AND LOWER(pm.project_type) LIKE '%training%')
                     OR ((LOWER({$quoteAlias}.service_group) LIKE '%industrial%' OR LOWER({$quoteAlias}.service_group) = 'ih') AND (LOWER(pm.project_type) LIKE '%industrial%' OR LOWER(pm.project_type) LIKE '%ih%'))
-                    OR (LOWER({$quoteAlias}.service_group) LIKE '%manpower%' AND LOWER(pm.project_type) LIKE '%manpower%')
+                    OR ((LOWER({$quoteAlias}.service_group) LIKE '%manpower%' OR LOWER({$quoteAlias}.service_group) LIKE '%man power%') AND (LOWER(pm.project_type) LIKE '%manpower%' OR LOWER(pm.project_type) LIKE '%man power%'))
                     OR (LOWER({$quoteAlias}.service_group) LIKE '%equipment%' AND LOWER(pm.project_type) LIKE '%equipment%')
                     OR (LOWER({$quoteAlias}.service_group) LIKE '%special%' AND LOWER(pm.project_type) LIKE '%special%')
                   )
@@ -240,5 +277,30 @@ class RealizedSalesProjectQuery
         }
 
         return 'COALESCE('.implode(', ', $expressions).')';
+    }
+
+    private function normalizeProjectFacts(Collection $rows): Collection
+    {
+        return $rows->map(function ($row) {
+            $serviceGroup = $this->normalizer->serviceGroup($row->service_group ?? null);
+
+            return (object) [
+                'id' => $row->id ?? null,
+                'project_id' => $row->project_id ?? null,
+                'project_name' => $row->project_name ?? null,
+                'quote_id' => $row->quote_id ?? null,
+                'service_group' => $serviceGroup,
+                'raw_service_group' => $this->normalizer->cleanText($row->service_group ?? null),
+                'quote_ref_no' => $row->quote_ref_no ?? null,
+                'service_title' => $row->service_title ?? null,
+                'value' => (float) ($row->value ?? 0),
+                'award_date' => $row->award_date ?? null,
+                'project_status' => $row->project_status ?? null,
+                'staff_code' => $this->normalizer->staffCode($row->staff_code ?? null),
+                'staff_name' => $this->normalizer->staffName($row->staff_name ?? null),
+                'client_name' => $row->client_name ?? null,
+                'inquiry_source' => $this->normalizer->source($row->inquiry_source ?? null),
+            ];
+        });
     }
 }
