@@ -36,11 +36,11 @@ class IhQuotePdfService
             $signOffTitle = 'Staff';
         }
 
-        $sampleCount = (int) ($quote->sample_counts ?? 0);
+        $sampleCount = (float) ($quote->sample_counts ?? 0);
         $sampleUnit = trim((string) ($quote->sample_unit ?? ''));
-        $rawWorkUnits = (int) ($quote->num_work_units ?? 0);
+        $rawWorkUnits = (float) ($quote->num_work_units ?? 0);
         $workUnitsForCalc = max(1, $rawWorkUnits);
-        $workUnitsDisplay = $rawWorkUnits > 0 ? (string) $rawWorkUnits : 'N/A';
+        $workUnitsDisplay = $rawWorkUnits > 0 ? $this->formatNumber($rawWorkUnits) : 'N/A';
 
         $remarksRaw = trim((string) ($quote->inquiry_remarks ?? ''));
         $remarksHtml = $remarksRaw !== '' ? nl2br(e($remarksRaw)) : '-';
@@ -65,8 +65,7 @@ class IhQuotePdfService
 
         $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice;
         $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;
-        $subTotalNet = $grossSubtotal - $discountAmount;
-        $showNetSubtotal = $discountAmount > 0 && $sstAmount > 0;
+        $subTotalNet = max(0, $grossSubtotal - $discountAmount);
 
         $appendProposal = (int) ($quote->attach_proposal ?? 0) === 1 && (int) ($quote->service_id ?? 0) > 0;
         $proposalTitle = '';
@@ -154,7 +153,6 @@ class IhQuotePdfService
             'additionalFeesTotal' => $additionalFeesTotal,
             'grossSubtotal' => $grossSubtotal,
             'discountAmount' => $discountAmount,
-            'showNetSubtotal' => $showNetSubtotal,
             'subTotalNet' => $subTotalNet,
             'sstAmount' => $sstAmount,
             'sstPercentLabel' => $sstPercentLabel,
@@ -209,5 +207,10 @@ class IhQuotePdfService
         } catch (\Throwable) {
             return false;
         }
+    }
+
+    private function formatNumber(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
     }
 }

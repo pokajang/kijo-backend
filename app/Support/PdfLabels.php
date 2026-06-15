@@ -52,6 +52,8 @@ class PdfLabels
         'discount' => 'Diskaun',
         'subtotal_rm' => 'Jumlah Kecil (RM)',
         'subtotal' => 'Jumlah Kecil',
+        'gross_subtotal' => 'Jumlah Kecil Kasar',
+        'subtotal_after_discount' => 'Jumlah Kecil Selepas Diskaun',
         'grand_total_rm' => 'Jumlah Keseluruhan (RM)',
         'grand_total' => 'Jumlah Keseluruhan',
         'sst_charge_rm' => 'Caj SST (RM)',

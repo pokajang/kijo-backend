@@ -77,8 +77,8 @@ class InvoiceQuoteLookupService
         }
 
         $quote->travel_charge     = (float) $quote->travel_charge;
-        $quote->sample_counts     = (int)   $quote->sample_counts;
-        $quote->num_work_units    = (int)   $quote->num_work_units;
+        $quote->sample_counts     = (float) $quote->sample_counts;
+        $quote->num_work_units    = (float) $quote->num_work_units;
         $quote->unit_price        = (float) $quote->unit_price;
         $quote->discount          = (float) $quote->discount;
         $quote->sst_percent       = (float) $quote->sst_percent;

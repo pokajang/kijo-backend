@@ -120,10 +120,6 @@
                 </td>
             </tr>
             <tr>
-                <td class="label">{{ $L('amount', 'Amount') }}</td>
-                <td class="value">RM {{ number_format($grossSubtotal, 2) }} lumpsum</td>
-            </tr>
-            <tr>
                 <td class="label">{{ $L('service_fee', 'Service Fee') }}</td>
                 <td class="value">RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}</td>
             </tr>
@@ -154,17 +150,19 @@
                     </td>
                 </tr>
             @endif
+            <tr>
+                <td class="label">{{ $L('gross_subtotal', 'Gross Subtotal') }}</td>
+                <td class="value">RM {{ number_format($grossSubtotal, 2) }}</td>
+            </tr>
             @if($discountAmount > 0)
                 <tr>
                     <td class="label">{{ $L('discount', 'Discount') }}</td>
                     <td class="value">- RM {{ number_format($discountAmount, 2) }}</td>
                 </tr>
-                @if($showNetSubtotal)
-                    <tr>
-                        <td class="label">{{ $L('subtotal', 'Subtotal') }}</td>
-                        <td class="value">RM {{ number_format($subTotalNet, 2) }}</td>
-                    </tr>
-                @endif
+                <tr>
+                    <td class="label">{{ $L('subtotal_after_discount', 'Subtotal after Discount') }}</td>
+                    <td class="value">RM {{ number_format($subTotalNet, 2) }}</td>
+                </tr>
             @endif
             @if($sstAmount > 0)
                 <tr>

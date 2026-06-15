@@ -133,6 +133,7 @@
     $orderedItems            = array_merge($nonDiscountItems, $discountItems);
     $subtotalBeforeDiscount  = 0.0;
     $netSubtotal             = 0.0;
+    $hasDiscountItems        = count($discountItems) > 0;
 @endphp
 
 <table class="breakdown">
@@ -193,8 +194,12 @@
         </tr>
     @endforeach
     <tr class="muted-row">
-        <td colspan="5" style="text-align:right;"><strong>{{ $L('subtotal_rm', 'Subtotal (RM)') }}</strong></td>
-        <td class="center"><strong>{{ number_format($subtotalBeforeDiscount, 2) }}</strong></td>
+        <td colspan="5" style="text-align:right;">
+            <strong>
+                {{ $hasDiscountItems ? $L('subtotal_after_discount', 'Subtotal after Discount') : $L('subtotal_rm', 'Subtotal (RM)') }}
+            </strong>
+        </td>
+        <td class="center"><strong>{{ number_format($hasDiscountItems ? $netSubtotal : $subtotalBeforeDiscount, 2) }}</strong></td>
     </tr>
     @if((float)($inv->sst_amount ?? 0) > 0)
         @php
