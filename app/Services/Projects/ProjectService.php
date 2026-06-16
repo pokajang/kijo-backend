@@ -45,6 +45,11 @@ class ProjectService
         return app(ProjectCommercialDocsService::class);
     }
 
+    private function projectValueService(): ProjectValueService
+    {
+        return app(ProjectValueService::class);
+    }
+
     public function index(Request $request): JsonResponse
     {
         return $this->projectCoreService()->index($request);
@@ -83,6 +88,22 @@ class ProjectService
     public function reloadPoNumber(Request $request): JsonResponse
     {
         return $this->projectCoreService()->reloadPoNumber($request);
+    }
+
+    public function updateValue(Request $request): JsonResponse
+    {
+        return $this->projectValueService()->updateProjectValueFromRequest(
+            $request,
+            (int) $request->input('project_id')
+        );
+    }
+
+    public function previewValueImpact(Request $request): JsonResponse
+    {
+        return $this->projectValueService()->previewProjectValueImpact(
+            $request,
+            (int) $request->input('project_id')
+        );
     }
 
     public function crmDetails(Request $request): JsonResponse

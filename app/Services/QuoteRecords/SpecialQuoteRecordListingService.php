@@ -7,6 +7,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class SpecialQuoteRecordListingService
 {
@@ -120,8 +121,12 @@ class SpecialQuoteRecordListingService
                 ORDER BY quote_id ASC, follow_up_date DESC, id DESC
             ", $ids);
 
+            $projectValueSelect = Schema::hasColumn('projects_main', 'current_project_value')
+                ? ', current_project_value, COALESCE(current_project_value, quote_value, 0) AS resolved_project_value'
+                : ', NULL AS current_project_value, COALESCE(quote_value, 0) AS resolved_project_value';
+
             $awardHistory = DB::select("
-                SELECT id, quote_id, award_date, status, quote_value, created_at
+                SELECT id, quote_id, award_date, status, quote_value{$projectValueSelect}, created_at
                 FROM projects_main
                 WHERE quote_id IN ({$ph})
                   AND LOWER(project_type) LIKE '%special%'

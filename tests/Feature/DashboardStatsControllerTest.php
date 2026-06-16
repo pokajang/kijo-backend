@@ -50,6 +50,33 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame(3, (int) $may['count']);
     }
 
+    public function test_sales_realized_value_uses_current_project_value_when_present(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 121,
+            'project_name' => 'Revised Value Project',
+            'quote_id' => null,
+            'project_type' => 'Training',
+            'quote_value' => 100,
+            'current_project_value' => 150,
+            'award_date' => '2026-05-10',
+            'status' => 'active',
+            'created_by' => 2,
+        ]);
+
+        $response = $this->authenticatedPost('/stats/monthly-sales', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $may = collect($response->json('monthlySales'))->firstWhere('month', '2026-05');
+
+        $this->assertSame(5150.0, (float) $may['systemAmount']);
+        $this->assertSame(6350.0, (float) $may['amount']);
+    }
+
     public function test_awarded_value_by_person_uses_staff_from_realized_project_source(): void
     {
         DB::table('projects_main')->insert([
@@ -3876,6 +3903,7 @@ class DashboardStatsControllerTest extends TestCase
             $table->integer('quote_id')->nullable();
             $table->string('project_type')->nullable();
             $table->decimal('quote_value', 15, 2)->nullable();
+            $table->decimal('current_project_value', 15, 2)->nullable();
             $table->date('award_date')->nullable();
             $table->string('status')->nullable();
             $table->integer('created_by')->nullable();

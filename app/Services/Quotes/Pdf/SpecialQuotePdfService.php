@@ -75,49 +75,66 @@ class SpecialQuotePdfService
         $proposalContentHtml = '';
         $proposalPdfAttachmentPaths = [];
         if ($appendProposal) {
-            $specialProposal = DB::table('proposal_template_special')
-                ->where('id', (int) $quote->sp_id)
-                ->where('is_deleted', 0)
-                ->first();
+            $snapshot = Schema::hasTable('quotes_special_proposal_snapshots')
+                ? DB::table('quotes_special_proposal_snapshots')->where('quote_id', $quoteId)->first()
+                : null;
 
-            if ($specialProposal) {
-                $proposalServiceTitle = trim((string) ($specialProposal->service_title ?? ''));
+            if ($snapshot) {
+                $proposalServiceTitle = trim((string) ($snapshot->service_title ?? ''));
                 $proposalTitle = $this->specialProposalTitle($proposalServiceTitle);
-                $proposalContentHtml = $this->renderer->toRenderableRichText((string) ($specialProposal->content ?? ''));
+                $proposalMode = in_array($snapshot->proposal_mode ?? null, ['upload', 'write'], true)
+                    ? $snapshot->proposal_mode
+                    : 'upload';
 
-                $attachmentFk = $this->specialAttachmentForeignKey();
-                $attachments = DB::table('proposal_special_attachments')
-                    ->where($attachmentFk, (int) $specialProposal->id)
-                    ->orderBy('id')
-                    ->get();
+                if ($proposalMode === 'upload') {
+                    foreach ($this->snapshotAttachmentPaths($snapshot) as $storedPath) {
+                        $resolved = $this->resolveStoredPdfPath($storedPath);
+                        if ($resolved !== null) {
+                            $proposalPdfAttachmentPaths[] = $resolved;
+                        }
+                    }
+                } else {
+                    $proposalContentHtml = $this->renderer->toRenderableRichText((string) ($snapshot->proposal_content ?? ''));
+                    $appendProposalContent = !empty(trim(strip_tags($proposalContentHtml)));
+                }
+            } else {
+                $specialProposal = DB::table('proposal_template_special')
+                    ->where('id', (int) $quote->sp_id)
+                    ->where('is_deleted', 0)
+                    ->first();
 
-                $hasResolvablePdfAttachments = false;
-                foreach ($attachments as $attachment) {
-                    $relativePath = AppFilePaths::publicStorageRelativePath($this->specialAttachmentStoredPath($attachment));
-                    if ($relativePath === null || $relativePath === '') {
-                        continue;
+                if ($specialProposal) {
+                    $proposalServiceTitle = trim((string) ($specialProposal->service_title ?? ''));
+                    $proposalTitle = $this->specialProposalTitle($proposalServiceTitle);
+
+                    $attachmentFk = $this->specialAttachmentForeignKey();
+                    $attachments = DB::table('proposal_special_attachments')
+                        ->where($attachmentFk, (int) $specialProposal->id)
+                        ->orderBy('id')
+                        ->get();
+                    $resolvedAttachmentPaths = [];
+
+                    foreach ($attachments as $attachment) {
+                        $resolved = $this->resolveStoredPdfPath($this->specialAttachmentStoredPath($attachment));
+                        if ($resolved !== null) {
+                            $resolvedAttachmentPaths[] = $resolved;
+                        }
                     }
 
-                    $absolutePath = AppFilePaths::storedPathLocalPath($relativePath);
-                    if ($absolutePath === null) {
-                        continue;
+                    $proposalMode = in_array($specialProposal->proposal_mode ?? null, ['upload', 'write'], true)
+                        ? $specialProposal->proposal_mode
+                        : (! empty($resolvedAttachmentPaths) ? 'upload' : 'write');
+
+                    if ($proposalMode === 'upload') {
+                        $proposalPdfAttachmentPaths = $resolvedAttachmentPaths;
                     }
 
-                    $resolved = realpath($absolutePath);
-                    if ($resolved === false || !is_file($resolved)) {
-                        continue;
-                    }
-
-                    $extension = strtolower((string) pathinfo($resolved, PATHINFO_EXTENSION));
-                    if ($extension === 'pdf') {
-                        $proposalPdfAttachmentPaths[] = $resolved;
-                        $hasResolvablePdfAttachments = true;
+                    if ($proposalMode === 'write') {
+                        $proposalContent = (string) ($specialProposal->proposal_content ?? $specialProposal->content ?? '');
+                        $proposalContentHtml = $this->renderer->toRenderableRichText($proposalContent);
+                        $appendProposalContent = !empty(trim(strip_tags($proposalContentHtml)));
                     }
                 }
-
-                // Write-mode proposal has no uploaded PDF attachments; append rendered content.
-                // Upload-mode proposal has PDF attachment(s); merge those PDFs as the appended proposal.
-                $appendProposalContent = !empty(trim(strip_tags($proposalContentHtml))) && !$hasResolvablePdfAttachments;
             }
         }
 
@@ -248,6 +265,41 @@ class SpecialQuotePdfService
         }
 
         return '';
+    }
+
+    private function snapshotAttachmentPaths(object $snapshot): array
+    {
+        $attachments = json_decode((string) ($snapshot->attachments_json ?? ''), true);
+        if (! is_array($attachments)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            fn ($attachment) => is_array($attachment) ? ($attachment['storedPath'] ?? null) : null,
+            $attachments
+        )));
+    }
+
+    private function resolveStoredPdfPath(string $storedPath): ?string
+    {
+        $relativePath = AppFilePaths::publicStorageRelativePath($storedPath);
+        if ($relativePath === null || $relativePath === '') {
+            return null;
+        }
+
+        $absolutePath = AppFilePaths::storedPathLocalPath($relativePath);
+        if ($absolutePath === null) {
+            return null;
+        }
+
+        $resolved = realpath($absolutePath);
+        if ($resolved === false || ! is_file($resolved)) {
+            return null;
+        }
+
+        return strtolower((string) pathinfo($resolved, PATHINFO_EXTENSION)) === 'pdf'
+            ? $resolved
+            : null;
     }
 
     private function hasColumn(string $table, string $column): bool

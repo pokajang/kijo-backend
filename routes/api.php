@@ -553,6 +553,8 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('projects/{id}', [ProjectController::class, 'destroy']);
     Route::post('projects/{id}/close', [ProjectController::class, 'close']);
     Route::post('projects/{id}/reload-po', [ProjectController::class, 'reloadPoNumber']);
+    Route::post('projects/{id}/value/impact-preview', [ProjectController::class, 'previewValueImpact']);
+    Route::patch('projects/{id}/value', [ProjectController::class, 'updateValue']);
     Route::get('projects/{id}/crm', [ProjectController::class, 'crmDetails']);
     Route::get('projects/{id}/commercial-docs', [ProjectController::class, 'commercialDocs']);
     Route::get('projects/{id}/collaborators', [ProjectController::class, 'listCollaborators']);

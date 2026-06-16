@@ -7,6 +7,7 @@ use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
 use App\Services\Projects\ProjectCollaboratorAssignmentService;
+use App\Services\Projects\ProjectValueService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -65,6 +66,7 @@ class IhQuoteRecordAwardWorkflowService
                 'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
+            app(ProjectValueService::class)->applyAwardModalAdjustment($newProjectId, $request, 'ih', $quoteId);
             $this->insertProjectProgress($newProjectId, 'IH quotation marked as Awarded. Project started.', $request);
             app(ProjectCollaboratorAssignmentService::class)
                 ->assignInitialCollaborators($newProjectId, $request);
@@ -141,6 +143,7 @@ class IhQuoteRecordAwardWorkflowService
                 'created_at' => now(),
             ], $quote->proposal_language ?? 'en'));
 
+            app(ProjectValueService::class)->applyAwardModalAdjustment($newProjectId, $request, 'ih', $quoteId);
             $this->insertProjectProgress($newProjectId, 'New project created from Re-Award (existing quote).', $request);
             app(ProjectCollaboratorAssignmentService::class)
                 ->assignInitialCollaborators($newProjectId, $request);
@@ -331,6 +334,9 @@ class IhQuoteRecordAwardWorkflowService
 
     private function withProjectProposalLanguage(array $payload, mixed $language): array
     {
+        if (Schema::hasColumn('projects_main', 'current_project_value')) {
+            $payload['current_project_value'] = null;
+        }
         if (Schema::hasColumn('projects_main', 'proposal_language')) {
             $payload['proposal_language'] = $language ?: 'en';
         }

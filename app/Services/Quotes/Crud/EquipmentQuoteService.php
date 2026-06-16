@@ -248,6 +248,12 @@ class EquipmentQuoteService
                 $updates['revision_no'] = DB::table('quotes_equipment')->where('id', $id)->lockForUpdate()->value('revision_no') + 1;
             }
 
+            if ($decisionResponse = $this->projectValueDecisionResponse($request, 'equipment', $id, $quote, (float) $updates['grand_total'])) {
+                DB::rollBack();
+
+                return $decisionResponse;
+            }
+
             DB::table('quotes_equipment')->where('id', $id)->update($updates);
             $this->markPriceExceptionUsed($priceException, $id);
             DB::table('quotes_equipment_items')->where('quote_id', $id)->delete();

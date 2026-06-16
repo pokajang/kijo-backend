@@ -3,6 +3,7 @@
 namespace App\Services\Quotes\Crud;
 
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -130,5 +131,16 @@ trait SharedQuoteCrudHelpers
         if (!$ownsQuote) {
             abort(response()->json(['status' => 'error', 'message' => 'Only the quote owner can apply an approved negotiation.'], 403));
         }
+    }
+
+    protected function projectValueDecisionResponse(
+        Request $request,
+        string $quoteType,
+        int $quoteId,
+        object $quote,
+        float $newGrandTotal
+    ): ?JsonResponse {
+        return app(\App\Services\Projects\ProjectValueService::class)
+            ->handleAwardedQuoteValueDecision($request, $quoteType, $quoteId, $quote, $newGrandTotal);
     }
 }

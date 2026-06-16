@@ -104,6 +104,8 @@ class ProjectContextProvider extends ModuleContextProvider
             'project_type',
             'po_loa_number',
             'quote_value',
+            'current_project_value',
+            'resolved_project_value',
             'service_start_date',
             'service_end_date',
             'description',
@@ -184,6 +186,8 @@ class ProjectContextProvider extends ModuleContextProvider
             'startDate',
             'endDate',
             'quoteValue',
+            'currentProjectValue',
+            'resolvedProjectValue',
         ], 5);
 
         return $this->source(

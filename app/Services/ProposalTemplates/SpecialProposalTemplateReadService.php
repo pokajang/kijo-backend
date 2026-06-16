@@ -72,6 +72,8 @@ class SpecialProposalTemplateReadService
                 $attachmentsByTemplate[(int) $att->{$attachmentFk}][] = $this->normalizeSpecialAttachment($att);
             }
 
+            $itemsByTemplate = $this->defaultLineItemsByTemplate($ids);
+
             $historyByTemplate = [];
             foreach ($historyRows as $h) {
                 $historyByTemplate[$h->template_id][] = $h;
@@ -79,6 +81,7 @@ class SpecialProposalTemplateReadService
 
             foreach ($rows as $row) {
                 $row->attachments = $attachmentsByTemplate[$row->id] ?? [];
+                $row->defaultLineItems = $itemsByTemplate[$row->id] ?? [];
                 $row->history     = $historyByTemplate[$row->id]    ?? [];
             }
         }
@@ -109,8 +112,17 @@ class SpecialProposalTemplateReadService
     public function listSpecial(Request $request)
     {
         $select = ['id', 'service_title', 'service_code'];
-        if ($this->hasColumn('proposal_template_special', 'proposal_language')) {
-            $select[] = 'proposal_language';
+        foreach ([
+            'proposal_language',
+            'proposal_mode',
+            'service_summary',
+            'proposal_content',
+            'content',
+            'translation_status',
+        ] as $column) {
+            if ($this->hasColumn('proposal_template_special', $column)) {
+                $select[] = $column;
+            }
         }
 
         $query = DB::table('proposal_template_special')
@@ -122,13 +134,26 @@ class SpecialProposalTemplateReadService
         $this->applyProposalLanguageFilter($query, 'proposal_template_special', null, $request);
         $this->applyReviewedBmTemplateFilter($query, 'proposal_template_special', $language);
         $rows = $query->get();
+        $ids = $rows->map(fn ($row) => (int) $row->id)->all();
+        $attachmentsByTemplate = $this->attachmentsByTemplate($ids);
+        $itemsByTemplate = $this->defaultLineItemsByTemplate($ids);
 
-        $mapped = $rows->map(fn ($row) => [
-            'id'          => (int) $row->id,
-            'serviceTitle'=> $row->service_title,
-            'serviceCode' => $row->service_code,
-            'proposalLanguage' => $row->proposal_language ?? 'en',
-        ])->values();
+        $mapped = $rows->map(function ($row) use ($attachmentsByTemplate, $itemsByTemplate) {
+            $attachments = $attachmentsByTemplate[(int) $row->id] ?? [];
+            $proposalMode = $this->proposalMode($row, $attachments);
+            $proposalContent = $this->proposalContent($row, $proposalMode);
+            $appendability = $this->appendability($proposalMode, $proposalContent, $attachments);
+
+            return [
+                'id'          => (int) $row->id,
+                'serviceTitle'=> $row->service_title,
+                'serviceCode' => $row->service_code,
+                'proposalLanguage' => $row->proposal_language ?? 'en',
+                'proposalMode' => $proposalMode,
+                'defaultLineItems' => $itemsByTemplate[(int) $row->id] ?? [],
+                ...$appendability,
+            ];
+        })->values();
 
         if ($this->isLegacyPhpRoute($request)) {
             return response()->json($mapped);
@@ -179,6 +204,9 @@ class SpecialProposalTemplateReadService
             'serviceTitle' => $row->service_title ?? null,
             'serviceCode'  => $row->service_code ?? null,
             'content'      => $row->content ?? null,
+            'proposalMode' => $this->proposalMode($row, (array) ($row->attachments ?? [])),
+            'serviceSummary' => $row->service_summary ?? (($this->proposalMode($row, (array) ($row->attachments ?? [])) === 'upload') ? ($row->content ?? '') : ''),
+            'proposalContent' => $row->proposal_content ?? (($this->proposalMode($row, (array) ($row->attachments ?? [])) === 'write') ? ($row->content ?? '') : ''),
             'dateCreated'  => $row->created_at ?? null,
             'proposalLanguage' => $row->proposal_language ?? 'en',
             'sourceTemplateId' => isset($row->source_template_id) ? (int) $row->source_template_id : null,
@@ -188,6 +216,16 @@ class SpecialProposalTemplateReadService
             'translationNotes' => $row->translation_notes ?? null,
             'history'      => $history,
             'attachments'  => array_values((array) ($row->attachments ?? [])),
+            'defaultLineItems' => array_values((array) ($row->defaultLineItems ?? [])),
+        ];
+
+        $mapped = [
+            ...$mapped,
+            ...$this->appendability(
+                $mapped['proposalMode'],
+                $mapped['proposalContent'],
+                $mapped['attachments']
+            ),
         ];
 
         if (!$legacy) {
@@ -201,13 +239,16 @@ class SpecialProposalTemplateReadService
     private function normalizeSpecialAttachment(object $att): array
     {
         $nameCol = $this->specialAttachmentNameColumn();
+        $fileName = $att->{$nameCol} ?? '';
+        $mimeType = $att->mime_type ?? null;
 
         return [
             'id'       => (int) $att->id,
-            'fileName' => $att->{$nameCol} ?? '',
+            'fileName' => $fileName,
             'fileUrl'  => AppFilePaths::publicUrlForStoredPath($this->specialAttachmentStoredPath($att)),
-            'mimeType' => $att->mime_type ?? null,
+            'mimeType' => $mimeType,
             'fileSize' => $att->file_size ?? null,
+            'isPdf' => $this->isPdfAttachment($fileName, $mimeType),
         ];
     }
 
@@ -280,5 +321,100 @@ class SpecialProposalTemplateReadService
     private function specialAttachmentPathColumn(): string
     {
         return $this->hasColumn('proposal_special_attachments', 'stored_path') ? 'stored_path' : 'file_url';
+    }
+
+    private function attachmentsByTemplate(array $ids): array
+    {
+        if (empty($ids) || ! Schema::hasTable('proposal_special_attachments')) {
+            return [];
+        }
+
+        $attachmentFk = $this->specialAttachmentForeignKey();
+        $rows = DB::table('proposal_special_attachments')
+            ->whereIn($attachmentFk, $ids)
+            ->orderBy($attachmentFk)
+            ->orderBy('id')
+            ->get();
+
+        $grouped = [];
+        foreach ($rows as $row) {
+            $grouped[(int) $row->{$attachmentFk}][] = $this->normalizeSpecialAttachment($row);
+        }
+
+        return $grouped;
+    }
+
+    private function defaultLineItemsByTemplate(array $ids): array
+    {
+        if (empty($ids) || ! Schema::hasTable('proposal_template_special_items')) {
+            return [];
+        }
+
+        $rows = DB::table('proposal_template_special_items')
+            ->whereIn('template_id', $ids)
+            ->orderBy('template_id')
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $grouped = [];
+        foreach ($rows as $row) {
+            $grouped[(int) $row->template_id][] = [
+                'id' => (int) $row->id,
+                'title' => $row->line_item_title ?? '',
+                'description' => $row->description ?? '',
+                'unit' => $row->unit ?? '',
+                'quantity' => (float) ($row->default_quantity ?? 1),
+                'unitPrice' => (float) ($row->default_unit_price ?? 0),
+                'amount' => (float) ($row->default_line_total ?? 0),
+                'sortOrder' => (int) ($row->sort_order ?? 0),
+            ];
+        }
+
+        return $grouped;
+    }
+
+    private function proposalMode(object $row, array $attachments): string
+    {
+        $mode = $row->proposal_mode ?? null;
+        if (in_array($mode, ['upload', 'write'], true)) {
+            return $mode;
+        }
+
+        return count($attachments) > 0 ? 'upload' : 'write';
+    }
+
+    private function proposalContent(object $row, string $proposalMode): string
+    {
+        $value = $row->proposal_content ?? null;
+        if ($value !== null) {
+            return (string) $value;
+        }
+
+        return $proposalMode === 'write' ? (string) ($row->content ?? '') : '';
+    }
+
+    private function appendability(string $proposalMode, string $proposalContent, array $attachments): array
+    {
+        $pdfCount = count(array_filter($attachments, fn ($attachment): bool => (bool) ($attachment['isPdf'] ?? false)));
+        $hasWrittenContent = trim(strip_tags($proposalContent)) !== '';
+        $hasAppendable = $proposalMode === 'upload' ? $pdfCount > 0 : $hasWrittenContent;
+
+        return [
+            'hasAppendableProposal' => $hasAppendable,
+            'appendablePdfCount' => $pdfCount,
+            'hasWrittenProposalContent' => $hasWrittenContent,
+            'appendableProposalMessage' => $hasAppendable
+                ? ($proposalMode === 'upload'
+                    ? "Upload proposal: {$pdfCount} PDF attachment" . ($pdfCount === 1 ? '' : 's')
+                    : 'Written proposal: content will be appended')
+                : 'No appendable proposal content',
+        ];
+    }
+
+    private function isPdfAttachment(?string $fileName, ?string $mimeType): bool
+    {
+        return strtolower((string) $mimeType) === 'application/pdf'
+            || strtolower(pathinfo((string) $fileName, PATHINFO_EXTENSION)) === 'pdf';
     }
 }

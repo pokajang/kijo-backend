@@ -2,6 +2,7 @@
 
 namespace App\Services\Clients;
 
+use App\Services\Projects\ProjectValueService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -152,8 +153,10 @@ class ClientRoiReportService extends ClientBaseService
             return;
         }
 
+        $projectValueExpression = app(ProjectValueService::class)->resolvedProjectValueExpression('projects_main');
+
         $query = DB::table('projects_main')
-            ->selectRaw('client_id, COUNT(*) AS awarded_project_count, COALESCE(SUM(quote_value), 0) AS awarded_value')
+            ->selectRaw("client_id, COUNT(*) AS awarded_project_count, COALESCE(SUM({$projectValueExpression}), 0) AS awarded_value")
             ->whereNotNull('client_id')
             ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) <> 'terminated'")
             ->groupBy('client_id');

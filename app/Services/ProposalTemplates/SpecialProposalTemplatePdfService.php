@@ -28,13 +28,16 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
         }
 
         $attachmentFk = $this->specialAttachmentForeignKey();
-        $attachmentPathCol = $this->specialAttachmentPathColumn();
         $attachmentNameCol = $this->specialAttachmentNameColumn();
+        $proposalMode = $this->proposalMode($row);
 
         $attachments = DB::table('proposal_special_attachments')
             ->where($attachmentFk, $id)
             ->orderBy('id')
             ->get();
+        if ($proposalMode === 'write') {
+            $attachments = collect();
+        }
 
         $generatedAt = now();
         $html = $this->renderSpecialProposalPdf($row);
@@ -76,7 +79,9 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
             ]);
         }
 
-        $zip->addFromString("{$baseName}.pdf", $pdfBytes);
+        if ($proposalMode === 'write') {
+            $zip->addFromString("{$baseName}.pdf", $pdfBytes);
+        }
 
         foreach ($attachments as $att) {
             $relativePath = AppFilePaths::publicStorageRelativePath($this->specialAttachmentStoredPath($att));
@@ -109,7 +114,10 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
         $logoDataUri = $this->companyLogoDataUri();
 
         $proposalTitle = $this->specialProposalTitle((string) ($proposal->service_title ?? ''));
-        $contentHtml = $this->toRenderableRichText((string) ($proposal->content ?? ''));
+        $content = $this->proposalMode($proposal) === 'write'
+            ? (string) ($proposal->proposal_content ?? $proposal->content ?? '')
+            : '';
+        $contentHtml = $this->toRenderableRichText($content);
 
         return view($this->pdfView('pdf.special-proposal', $proposal->proposal_language ?? 'en'), [
             'proposal' => $proposal,
@@ -173,6 +181,14 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
 
         return '';
     }
+
+    private function proposalMode(object $proposal): string
+    {
+        return in_array($proposal->proposal_mode ?? null, ['upload', 'write'], true)
+            ? $proposal->proposal_mode
+            : 'upload';
+    }
+
     private function hasColumn(string $table, string $column): bool
     {
         return app(ProposalTemplateCrudSupport::class)->hasColumn($table, $column);

@@ -6,6 +6,7 @@ use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class EquipmentQuoteRecordListingService
 {
@@ -136,8 +137,12 @@ class EquipmentQuoteRecordListingService
             ORDER BY qf.quote_id ASC, qf.follow_up_date DESC, qf.id DESC
         ", $ids);
 
+        $projectValueSelect = Schema::hasColumn('projects_main', 'current_project_value')
+            ? ', pm.current_project_value, COALESCE(pm.current_project_value, pm.quote_value, 0) AS resolved_project_value'
+            : ', NULL AS current_project_value, COALESCE(pm.quote_value, 0) AS resolved_project_value';
+
         $awardHistory = DB::select("
-            SELECT pm.id, pm.quote_id, pm.award_date, pm.status, pm.quote_value, pm.created_at
+            SELECT pm.id, pm.quote_id, pm.award_date, pm.status, pm.quote_value{$projectValueSelect}, pm.created_at
             FROM projects_main pm
             WHERE pm.quote_id IN ({$ph})
               AND LOWER(pm.project_type) LIKE '%equipment%'

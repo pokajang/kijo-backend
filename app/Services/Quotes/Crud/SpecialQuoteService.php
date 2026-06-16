@@ -5,6 +5,7 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreSpecialQuoteRequest;
 use App\Http\Requests\Quote\UpdateSpecialQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\Quotes\SpecialQuoteProposalSnapshotService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -95,6 +96,9 @@ class SpecialQuoteService
 
         $data      = $request->validated();
         $lineItems = $this->normalizeSpecialItems($data['line_items'] ?? []);
+        if ($validationResponse = $this->validateSpecialProposalTemplate($data)) {
+            return $validationResponse;
+        }
         $itemsSubtotal = array_sum(array_map(fn ($item) => (float) ($item['total_price'] ?? 0), $lineItems));
         $discount = (float) ($data['discount'] ?? 0);
         $sstPercent = (float) ($data['sst_percent'] ?? 0);
@@ -108,13 +112,17 @@ class SpecialQuoteService
 
         $quoteId = null;
         $refNo   = null;
+        $snapshotNewPaths = [];
+        $snapshotOldPaths = [];
 
         DB::beginTransaction();
         try {
-            $lockResult = DB::selectOne('SELECT GET_LOCK(?, 10) AS acquired', [$lockName]);
-            if (!$lockResult || !$lockResult->acquired) {
-                DB::rollBack();
-                return response()->json(['status' => 'error', 'message' => 'Could not acquire lock. Please retry.'], 503);
+            if (DB::getDriverName() === 'mysql') {
+                $lockResult = DB::selectOne('SELECT GET_LOCK(?, 10) AS acquired', [$lockName]);
+                if (!$lockResult || !$lockResult->acquired) {
+                    DB::rollBack();
+                    return response()->json(['status' => 'error', 'message' => 'Could not acquire lock. Please retry.'], 503);
+                }
             }
 
             $row  = DB::selectOne(
@@ -173,7 +181,7 @@ class SpecialQuoteService
                     'description'     => $item['description'] ?? null,
                     'unit'            => $item['unit'] ?? null,
                     'unit_price'      => (float) $item['unit_price'],
-                    'quantity'        => (int) $item['quantity'],
+                    'quantity'        => (float) $item['quantity'],
                     'line_total'      => (float) $item['total_price'],
                     'created_by'      => $staffId,
                     'created_at'      => now(),
@@ -182,17 +190,31 @@ class SpecialQuoteService
             }
             DB::table('quotes_special_items')->insert($lineInserts);
 
+            $snapshotResult = app(SpecialQuoteProposalSnapshotService::class)->capture(
+                (int) $quoteId,
+                (int) ($data['sp_id'] ?? 0),
+                $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en')
+            );
+            $snapshotNewPaths = $snapshotResult['newPaths'] ?? [];
+            $snapshotOldPaths = $snapshotResult['oldPaths'] ?? [];
+
             DB::commit();
         } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
             DB::rollBack();
+            app(SpecialQuoteProposalSnapshotService::class)->deleteStoredPaths($snapshotNewPaths);
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            app(SpecialQuoteProposalSnapshotService::class)->deleteStoredPaths($snapshotNewPaths);
             report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
-            DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            if (DB::getDriverName() === 'mysql') {
+                DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            }
         }
+
+        app(SpecialQuoteProposalSnapshotService::class)->deleteStoredPaths($snapshotOldPaths);
 
         $this->auditLog->log($request, "Created special quote {$refNo} (ID #{$quoteId})");
 
@@ -225,6 +247,9 @@ class SpecialQuoteService
 
         $data       = $request->validated();
         $lineItems  = $this->normalizeSpecialItems($data['line_items'] ?? []);
+        if ($validationResponse = $this->validateSpecialProposalTemplate($data)) {
+            return $validationResponse;
+        }
         $isRevision = $request->boolean('isRevision');
         $itemsSubtotal = array_sum(array_map(fn ($item) => (float) ($item['total_price'] ?? 0), $lineItems));
         $discount = (float) ($data['discount'] ?? 0);
@@ -262,6 +287,9 @@ class SpecialQuoteService
             $updates['proposal_language'] = $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en'));
         }
 
+        $snapshotNewPaths = [];
+        $snapshotOldPaths = [];
+
         try {
             DB::beginTransaction();
             $priceException = $this->approvedPriceException($request, 'special', $id);
@@ -283,6 +311,12 @@ class SpecialQuoteService
                 $updates['revision_no'] = DB::table('quotes_special')->where('id', $id)->lockForUpdate()->value('revision_no') + 1;
             }
 
+            if ($decisionResponse = $this->projectValueDecisionResponse($request, 'special', $id, $quote, (float) $updates['grand_total'])) {
+                DB::rollBack();
+
+                return $decisionResponse;
+            }
+
             DB::table('quotes_special')->where('id', $id)->update($updates);
             $this->markPriceExceptionUsed($priceException, $id);
             DB::table('quotes_special_items')->where('quote_id', $id)->delete();
@@ -296,7 +330,7 @@ class SpecialQuoteService
                     'description'     => $item['description'] ?? null,
                     'unit'            => $item['unit'] ?? null,
                     'unit_price'      => (float) $item['unit_price'],
-                    'quantity'        => (int) $item['quantity'],
+                    'quantity'        => (float) $item['quantity'],
                     'line_total'      => (float) $item['total_price'],
                     'created_by'      => $staffId,
                     'created_at'      => now(),
@@ -305,15 +339,27 @@ class SpecialQuoteService
             }
             DB::table('quotes_special_items')->insert($lineInserts);
 
+            $snapshotResult = app(SpecialQuoteProposalSnapshotService::class)->capture(
+                $id,
+                (int) ($data['sp_id'] ?? 0),
+                $this->normalizeProposalLanguage($data['proposal_language'] ?? ($quote->proposal_language ?? 'en'))
+            );
+            $snapshotNewPaths = $snapshotResult['newPaths'] ?? [];
+            $snapshotOldPaths = $snapshotResult['oldPaths'] ?? [];
+
             DB::commit();
         } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
             DB::rollBack();
+            app(SpecialQuoteProposalSnapshotService::class)->deleteStoredPaths($snapshotNewPaths);
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            app(SpecialQuoteProposalSnapshotService::class)->deleteStoredPaths($snapshotNewPaths);
             report($e);
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
+
+        app(SpecialQuoteProposalSnapshotService::class)->deleteStoredPaths($snapshotOldPaths);
 
         $this->auditLog->log($request, "Updated special quote ID #{$id} by {$nameCode}" . ($isRevision ? ' (revision)' : ''));
 
@@ -333,7 +379,7 @@ class SpecialQuoteService
             $title = trim((string) ($item['item_name'] ?? $item['title'] ?? ''));
             $qty = (float) ($item['quantity'] ?? 0);
             $unitPrice = (float) ($item['unit_price'] ?? 0);
-            $lineTotal = $item['line_total'] ?? $item['total_price'] ?? ($qty * $unitPrice);
+            $lineTotal = round($qty * $unitPrice, 2);
             return [
                 'item_name' => $title,
                 'description' => $item['description'] ?? null,
@@ -343,6 +389,79 @@ class SpecialQuoteService
                 'total_price' => (float) $lineTotal,
             ];
         }, $items));
+    }
+
+    private function validateSpecialProposalTemplate(array $data): ?JsonResponse
+    {
+        $templateId = (int) ($data['sp_id'] ?? 0);
+        if ($templateId <= 0 || ! Schema::hasTable('proposal_template_special')) {
+            return response()->json(['status' => 'error', 'message' => 'Selected special proposal template was not found.'], 422);
+        }
+
+        $template = DB::table('proposal_template_special')
+            ->where('id', $templateId)
+            ->where('is_deleted', 0)
+            ->first();
+
+        if (! $template) {
+            return response()->json(['status' => 'error', 'message' => 'Selected special proposal template is unavailable.'], 422);
+        }
+
+        $quoteLanguage = $this->normalizeProposalLanguage($data['proposal_language'] ?? 'en');
+        $templateLanguage = $this->normalizeProposalLanguage($template->proposal_language ?? 'en');
+        if ($templateLanguage !== $quoteLanguage) {
+            return response()->json(['status' => 'error', 'message' => 'Selected special proposal language does not match the quotation language.'], 422);
+        }
+
+        if ($quoteLanguage === 'ms-MY' && ($template->translation_status ?? null) === 'machine_draft') {
+            return response()->json(['status' => 'error', 'message' => 'Selected BM special proposal must be reviewed before quotation use.'], 422);
+        }
+
+        $attachProposal = isset($data['attach_proposal']) && (int) $data['attach_proposal'] === 1;
+        if (! $attachProposal) {
+            return null;
+        }
+
+        $proposalMode = in_array($template->proposal_mode ?? null, ['upload', 'write'], true)
+            ? $template->proposal_mode
+            : $this->legacySpecialProposalMode($templateId);
+
+        if ($proposalMode === 'write') {
+            $proposalContent = (string) ($template->proposal_content ?? $template->content ?? '');
+            if (trim(strip_tags($proposalContent)) === '') {
+                return response()->json(['status' => 'error', 'message' => 'Selected special proposal has no written proposal content to append.'], 422);
+            }
+
+            return null;
+        }
+
+        if ($this->appendableSpecialProposalPdfCount($templateId) <= 0) {
+            return response()->json(['status' => 'error', 'message' => 'Selected special proposal has no PDF attachment to append.'], 422);
+        }
+
+        return null;
+    }
+
+    private function legacySpecialProposalMode(int $templateId): string
+    {
+        return $this->appendableSpecialProposalPdfCount($templateId) > 0 ? 'upload' : 'write';
+    }
+
+    private function appendableSpecialProposalPdfCount(int $templateId): int
+    {
+        if (! Schema::hasTable('proposal_special_attachments')) {
+            return 0;
+        }
+
+        $attachmentFk = Schema::hasColumn('proposal_special_attachments', 'template_id') ? 'template_id' : 'proposal_id';
+        $nameColumn = Schema::hasColumn('proposal_special_attachments', 'original_filename') ? 'original_filename' : 'file_name';
+
+        return DB::table('proposal_special_attachments')
+            ->where($attachmentFk, $templateId)
+            ->get()
+            ->filter(fn ($attachment) => strtolower((string) ($attachment->mime_type ?? '')) === 'application/pdf'
+                || strtolower(pathinfo((string) ($attachment->{$nameColumn} ?? ''), PATHINFO_EXTENSION)) === 'pdf')
+            ->count();
     }
 
 }

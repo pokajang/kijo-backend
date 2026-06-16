@@ -116,6 +116,7 @@ class BmProposalTemplateService
 
             if ($type === 'special') {
                 $this->copySpecialAttachmentsToBm($id, $newId, $copiedSpecialAttachmentPaths);
+                $this->copySpecialDefaultLineItemsToBm($id, $newId, $staffId);
             }
 
             $this->insertTemplateHistory($config['history_table'], $newId, 'BM copy created from template #' . $id . ' using Google Translate.', $staffId, 'Created');
@@ -223,7 +224,7 @@ class BmProposalTemplateService
                 'table' => 'proposal_template_special',
                 'history_table' => 'proposal_template_special_history',
                 'text_fields' => ['service_title'],
-                'html_fields' => ['content'],
+                'html_fields' => ['content', 'service_summary', 'proposal_content'],
             ],
             default => null,
         };
@@ -290,6 +291,43 @@ class BmProposalTemplateService
         }
 
         DB::table('proposal_template_training_agenda')->insert($rows);
+    }
+
+    private function copySpecialDefaultLineItemsToBm(int $sourceId, int $targetId, int $staffId): void
+    {
+        if (!Schema::hasTable('proposal_template_special_items')) {
+            return;
+        }
+
+        $sourceItems = DB::table('proposal_template_special_items')
+            ->where('template_id', $sourceId)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        if ($sourceItems->isEmpty()) {
+            return;
+        }
+
+        $now = now();
+        $rows = [];
+        foreach ($sourceItems as $index => $item) {
+            $rows[] = $this->filterExistingColumns('proposal_template_special_items', [
+                'template_id' => $targetId,
+                'line_item_title' => $item->line_item_title,
+                'description' => $item->description,
+                'unit' => $item->unit,
+                'default_quantity' => $item->default_quantity,
+                'default_unit_price' => $item->default_unit_price,
+                'default_line_total' => $item->default_line_total,
+                'sort_order' => $index,
+                'created_by' => $staffId > 0 ? $staffId : ($item->created_by ?? null),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        DB::table('proposal_template_special_items')->insert($rows);
     }
 
     private function deleteCopiedSpecialAttachmentPaths(array $paths): void

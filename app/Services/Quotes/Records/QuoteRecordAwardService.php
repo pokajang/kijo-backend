@@ -3,6 +3,7 @@
 namespace App\Services\Quotes\Records;
 
 use App\Services\Projects\ProjectCollaboratorAssignmentService;
+use App\Services\Projects\ProjectValueService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -10,6 +11,11 @@ use Illuminate\Support\Facades\DB;
 class QuoteRecordAwardService
 {
     public function __construct(private QuoteRecordConfig $config) {}
+
+    private function projectValueService(): ProjectValueService
+    {
+        return app(ProjectValueService::class);
+    }
 
     public function changeQuoteToFail(Request $request, string $service): JsonResponse
     {
@@ -194,6 +200,7 @@ class QuoteRecordAwardService
             ]);
 
             $projectId = $this->insertProjectFromQuote($service, $quoteId, $description, $awardDate, $clientRefNo);
+            $this->projectValueService()->applyAwardModalAdjustment($projectId, $request, $service, $quoteId);
             app(ProjectCollaboratorAssignmentService::class)->assignInitialCollaborators($projectId, $request);
             DB::commit();
 
@@ -247,6 +254,7 @@ class QuoteRecordAwardService
             'description' => $description !== '' ? $description : null,
             'status' => 'Active',
             'quote_value' => $quote->grand_total ?? 0,
+            'current_project_value' => null,
             'proposal_language' => $this->config->normalizeProposalLanguage($quote->proposal_language ?? 'en'),
             'award_date' => $awardDate,
             'created_at' => now(),

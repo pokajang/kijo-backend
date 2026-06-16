@@ -24,7 +24,6 @@ class UpdateProjectRequest extends FormRequest
             'project_name'       => ['required', 'string', 'max:255'],
             'project_type'       => ['nullable', 'string', 'max:100'],
             'po_loa_number'      => ['nullable', 'string', 'max:255'],
-            'quote_value'        => ['nullable', 'numeric', 'min:0'],
             'award_date'         => ['nullable', 'date_format:Y-m-d'],
             'service_start_date' => ['nullable', 'date_format:Y-m-d'],
             'service_end_date'   => ['nullable', 'date_format:Y-m-d'],

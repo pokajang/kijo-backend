@@ -242,6 +242,12 @@ class TrainingQuoteService
                 $updates['revision_no'] = DB::table('quotes_training')->where('id', $id)->lockForUpdate()->value('revision_no') + 1;
             }
 
+            if ($decisionResponse = $this->projectValueDecisionResponse($request, 'training', $id, $quote, (float) $updates['grand_total'])) {
+                DB::rollBack();
+
+                return $decisionResponse;
+            }
+
             DB::table('quotes_training')->where('id', $id)->update($updates);
             $this->markPriceExceptionUsed($priceException, $id);
 

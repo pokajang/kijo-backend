@@ -61,6 +61,9 @@ class ProjectMutationService
         if (Schema::hasColumn('projects_main', 'proposal_language')) {
             $insert['proposal_language'] = $data['proposal_language'] ?? 'en';
         }
+        if (Schema::hasColumn('projects_main', 'current_project_value')) {
+            $insert['current_project_value'] = null;
+        }
 
         $newProjectId = DB::table('projects_main')->insertGetId($insert);
 
@@ -88,7 +91,6 @@ class ProjectMutationService
         $updates = [
             'project_name' => $data['project_name'],
             'project_type' => $data['project_type'] ?? '',
-            'quote_value' => $data['quote_value'] ?? 0.00,
             'award_date' => $data['award_date'] ?? null,
             'service_start_date' => $data['service_start_date'] ?? null,
             'service_end_date' => $data['service_end_date'] ?? null,

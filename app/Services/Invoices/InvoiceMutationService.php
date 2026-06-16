@@ -2,6 +2,7 @@
 
 namespace App\Services\Invoices;
 
+use App\Services\Projects\ProjectValueService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -11,6 +12,11 @@ use Illuminate\Support\Facades\Schema;
 class InvoiceMutationService extends InvoiceBaseService
 {
     private const MONEY_TOLERANCE = 0.01;
+
+    private function projectValueService(): ProjectValueService
+    {
+        return app(ProjectValueService::class);
+    }
 
     public function store(Request $request): JsonResponse
     {
@@ -393,16 +399,21 @@ class InvoiceMutationService extends InvoiceBaseService
             return false;
         }
 
+        $projectColumns = ['id', 'status', 'quote_value'];
+        if (Schema::hasColumn('projects_main', 'current_project_value')) {
+            $projectColumns[] = 'current_project_value';
+        }
+
         $project = DB::table('projects_main')
             ->where('id', $projectId)
             ->lockForUpdate()
-            ->first(['id', 'status', 'quote_value']);
+            ->first($projectColumns);
 
         if (! $project || strtolower(trim((string) ($project->status ?? ''))) !== 'active') {
             return false;
         }
 
-        $quoteValue = (float) ($project->quote_value ?? 0);
+        $quoteValue = $this->projectValueService()->resolvedValue($project);
         if ($quoteValue <= 0 || ! $this->isProjectFullyInvoiced($projectId, $quoteValue)) {
             return false;
         }

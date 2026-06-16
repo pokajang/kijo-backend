@@ -2,6 +2,7 @@
 
 namespace App\Services\Stats;
 
+use App\Services\Projects\ProjectValueService;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -19,7 +20,7 @@ class RealizedSalesProjectQuery
         $projectNameColumn = Schema::hasColumn('projects_main', 'project_name') ? 'p.project_name' : "''";
         $projectQuoteIdColumn = $hasProjectQuoteId ? 'p.quote_id' : 'NULL';
         $projectTypeColumn = $hasProjectType ? 'p.project_type' : "''";
-        $projectValueColumn = Schema::hasColumn('projects_main', 'quote_value') ? 'p.quote_value' : '0';
+        $projectValueColumn = app(ProjectValueService::class)->resolvedProjectValueExpression('p');
         $projectAwardDateColumn = Schema::hasColumn('projects_main', 'award_date') ? 'p.award_date' : 'NULL';
         $projectStatusColumn = Schema::hasColumn('projects_main', 'status') ? 'p.status' : "''";
         $hasTrainingQuotes = Schema::hasTable('quotes_training');

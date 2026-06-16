@@ -2,6 +2,7 @@
 
 namespace App\Services\Stats;
 
+use App\Services\Projects\ProjectValueService;
 use App\Services\Tasks\TaskAiClassificationService;
 use App\Services\Tasks\TaskClassificationService;
 use Illuminate\Http\JsonResponse;
@@ -31,6 +32,11 @@ class WorkloadDashboardStatsService
     private function taskAiClassificationService(): TaskAiClassificationService
     {
         return app(TaskAiClassificationService::class);
+    }
+
+    private function projectValueService(): ProjectValueService
+    {
+        return app(ProjectValueService::class);
     }
 
     private const ROLE_WEIGHTS = [
@@ -262,7 +268,9 @@ class WorkloadDashboardStatsService
             $hasProjectProgressId ? 't.project_progress_id' : DB::raw('NULL as project_progress_id'),
             $hasProjectId && $hasProjects ? 'p.project_name' : DB::raw('NULL as project_name'),
             $hasProjectId && $hasProjects ? $this->projectClientNameSelect() : DB::raw('NULL as client_name'),
-            $hasProjectId && $hasProjects && $hasProjectValue ? 'p.quote_value as project_value' : DB::raw('0 as project_value'),
+            $hasProjectId && $hasProjects && $hasProjectValue
+                ? DB::raw($this->projectValueService()->resolvedProjectValueExpression('p').' as project_value')
+                : DB::raw('0 as project_value'),
             $hasProjectId && $hasProjects ? 'p.status as project_status' : DB::raw('NULL as project_status'),
             $hasTaskCategory ? 't.task_category' : DB::raw("'uncategorised' as task_category"),
             $hasEffortScore ? 't.effort_score' : DB::raw('1 as effort_score'),
@@ -327,7 +335,9 @@ class WorkloadDashboardStatsService
                 'pp.project_id',
                 'p.project_name',
                 $this->projectClientNameSelect(),
-                Schema::hasColumn('projects_main', 'quote_value') ? 'p.quote_value as project_value' : DB::raw('0 as project_value'),
+                Schema::hasColumn('projects_main', 'quote_value')
+                    ? DB::raw($this->projectValueService()->resolvedProjectValueExpression('p').' as project_value')
+                    : DB::raw('0 as project_value'),
                 'pp.progress_date',
                 'pp.progress_text',
                 'pp.updated_by as staff_id',

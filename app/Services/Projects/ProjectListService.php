@@ -16,11 +16,20 @@ class ProjectListService
 
     public function __construct(private AuditLogService $auditLog) {}
 
+    private function projectValueService(): ProjectValueService
+    {
+        return app(ProjectValueService::class);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $year = (int) $request->query('year', 0);
         $yearClause = ($year >= 2000 && $year <= 2100) ? 'WHERE YEAR(p.award_date) = ?' : '';
         $bindings = ($year >= 2000 && $year <= 2100) ? [$year] : [];
+        $currentProjectValueColumn = Schema::hasColumn('projects_main', 'current_project_value')
+            ? 'p.current_project_value'
+            : 'NULL';
+        $resolvedProjectValueColumn = $this->projectValueService()->resolvedProjectValueExpression('p');
 
         $projects = DB::select("
             SELECT
@@ -30,6 +39,8 @@ class ProjectListService
                 p.po_loa_number,
                 p.quote_id,
                 p.quote_value,
+                {$currentProjectValueColumn} AS current_project_value,
+                {$resolvedProjectValueColumn} AS resolved_project_value,
                 p.service_start_date,
                 p.service_end_date,
                 p.description,
@@ -269,6 +280,10 @@ class ProjectListService
         $select[] = $hasQuoteValue
             ? 'projects_main.quote_value as quoteValue'
             : DB::raw('NULL as quoteValue');
+        $select[] = Schema::hasColumn('projects_main', 'current_project_value')
+            ? 'projects_main.current_project_value as currentProjectValue'
+            : DB::raw('NULL as currentProjectValue');
+        $select[] = DB::raw($this->projectValueService()->resolvedProjectValueExpression('projects_main').' as resolvedProjectValue');
 
         $query = DB::table('projects_main')
             ->select($select)
@@ -342,6 +357,11 @@ class ProjectListService
 
     public function show(Request $request, int $id): JsonResponse
     {
+        $currentProjectValueColumn = Schema::hasColumn('projects_main', 'current_project_value')
+            ? 'p.current_project_value'
+            : 'NULL';
+        $resolvedProjectValueColumn = $this->projectValueService()->resolvedProjectValueExpression('p');
+
         $rows = DB::select("
             SELECT
                 p.id,
@@ -350,6 +370,8 @@ class ProjectListService
                 p.po_loa_number,
                 p.quote_id,
                 p.quote_value,
+                {$currentProjectValueColumn} AS current_project_value,
+                {$resolvedProjectValueColumn} AS resolved_project_value,
                 p.service_start_date,
                 p.service_end_date,
                 p.description,

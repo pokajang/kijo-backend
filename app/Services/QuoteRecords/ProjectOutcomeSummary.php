@@ -18,7 +18,11 @@ class ProjectOutcomeSummary
             }
 
             $status = strtolower(trim((string) self::field($project, 'status')));
-            $value = (float) self::field($project, 'quote_value');
+            $value = (float) (
+                self::field($project, 'resolved_project_value')
+                ?? self::field($project, 'current_project_value')
+                ?? self::field($project, 'quote_value')
+            );
             $byQuote[$quoteId]['project_status_counts']['total']++;
 
             if (array_key_exists($status, $byQuote[$quoteId]['project_status_counts'])) {

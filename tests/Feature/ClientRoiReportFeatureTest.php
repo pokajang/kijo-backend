@@ -38,7 +38,7 @@ class ClientRoiReportFeatureTest extends TestCase
 
         $this->assertNotNull($alpha);
         $this->assertSame(1, $alpha['awarded_project_count']);
-        $this->assertSame(1000.0, (float) $alpha['awarded_value']);
+        $this->assertSame(1200.0, (float) $alpha['awarded_value']);
         $this->assertSame(3, $alpha['invoice_count']);
         $this->assertSame(1100.0, (float) $alpha['invoiced_total']);
         $this->assertSame(2, $alpha['received_count']);
@@ -47,11 +47,11 @@ class ClientRoiReportFeatureTest extends TestCase
         $this->assertSame(25.0, (float) $alpha['expense_cost']);
         $this->assertSame(225.0, (float) $alpha['total_cost']);
         $this->assertSame(525.0, (float) $alpha['actual_profit']);
-        $this->assertSame(775.0, (float) $alpha['projected_profit']);
+        $this->assertSame(975.0, (float) $alpha['projected_profit']);
         $this->assertSame(233.33, (float) $alpha['actual_roi_percent']);
-        $this->assertSame(344.44, (float) $alpha['projected_roi_percent']);
+        $this->assertSame(433.33, (float) $alpha['projected_roi_percent']);
         $this->assertSame(70.0, (float) $alpha['actual_margin_percent']);
-        $this->assertSame(77.5, (float) $alpha['projected_margin_percent']);
+        $this->assertSame(81.25, (float) $alpha['projected_margin_percent']);
         $this->assertSame(8.0, (float) $alpha['average_payment_days']);
         $this->assertSame('2026-05-20', $alpha['last_paid_date']);
 
@@ -87,6 +87,7 @@ class ClientRoiReportFeatureTest extends TestCase
             $table->integer('client_id')->nullable();
             $table->string('project_name')->nullable();
             $table->decimal('quote_value', 15, 2)->nullable();
+            $table->decimal('current_project_value', 15, 2)->nullable();
             $table->date('award_date')->nullable();
             $table->string('status')->nullable();
         });
@@ -142,10 +143,10 @@ class ClientRoiReportFeatureTest extends TestCase
         ]);
 
         DB::table('projects_main')->insert([
-            ['id' => 10, 'client_id' => 1, 'project_name' => 'Alpha May', 'quote_value' => 1000, 'award_date' => '2026-05-05', 'status' => 'Active'],
-            ['id' => 11, 'client_id' => 1, 'project_name' => 'Alpha April', 'quote_value' => 500, 'award_date' => '2026-04-01', 'status' => 'Active'],
-            ['id' => 12, 'client_id' => 1, 'project_name' => 'Alpha Terminated', 'quote_value' => 999, 'award_date' => '2026-05-07', 'status' => 'Terminated'],
-            ['id' => 20, 'client_id' => 2, 'project_name' => 'Beta May', 'quote_value' => 100, 'award_date' => '2026-05-10', 'status' => 'Active'],
+            ['id' => 10, 'client_id' => 1, 'project_name' => 'Alpha May', 'quote_value' => 1000, 'current_project_value' => 1200, 'award_date' => '2026-05-05', 'status' => 'Active'],
+            ['id' => 11, 'client_id' => 1, 'project_name' => 'Alpha April', 'quote_value' => 500, 'current_project_value' => null, 'award_date' => '2026-04-01', 'status' => 'Active'],
+            ['id' => 12, 'client_id' => 1, 'project_name' => 'Alpha Terminated', 'quote_value' => 999, 'current_project_value' => 1500, 'award_date' => '2026-05-07', 'status' => 'Terminated'],
+            ['id' => 20, 'client_id' => 2, 'project_name' => 'Beta May', 'quote_value' => 100, 'current_project_value' => null, 'award_date' => '2026-05-10', 'status' => 'Active'],
         ]);
 
         DB::table('invoices')->insert([

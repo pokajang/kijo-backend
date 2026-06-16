@@ -55,7 +55,62 @@ class ProposalTemplateCreateTest extends TestCase
         $this->assertDatabaseCount('proposal_template_manpower_history', 1);
         $this->assertDatabaseCount('proposal_template_special', 1);
         $this->assertDatabaseCount('proposal_special_attachments', 1);
+        $this->assertDatabaseCount('proposal_template_special_items', 1);
         $this->assertDatabaseCount('proposal_template_special_history', 1);
+        $this->assertDatabaseHas('proposal_template_special', [
+            'proposal_mode' => 'upload',
+            'service_summary' => '<p>Content</p>',
+            'proposal_content' => '',
+        ]);
+        $this->assertDatabaseHas('proposal_template_special_items', [
+            'line_item_title' => 'Site Audit',
+            'default_quantity' => 2,
+            'default_unit_price' => 100,
+            'default_line_total' => 200,
+        ]);
+    }
+
+    public function test_special_write_mode_creation_stores_written_content_without_attachments(): void
+    {
+        $this->authenticated()
+            ->post('/proposal-templates/special', $this->specialPayload([
+                'proposalMode' => 'write',
+                'serviceSummary' => '',
+                'proposalContent' => '<p>Written proposal</p>',
+                'content' => '<p>Written proposal</p>',
+                'attachments' => [],
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('proposal_template_special', [
+            'proposal_mode' => 'write',
+            'proposal_content' => '<p>Written proposal</p>',
+            'content' => '<p>Written proposal</p>',
+        ]);
+        $this->assertDatabaseCount('proposal_special_attachments', 0);
+    }
+
+    public function test_special_upload_mode_creation_allows_blank_internal_summary(): void
+    {
+        Storage::fake('private');
+
+        $this->authenticated()
+            ->post('/proposal-templates/special', $this->specialPayload([
+                'serviceSummary' => '',
+                'content' => '',
+                'attachments' => [
+                    UploadedFile::fake()->create('proposal.pdf', 100, 'application/pdf'),
+                ],
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('proposal_template_special', [
+            'proposal_mode' => 'upload',
+            'service_summary' => '',
+            'content' => '',
+        ]);
     }
 
     public function test_training_creation_validates_required_content_and_agenda_topic_length(): void
@@ -141,6 +196,7 @@ class ProposalTemplateCreateTest extends TestCase
     {
         foreach ([
             'proposal_template_training_agenda',
+            'proposal_template_special_items',
             'proposal_special_attachments',
             'proposal_template_training_history',
             'proposal_template_ih_history',
@@ -222,8 +278,26 @@ class ProposalTemplateCreateTest extends TestCase
             $table->id();
             $table->string('service_title')->nullable();
             $table->string('service_code')->nullable();
+            $table->string('proposal_mode', 20)->default('upload');
+            $table->longText('service_summary')->nullable();
+            $table->longText('proposal_content')->nullable();
             $table->text('content')->nullable();
             $table->integer('is_deleted')->default(0);
+            $table->integer('created_by')->nullable();
+            $table->timestamp('created_at')->nullable();
+            $table->timestamp('updated_at')->nullable();
+        });
+
+        Schema::create('proposal_template_special_items', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('template_id');
+            $table->string('line_item_title');
+            $table->text('description')->nullable();
+            $table->string('unit')->nullable();
+            $table->decimal('default_quantity', 12, 2)->default(1);
+            $table->decimal('default_unit_price', 12, 2)->default(0);
+            $table->decimal('default_line_total', 12, 2)->default(0);
+            $table->integer('sort_order')->default(0);
             $table->integer('created_by')->nullable();
             $table->timestamp('created_at')->nullable();
             $table->timestamp('updated_at')->nullable();
@@ -344,7 +418,19 @@ class ProposalTemplateCreateTest extends TestCase
         return array_replace([
             'serviceTitle' => 'Special Service',
             'serviceCode' => 'SP',
+            'proposalMode' => 'upload',
+            'serviceSummary' => '<p>Content</p>',
+            'proposalContent' => '',
             'content' => '<p>Content</p>',
+            'defaultLineItems' => json_encode([
+                [
+                    'title' => 'Site Audit',
+                    'description' => 'Default scope',
+                    'unit' => 'Day',
+                    'quantity' => 2,
+                    'unitPrice' => 100,
+                ],
+            ]),
             'remarks' => '<p>Created for test</p>',
         ], $overrides);
     }

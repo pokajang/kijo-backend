@@ -363,13 +363,20 @@ class ProposalTemplateDetailContextBuilder
                 'code' => 'service_code',
                 'identifiers' => [],
                 'service_type' => ['service_title', 'service_type'],
-                'search' => ['title', 'service_title', 'service_code', 'service_type', 'content', 'remarks'],
-                'detail' => [
-                    'title', 'service_title', 'service_code', 'service_type', 'content', 'remarks',
-                    'proposal_language', 'source_template_id', 'translation_provider', 'translation_status',
-                    'translated_at', 'translation_notes', 'is_deleted', 'status',
+                'search' => [
+                    'title', 'service_title', 'service_code', 'service_type', 'proposal_mode',
+                    'service_summary', 'proposal_content', 'content', 'remarks',
                 ],
-                'sections' => ['Proposal Content' => 'content'],
+                'detail' => [
+                    'title', 'service_title', 'service_code', 'service_type', 'proposal_mode',
+                    'service_summary', 'proposal_content', 'content', 'remarks', 'proposal_language',
+                    'source_template_id', 'translation_provider', 'translation_status', 'translated_at',
+                    'translation_notes', 'is_deleted', 'status',
+                ],
+                'sections' => [
+                    'Internal Service Summary' => 'service_summary',
+                    'Written Proposal Content' => 'proposal_content',
+                ],
             ],
             default => null,
         };

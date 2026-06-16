@@ -15,7 +15,7 @@ class MonitoringManualStatsService
 
     /**
      * Dashboard metric contract:
-     * - Sales uses active/completed project quote_value by project award_date plus valid manual closed entries.
+     * - Sales uses active/completed resolved project value by project award_date plus valid manual closed entries.
      * - CRM uses quote created_at for quotation and inquiry-source facts.
      * - Financial uses invoice_date for invoiced/open receivables and paid_date for received cash.
      * - Monitoring uses selected-month activity dates; revenue status uses award_date/manual closed entry_date.

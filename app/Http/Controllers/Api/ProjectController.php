@@ -72,6 +72,20 @@ class ProjectController extends Controller
         return $this->projectService()->reloadPoNumber($request);
     }
 
+    public function updateValue(Request $request, int $id): JsonResponse
+    {
+        $request = $this->withRouteProjectId($request, $id);
+
+        return $this->projectService()->updateValue($request);
+    }
+
+    public function previewValueImpact(Request $request, int $id): JsonResponse
+    {
+        $request = $this->withRouteProjectId($request, $id);
+
+        return $this->projectService()->previewValueImpact($request);
+    }
+
     public function crmDetails(Request $request, int $id): JsonResponse
     {
         $request = $this->withRouteProjectId($request, $id);

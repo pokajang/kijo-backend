@@ -37,6 +37,11 @@ class SpecialProposalTemplateMutationService
         $staffCode = trim((string) $request->session()->get('name_code', ''));
         $data      = $request->validated();
         $legacy    = $this->isLegacyPhpRoute($request);
+        $proposalMode = $data['proposalMode'] ?? 'upload';
+        $serviceSummary = $data['serviceSummary'] ?? '';
+        $proposalContent = $data['proposalContent'] ?? '';
+        $content = $proposalMode === 'write' ? $proposalContent : $serviceSummary;
+        $defaultLineItems = $this->normalizeDefaultLineItems($data['defaultLineItems'] ?? []);
 
         $uploadedPaths = [];
 
@@ -46,10 +51,14 @@ class SpecialProposalTemplateMutationService
             $id = DB::table('proposal_template_special')->insertGetId($this->filterExistingColumns('proposal_template_special', [
                 'service_title' => $data['serviceTitle'],
                 'service_code'  => $data['serviceCode'],
-                'content'       => $data['content'],
+                'proposal_mode' => $proposalMode,
+                'service_summary' => $serviceSummary,
+                'proposal_content' => $proposalContent,
+                'content'       => $content,
                 'created_by'    => $staffId,
                 'is_deleted'    => 0,
                 'created_at'    => now(),
+                'updated_at'    => now(),
             ]));
 
             if ($request->hasFile('attachments')) {
@@ -65,6 +74,8 @@ class SpecialProposalTemplateMutationService
                     $this->insertSpecialAttachment($id, $originalName, $storedPath, $file->getMimeType(), $file->getSize());
                 }
             }
+
+            $this->replaceDefaultLineItems($id, $defaultLineItems, $staffId);
 
             $remarks = isset($data['remarks']) && trim((string) $data['remarks']) !== ''
                 ? 'Proposal first created - ' . trim((string) $data['remarks'])
@@ -106,11 +117,29 @@ class SpecialProposalTemplateMutationService
         $data      = $request->validated();
         $legacy    = $this->isLegacyPhpRoute($request);
         $attachmentFk = $this->specialAttachmentForeignKey();
-        $attachmentPathCol = $this->specialAttachmentPathColumn();
+        $proposalMode = $data['proposalMode'] ?? 'upload';
+        $serviceSummary = $data['serviceSummary'] ?? '';
+        $proposalContent = $data['proposalContent'] ?? '';
+        $content = $proposalMode === 'write' ? $proposalContent : $serviceSummary;
+        $defaultLineItems = $this->normalizeDefaultLineItems($data['defaultLineItems'] ?? []);
 
         $row = DB::table('proposal_template_special')->where('id', $id)->where('is_deleted', 0)->first();
         if (!$row) {
             return $this->errorResponse($legacy, 'Special proposal not found.', 404);
+        }
+
+        if ($proposalMode === 'upload') {
+            $removeIds = array_map('intval', (array) ($data['removeAttachmentIds'] ?? []));
+            $retainedPdfCount = DB::table('proposal_special_attachments')
+                ->where($attachmentFk, $id)
+                ->when(! empty($removeIds), fn ($query) => $query->whereNotIn('id', $removeIds))
+                ->get()
+                ->filter(fn ($att) => $this->isPdfAttachment($att))
+                ->count();
+            $newPdfCount = $request->hasFile('attachments') ? count($request->file('attachments')) : 0;
+            if (($retainedPdfCount + $newPdfCount) <= 0) {
+                return $this->errorResponse($legacy, 'At least one PDF attachment is required in upload mode.', 422);
+            }
         }
 
         $uploadedPaths = [];
@@ -122,7 +151,10 @@ class SpecialProposalTemplateMutationService
             $update = [
                 'service_title' => $data['serviceTitle'],
                 'service_code'  => $data['serviceCode'],
-                'content'       => $data['content'],
+                'proposal_mode' => $proposalMode,
+                'service_summary' => $serviceSummary,
+                'proposal_content' => $proposalContent,
+                'content'       => $content,
                 'updated_at'    => now(),
             ];
             $this->markReviewedBmDraftOnUpdate('proposal_template_special', $row, $update);
@@ -130,8 +162,16 @@ class SpecialProposalTemplateMutationService
             DB::table('proposal_template_special')->where('id', $id)->update($this->filterExistingColumns('proposal_template_special', $update));
 
             // Handle attachment removals
-            if (!empty($data['removeAttachmentIds'])) {
-                $removeIds = array_map('intval', (array) $data['removeAttachmentIds']);
+            $removeIds = array_map('intval', (array) ($data['removeAttachmentIds'] ?? []));
+            if ($proposalMode === 'write') {
+                $removeIds = DB::table('proposal_special_attachments')
+                    ->where($attachmentFk, $id)
+                    ->pluck('id')
+                    ->map(fn ($value) => (int) $value)
+                    ->all();
+            }
+
+            if (!empty($removeIds)) {
                 $toRemove  = DB::table('proposal_special_attachments')
                     ->where($attachmentFk, $id)
                     ->whereIn('id', $removeIds)
@@ -148,7 +188,7 @@ class SpecialProposalTemplateMutationService
             }
 
             // Handle new file uploads
-            if ($request->hasFile('attachments')) {
+            if ($proposalMode === 'upload' && $request->hasFile('attachments')) {
                 foreach ($request->file('attachments') as $file) {
                     $originalName = $file->getClientOriginalName();
                     $ext          = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
@@ -161,6 +201,8 @@ class SpecialProposalTemplateMutationService
                     $this->insertSpecialAttachment($id, $originalName, $storedPath, $file->getMimeType(), $file->getSize());
                 }
             }
+
+            $this->replaceDefaultLineItems($id, $defaultLineItems, $staffId);
 
             $remarks = isset($data['remarks']) && trim((string) $data['remarks']) !== ''
                 ? trim((string) $data['remarks'])
@@ -384,5 +426,89 @@ class SpecialProposalTemplateMutationService
     private function normalizeProposalLanguage(mixed $language): string
     {
         return app(ProposalTemplateCrudSupport::class)->normalizeProposalLanguage($language);
+    }
+
+    private function normalizeDefaultLineItems(array $items): array
+    {
+        $normalized = [];
+        foreach ($items as $index => $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $title = trim((string) ($item['item_name'] ?? $item['title'] ?? ''));
+            if ($title === '') {
+                continue;
+            }
+
+            $quantity = (float) ($item['quantity'] ?? 1);
+            $unitPrice = (float) ($item['unit_price'] ?? $item['unitPrice'] ?? 0);
+            $quantity = $quantity > 0 ? $quantity : 1;
+            $unitPrice = max(0, $unitPrice);
+
+            $normalized[] = [
+                'line_item_title' => $title,
+                'description' => $item['description'] ?? null,
+                'unit' => $item['unit'] ?? null,
+                'default_quantity' => $quantity,
+                'default_unit_price' => $unitPrice,
+                'default_line_total' => round($quantity * $unitPrice, 2),
+                'sort_order' => (int) ($item['sortOrder'] ?? $item['sort_order'] ?? $index),
+            ];
+        }
+
+        usort($normalized, fn ($a, $b) => $a['sort_order'] <=> $b['sort_order']);
+
+        return array_values($normalized);
+    }
+
+    private function replaceDefaultLineItems(int $templateId, array $items, int $staffId): void
+    {
+        if (! $this->hasTable('proposal_template_special_items')) {
+            return;
+        }
+
+        DB::table('proposal_template_special_items')->where('template_id', $templateId)->delete();
+        if (empty($items)) {
+            return;
+        }
+
+        $now = now();
+        $payload = [];
+        foreach ($items as $index => $item) {
+            $payload[] = [
+                'template_id' => $templateId,
+                'line_item_title' => $item['line_item_title'],
+                'description' => $item['description'],
+                'unit' => $item['unit'],
+                'default_quantity' => $item['default_quantity'],
+                'default_unit_price' => $item['default_unit_price'],
+                'default_line_total' => $item['default_line_total'],
+                'sort_order' => $index,
+                'created_by' => $staffId > 0 ? $staffId : null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        DB::table('proposal_template_special_items')->insert(
+            array_map(fn ($row) => $this->filterExistingColumns('proposal_template_special_items', $row), $payload)
+        );
+    }
+
+    private function isPdfAttachment(object $attachment): bool
+    {
+        $nameColumn = $this->specialAttachmentNameColumn();
+        return strtolower((string) ($attachment->mime_type ?? '')) === 'application/pdf'
+            || strtolower(pathinfo((string) ($attachment->{$nameColumn} ?? ''), PATHINFO_EXTENSION)) === 'pdf';
+    }
+
+    private function hasTable(string $table): bool
+    {
+        try {
+            return Schema::hasTable($table);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }
