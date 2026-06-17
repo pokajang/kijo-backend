@@ -7,6 +7,17 @@ use App\Services\Ai\OpenAiResponsesClient;
 class TaskAiClassificationService
 {
     private const ACCEPTED_CONFIDENCE = ['medium' => true, 'high' => true];
+    private const LIFECYCLE_STATUSES = [
+        'not_applicable' => true,
+        'queued' => true,
+        'processing' => true,
+        'applied' => true,
+        'cached' => true,
+        'no_result' => true,
+        'failed' => true,
+        'stale' => true,
+        'pending' => true,
+    ];
 
     public function __construct(private readonly OpenAiResponsesClient $openAi) {}
 
@@ -41,6 +52,15 @@ class TaskAiClassificationService
 
     public function statusForClassification(array $classification): string
     {
+        $storedStatus = $this->normalizeLifecycleStatus(
+            $classification['ai_classification_status']
+                ?? $classification['aiClassificationStatus']
+                ?? null
+        );
+        if ($storedStatus !== null) {
+            return $storedStatus;
+        }
+
         $source = (string) ($classification['classification_source'] ?? '');
 
         if ($source === 'ai') {
@@ -52,6 +72,31 @@ class TaskAiClassificationService
         }
 
         return $this->shouldAttemptAiFallback($classification) ? 'pending' : 'not_applicable';
+    }
+
+    public function initialLifecycleStatus(array $classification): string
+    {
+        $source = (string) ($classification['classification_source'] ?? '');
+
+        if ($source === 'ai') {
+            return 'applied';
+        }
+
+        if ($source === 'ai_cache') {
+            return 'cached';
+        }
+
+        return $this->shouldAttemptAiFallback($classification) ? 'queued' : 'not_applicable';
+    }
+
+    public function normalizeLifecycleStatus(mixed $status): ?string
+    {
+        $status = trim((string) $status);
+        if ($status === '') {
+            return null;
+        }
+
+        return isset(self::LIFECYCLE_STATUSES[$status]) ? $status : null;
     }
 
     public function classifyTitle(string $title, array $localClassification): ?array

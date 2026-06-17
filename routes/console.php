@@ -37,3 +37,13 @@ Schedule::command('notifications:prune')->dailyAt('03:10')->withoutOverlapping()
 
 // Daily at 03:05 - heal stored leave notifications to match actionable workflow stages
 Schedule::command('notifications:reconcile-leaves')->dailyAt('03:05')->withoutOverlapping();
+
+// Every 10 minutes - recover delayed task AI classification rows without slowing task creation
+Schedule::command('tasks:ai-classification-maintain --requeue --older-than=10 --limit=50')
+    ->everyTenMinutes()
+    ->withoutOverlapping();
+
+// Daily at 03:30 - close very old unresolved task AI classification rows
+Schedule::command('tasks:ai-classification-maintain --mark-no-result --older-than=1440 --limit=500')
+    ->dailyAt('03:30')
+    ->withoutOverlapping();

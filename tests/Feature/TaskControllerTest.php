@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\EnrichTaskClassificationWithAiJob;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -53,6 +54,11 @@ class TaskControllerTest extends TestCase
             $table->string('work_type')->default('unclear');
             $table->string('work_type_confidence')->nullable();
             $table->string('work_type_matched_pattern')->nullable();
+            $table->string('ai_classification_status')->nullable();
+            $table->timestamp('ai_classification_queued_at')->nullable();
+            $table->timestamp('ai_classification_started_at')->nullable();
+            $table->timestamp('ai_classification_completed_at')->nullable();
+            $table->string('ai_classification_error')->nullable();
             $table->string('status');
             $table->date('due_date');
             $table->timestamp('created_at')->nullable();
@@ -861,7 +867,12 @@ class TaskControllerTest extends TestCase
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('task.taskCategory', 'unclear_unrated')
             ->assertJsonPath('task.classificationSource', 'system')
-            ->assertJsonPath('task.aiClassificationStatus', 'pending');
+            ->assertJsonPath('task.aiClassificationStatus', 'queued');
+
+        $this->assertDatabaseHas('tasks', [
+            'id' => 1,
+            'ai_classification_status' => 'queued',
+        ]);
 
         Queue::assertPushed(
             EnrichTaskClassificationWithAiJob::class,
@@ -908,7 +919,7 @@ class TaskControllerTest extends TestCase
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('tasks.0.taskCategory', 'unclear_unrated')
             ->assertJsonPath('tasks.0.classificationSource', 'system')
-            ->assertJsonPath('tasks.0.aiClassificationStatus', 'pending');
+            ->assertJsonPath('tasks.0.aiClassificationStatus', 'queued');
 
         Queue::assertPushed(
             EnrichTaskClassificationWithAiJob::class,
@@ -973,6 +984,123 @@ class TaskControllerTest extends TestCase
         $this->assertSame('applied', $tasks->firstWhere('title', 'AI classified task')['aiClassificationStatus']);
         $this->assertSame('cached', $tasks->firstWhere('title', 'Cached classified task')['aiClassificationStatus']);
         $this->assertSame('pending', $tasks->firstWhere('title', 'Pending classified task')['aiClassificationStatus']);
+    }
+
+    public function test_ai_enrichment_job_marks_task_applied_when_openai_returns_valid_classification(): void
+    {
+        config([
+            'services.openai.key' => 'test-key',
+            'services.workload_ai_classification.enabled' => true,
+        ]);
+
+        Http::fake([
+            '*' => Http::response([
+                'output' => [
+                    [
+                        'content' => [
+                            [
+                                'text' => json_encode([
+                                    'task_category' => 'administrative',
+                                    'effort_score' => 1,
+                                    'work_type' => 'clerical_admin',
+                                    'confidence' => 'high',
+                                    'reason' => 'handover summary preparation',
+                                ]),
+                            ],
+                        ],
+                    ],
+                ],
+            ], 200),
+        ]);
+
+        DB::table('tasks')->insert([
+            'id' => 501,
+            'staff_id' => 42,
+            'title' => 'random unknown noun',
+            'task_category' => 'unclear_unrated',
+            'effort_score' => 0,
+            'classification_confidence' => 'low',
+            'classification_source' => 'system',
+            'user_override' => 0,
+            'matched_pattern' => 'unclear:no_work_signal',
+            'work_type' => 'unclear',
+            'work_type_confidence' => 'low',
+            'work_type_matched_pattern' => 'unclear:no_work_signal',
+            'ai_classification_status' => 'queued',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-14',
+            'created_at' => '2026-05-10 10:00:00',
+        ]);
+
+        app(EnrichTaskClassificationWithAiJob::class, ['taskId' => 501])->handle(
+            app(\App\Services\Tasks\TaskAiClassificationService::class),
+            app(\App\Services\Tasks\TaskClassificationService::class),
+            app(\App\Services\Tasks\TaskLearnedClassificationService::class),
+        );
+
+        $task = DB::table('tasks')->where('id', 501)->first();
+        $this->assertSame('ai', $task->classification_source);
+        $this->assertSame('applied', $task->ai_classification_status);
+        $this->assertNotNull($task->ai_classification_started_at);
+        $this->assertNotNull($task->ai_classification_completed_at);
+    }
+
+    public function test_ai_enrichment_job_marks_no_result_when_openai_result_is_not_usable(): void
+    {
+        config([
+            'services.openai.key' => 'test-key',
+            'services.workload_ai_classification.enabled' => true,
+        ]);
+
+        Http::fake([
+            '*' => Http::response([
+                'output' => [
+                    [
+                        'content' => [
+                            [
+                                'text' => json_encode([
+                                    'task_category' => 'administrative',
+                                    'effort_score' => 1,
+                                    'work_type' => 'clerical_admin',
+                                    'confidence' => 'low',
+                                    'reason' => 'not confident enough',
+                                ]),
+                            ],
+                        ],
+                    ],
+                ],
+            ], 200),
+        ]);
+
+        DB::table('tasks')->insert([
+            'id' => 502,
+            'staff_id' => 42,
+            'title' => 'random unknown noun',
+            'task_category' => 'unclear_unrated',
+            'effort_score' => 0,
+            'classification_confidence' => 'low',
+            'classification_source' => 'system',
+            'user_override' => 0,
+            'matched_pattern' => 'unclear:no_work_signal',
+            'work_type' => 'unclear',
+            'work_type_confidence' => 'low',
+            'work_type_matched_pattern' => 'unclear:no_work_signal',
+            'ai_classification_status' => 'queued',
+            'status' => 'Ongoing',
+            'due_date' => '2026-05-14',
+            'created_at' => '2026-05-10 10:00:00',
+        ]);
+
+        app(EnrichTaskClassificationWithAiJob::class, ['taskId' => 502])->handle(
+            app(\App\Services\Tasks\TaskAiClassificationService::class),
+            app(\App\Services\Tasks\TaskClassificationService::class),
+            app(\App\Services\Tasks\TaskLearnedClassificationService::class),
+        );
+
+        $task = DB::table('tasks')->where('id', 502)->first();
+        $this->assertSame('system', $task->classification_source);
+        $this->assertSame('no_result', $task->ai_classification_status);
+        $this->assertNotNull($task->ai_classification_completed_at);
     }
 
     public function test_single_create_task_ignores_user_classification_override(): void

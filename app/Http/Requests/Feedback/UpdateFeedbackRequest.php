@@ -13,6 +13,7 @@ class UpdateFeedbackRequest extends FormRequest
         return [
             'feedback'    => ['sometimes', 'string', 'max:5000', 'min:1'],
             'status'      => ['sometimes', 'string', 'in:Pending,Fixed Pending Pushed,In Progress,Fixed Completed,Resolved'],
+            'resolution_track' => ['sometimes', 'string', 'in:Needs Triage,30-Day Fix,Next Upgrade,Roadmap / Backlog,Not Actionable,Rejected'],
             'action_date' => ['sometimes', 'nullable', 'date'],
             'remarks'     => ['sometimes', 'nullable', 'string', 'max:2000'],
         ];

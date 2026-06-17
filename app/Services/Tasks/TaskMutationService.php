@@ -89,6 +89,9 @@ class TaskMutationService extends TaskBaseService
                 $this->supportsTaskWorkType()
             ));
         }
+        if ($this->supportsAiLifecycleStorage()) {
+            $insert = array_merge($insert, $this->initialAiLifecycleColumns($classification));
+        }
 
         $taskId = DB::transaction(function () use ($insert, $projectId, $staffId, $title): int {
             $taskId = (int) DB::table('tasks')->insertGetId($insert);
@@ -114,7 +117,7 @@ class TaskMutationService extends TaskBaseService
         $aiQueued = $this->queueAiClassificationIfNeeded($taskId, $classification);
         $classificationResponse = $this->taskClassificationService()->toResponse($classification);
         $classificationResponse['aiClassificationStatus'] = $aiQueued
-            ? 'pending'
+            ? ($this->supportsAiLifecycleStorage() ? 'queued' : 'pending')
             : $this->aiClassificationStatusForPayload($classification);
 
         return response()->json([
@@ -213,6 +216,9 @@ class TaskMutationService extends TaskBaseService
                             $this->supportsTaskWorkType()
                         ));
                     }
+                    if ($this->supportsAiLifecycleStorage()) {
+                        $insert = array_merge($insert, $this->initialAiLifecycleColumns($task['classification']));
+                    }
 
                     $taskId = (int) DB::table('tasks')->insertGetId($insert);
                     $projectProgressId = null;
@@ -254,7 +260,7 @@ class TaskMutationService extends TaskBaseService
                 $this->classificationFromResponsePayload($createdTask),
             );
             $createdTasks[$index]['aiClassificationStatus'] = $aiQueued
-                ? 'pending'
+                ? ($this->supportsAiLifecycleStorage() ? 'queued' : 'pending')
                 : $this->aiClassificationStatusForPayload($this->classificationFromResponsePayload($createdTask));
         }
 
@@ -444,6 +450,18 @@ class TaskMutationService extends TaskBaseService
             return false;
         }
 
+        if ($this->supportsAiLifecycleStorage()) {
+            DB::table('tasks')
+                ->where('id', $taskId)
+                ->update([
+                    'ai_classification_status' => 'queued',
+                    'ai_classification_queued_at' => now(),
+                    'ai_classification_started_at' => null,
+                    'ai_classification_completed_at' => null,
+                    'ai_classification_error' => null,
+                ]);
+        }
+
         EnrichTaskClassificationWithAiJob::dispatch($taskId)->afterResponse();
 
         return true;
@@ -463,6 +481,29 @@ class TaskMutationService extends TaskBaseService
         return $this->supportsTaskClassification() && $this->supportsTaskWorkType();
     }
 
+    private function supportsAiLifecycleStorage(): bool
+    {
+        return Schema::hasColumn('tasks', 'ai_classification_status')
+            && Schema::hasColumn('tasks', 'ai_classification_queued_at')
+            && Schema::hasColumn('tasks', 'ai_classification_started_at')
+            && Schema::hasColumn('tasks', 'ai_classification_completed_at')
+            && Schema::hasColumn('tasks', 'ai_classification_error');
+    }
+
+    private function initialAiLifecycleColumns(array $classification): array
+    {
+        $status = $this->taskAiClassificationService()->initialLifecycleStatus($classification);
+        $now = now();
+
+        return [
+            'ai_classification_status' => $status,
+            'ai_classification_queued_at' => $status === 'queued' ? $now : null,
+            'ai_classification_started_at' => null,
+            'ai_classification_completed_at' => in_array($status, ['applied', 'cached'], true) ? $now : null,
+            'ai_classification_error' => null,
+        ];
+    }
+
     private function classificationFromResponsePayload(array $task): array
     {
         return [
@@ -475,6 +516,7 @@ class TaskMutationService extends TaskBaseService
             'work_type' => $task['workType'] ?? 'unclear',
             'work_type_confidence' => $task['workTypeConfidence'] ?? 'low',
             'work_type_matched_pattern' => $task['workTypeMatchedPattern'] ?? null,
+            'ai_classification_status' => $task['aiClassificationStatus'] ?? null,
         ];
     }
 

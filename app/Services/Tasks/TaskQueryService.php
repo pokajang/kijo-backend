@@ -229,15 +229,34 @@ class TaskQueryService extends TaskBaseService
             Schema::hasColumn('tasks', 'work_type_matched_pattern')
                 ? 't.work_type_matched_pattern'
                 : DB::raw('NULL as work_type_matched_pattern'),
+            Schema::hasColumn('tasks', 'ai_classification_status')
+                ? 't.ai_classification_status'
+                : DB::raw('NULL as ai_classification_status'),
+            Schema::hasColumn('tasks', 'ai_classification_queued_at')
+                ? 't.ai_classification_queued_at'
+                : DB::raw('NULL as ai_classification_queued_at'),
+            Schema::hasColumn('tasks', 'ai_classification_started_at')
+                ? 't.ai_classification_started_at'
+                : DB::raw('NULL as ai_classification_started_at'),
+            Schema::hasColumn('tasks', 'ai_classification_completed_at')
+                ? 't.ai_classification_completed_at'
+                : DB::raw('NULL as ai_classification_completed_at'),
+            Schema::hasColumn('tasks', 'ai_classification_error')
+                ? 't.ai_classification_error'
+                : DB::raw('NULL as ai_classification_error'),
         ];
     }
 
     private function taskClassificationPayload(object $row): array
     {
+        $taskCategory = TaskClassificationService::normalizeTaskCategory((string) ($row->task_category ?? 'uncategorised'));
+        $taskCategoryDefinitions = TaskClassificationService::taskCategoryDefinitions();
         $workType = TaskClassificationService::normalizeWorkType((string) ($row->work_type ?? 'unclear'));
 
         $classification = [
-            'taskCategory' => (string) ($row->task_category ?? 'uncategorised'),
+            'taskCategory' => $taskCategory,
+            'taskCategoryLabel' => $taskCategoryDefinitions[$taskCategory]['label']
+                ?? $taskCategoryDefinitions['uncategorised']['label'],
             'effortScore' => (float) ($row->effort_score ?? 1),
             'classificationConfidence' => (string) ($row->classification_confidence ?? 'low'),
             'classificationSource' => (string) ($row->classification_source ?? 'system'),
@@ -247,19 +266,49 @@ class TaskQueryService extends TaskBaseService
             'workTypeLabel' => TaskClassificationService::workTypeLabel($workType),
             'workTypeConfidence' => (string) ($row->work_type_confidence ?? 'low'),
             'workTypeMatchedPattern' => $row->work_type_matched_pattern !== null ? (string) $row->work_type_matched_pattern : null,
+            'aiClassificationQueuedAt' => $row->ai_classification_queued_at !== null ? (string) $row->ai_classification_queued_at : null,
+            'aiClassificationStartedAt' => $row->ai_classification_started_at !== null ? (string) $row->ai_classification_started_at : null,
+            'aiClassificationCompletedAt' => $row->ai_classification_completed_at !== null ? (string) $row->ai_classification_completed_at : null,
+            'aiClassificationError' => $row->ai_classification_error !== null ? (string) $row->ai_classification_error : null,
         ];
 
         $classification['aiClassificationStatus'] = $this->supportsAiClassificationStatus()
-            ? $this->taskAiClassificationService()->statusForClassification([
+            ? $this->aiClassificationStatusForRow($row, $classification)
+            : 'not_applicable';
+
+        return $classification;
+    }
+
+    private function aiClassificationStatusForRow(object $row, array $classification): string
+    {
+        $status = $this->taskAiClassificationService()->statusForClassification([
                 'task_category' => $classification['taskCategory'],
                 'effort_score' => $classification['effortScore'],
                 'classification_confidence' => $classification['classificationConfidence'],
                 'classification_source' => $classification['classificationSource'],
                 'work_type' => $classification['workType'],
-            ])
-            : 'not_applicable';
+                'ai_classification_status' => $row->ai_classification_status ?? null,
+        ]);
 
-        return $classification;
+        if ($status === 'queued' && ! empty($row->ai_classification_queued_at)) {
+            return $this->staleStatusFromTimestamp($status, (string) $row->ai_classification_queued_at);
+        }
+
+        if ($status !== 'processing' || empty($row->ai_classification_started_at)) {
+            return $status;
+        }
+
+        return $this->staleStatusFromTimestamp($status, (string) $row->ai_classification_started_at);
+    }
+
+    private function staleStatusFromTimestamp(string $status, string $timestamp): string
+    {
+        $time = strtotime($timestamp);
+        if ($time === false) {
+            return $status;
+        }
+
+        return $time < now()->subMinutes(10)->getTimestamp() ? 'stale' : $status;
     }
 
     private function supportsAiClassificationStatus(): bool

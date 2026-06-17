@@ -284,6 +284,17 @@ class AdminTaskClassificationExampleController extends Controller
             'lowConfidenceTasks' => 0,
             'aiClassifiedTasks' => 0,
             'learnedCacheTasks' => 0,
+            'aiLifecycle' => [
+                'queued' => 0,
+                'processing' => 0,
+                'stale' => 0,
+                'applied' => 0,
+                'cached' => 0,
+                'no_result' => 0,
+                'failed' => 0,
+                'not_applicable' => 0,
+            ],
+            'queueBacklog' => 0,
         ];
 
         if (! Schema::hasTable('tasks')) {
@@ -293,8 +304,38 @@ class AdminTaskClassificationExampleController extends Controller
         $hasCategory = Schema::hasColumn('tasks', 'task_category');
         $hasConfidence = Schema::hasColumn('tasks', 'classification_confidence');
         $hasSource = Schema::hasColumn('tasks', 'classification_source');
+        $hasLifecycleStatus = Schema::hasColumn('tasks', 'ai_classification_status');
+        $hasLifecycleQueuedAt = Schema::hasColumn('tasks', 'ai_classification_queued_at');
+        $hasLifecycleStartedAt = Schema::hasColumn('tasks', 'ai_classification_started_at');
 
         try {
+            $aiLifecycle = $defaults['aiLifecycle'];
+            if ($hasLifecycleStatus) {
+                $counts = DB::table('tasks')
+                    ->select('ai_classification_status', DB::raw('COUNT(*) as total'))
+                    ->whereNotNull('ai_classification_status')
+                    ->groupBy('ai_classification_status')
+                    ->pluck('total', 'ai_classification_status');
+
+                foreach ($aiLifecycle as $status => $_) {
+                    $aiLifecycle[$status] = (int) ($counts[$status] ?? 0);
+                }
+
+                $staleQueued = $hasLifecycleQueuedAt
+                    ? (int) DB::table('tasks')
+                        ->where('ai_classification_status', 'queued')
+                        ->where('ai_classification_queued_at', '<', now()->subMinutes(10))
+                        ->count()
+                    : 0;
+                $staleProcessing = $hasLifecycleStartedAt
+                    ? (int) DB::table('tasks')
+                        ->where('ai_classification_status', 'processing')
+                        ->where('ai_classification_started_at', '<', now()->subMinutes(10))
+                        ->count()
+                    : 0;
+                $aiLifecycle['stale'] = $staleQueued + $staleProcessing;
+            }
+
             return [
                 'totalClassifiedTasks' => $hasCategory
                     ? (int) DB::table('tasks')->whereNotNull('task_category')->where('task_category', '<>', '')->count()
@@ -314,6 +355,8 @@ class AdminTaskClassificationExampleController extends Controller
                 'learnedCacheTasks' => $hasSource
                     ? (int) DB::table('tasks')->where('classification_source', 'ai_cache')->count()
                     : 0,
+                'aiLifecycle' => $aiLifecycle,
+                'queueBacklog' => Schema::hasTable('jobs') ? (int) DB::table('jobs')->count() : 0,
             ];
         } catch (\Throwable) {
             return $defaults;

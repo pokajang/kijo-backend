@@ -31,7 +31,12 @@ class EnrichTaskClassificationWithAiJob implements ShouldQueue
         TaskClassificationService $localClassifier,
         TaskLearnedClassificationService $learnedClassifier,
     ): void {
-        if (! $aiClassifier->enabled() || ! $this->supportsTaskClassification()) {
+        if (! $this->supportsTaskClassification()) {
+            return;
+        }
+
+        if (! $aiClassifier->enabled()) {
+            $this->updateAiLifecycle('failed', 'ai_disabled_or_unconfigured');
             return;
         }
 
@@ -52,14 +57,22 @@ class EnrichTaskClassificationWithAiJob implements ShouldQueue
             ->where('id', $this->taskId)
             ->first();
 
-        if ($task === null || (bool) ($task->user_override ?? false)) {
+        if ($task === null) {
+            return;
+        }
+
+        if ((bool) ($task->user_override ?? false)) {
+            $this->updateAiLifecycle('not_applicable');
             return;
         }
 
         $title = trim((string) ($task->title ?? ''));
         if ($title === '') {
+            $this->updateAiLifecycle('no_result');
             return;
         }
+
+        $this->updateAiLifecycle('processing');
 
         $currentClassification = [
             'task_category' => (string) ($task->task_category ?? ''),
@@ -77,9 +90,22 @@ class EnrichTaskClassificationWithAiJob implements ShouldQueue
             $currentClassification = $localClassifier->classifyTitle($title);
         }
 
-        $aiClassification = $aiClassifier->classifyTitle($title, $currentClassification);
-        if ($aiClassification === null) {
+        try {
+            $aiClassification = $aiClassifier->classifyTitle($title, $currentClassification);
+        } catch (\Throwable $exception) {
+            $this->updateAiLifecycle('failed', $this->sanitizeError($exception->getMessage()));
+
             return;
+        }
+
+        if ($aiClassification === null) {
+            $this->updateAiLifecycle('no_result');
+            return;
+        }
+
+        $updates = $localClassifier->insertColumns($aiClassification, true);
+        if ($this->supportsAiLifecycleStorage()) {
+            $updates = array_merge($updates, $this->lifecycleColumns('applied'));
         }
 
         $updated = DB::table('tasks')
@@ -90,7 +116,7 @@ class EnrichTaskClassificationWithAiJob implements ShouldQueue
                     ->orWhere('user_override', false)
                     ->orWhere('user_override', 0);
             })
-            ->update($localClassifier->insertColumns($aiClassification, true));
+            ->update($updates);
 
         if ($updated > 0) {
             $learnedClassifier->remember(
@@ -113,5 +139,54 @@ class EnrichTaskClassificationWithAiJob implements ShouldQueue
             && Schema::hasColumn('tasks', 'work_type')
             && Schema::hasColumn('tasks', 'work_type_confidence')
             && Schema::hasColumn('tasks', 'work_type_matched_pattern');
+    }
+
+    private function supportsAiLifecycleStorage(): bool
+    {
+        return Schema::hasColumn('tasks', 'ai_classification_status')
+            && Schema::hasColumn('tasks', 'ai_classification_queued_at')
+            && Schema::hasColumn('tasks', 'ai_classification_started_at')
+            && Schema::hasColumn('tasks', 'ai_classification_completed_at')
+            && Schema::hasColumn('tasks', 'ai_classification_error');
+    }
+
+    private function updateAiLifecycle(string $status, ?string $error = null): void
+    {
+        if (! $this->supportsAiLifecycleStorage()) {
+            return;
+        }
+
+        DB::table('tasks')
+            ->where('id', $this->taskId)
+            ->update($this->lifecycleColumns($status, $error));
+    }
+
+    private function lifecycleColumns(string $status, ?string $error = null): array
+    {
+        $now = now();
+        $terminal = in_array($status, ['applied', 'cached', 'no_result', 'failed', 'not_applicable', 'stale'], true);
+
+        $columns = [
+            'ai_classification_status' => $status,
+            'ai_classification_error' => $status === 'failed' ? $this->sanitizeError($error) : null,
+        ];
+
+        if ($status === 'processing') {
+            $columns['ai_classification_started_at'] = $now;
+            $columns['ai_classification_completed_at'] = null;
+        }
+
+        if ($terminal) {
+            $columns['ai_classification_completed_at'] = $now;
+        }
+
+        return $columns;
+    }
+
+    private function sanitizeError(?string $error): string
+    {
+        $message = preg_replace('/\s+/', ' ', trim((string) $error)) ?: 'ai_classification_failed';
+
+        return substr($message, 0, 255);
     }
 }
