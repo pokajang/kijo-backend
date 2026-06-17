@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Salary\UpdateSalaryProfileRequest;
 use App\Services\Salary\OtherClaimService;
+use App\Services\Salary\PaymentQueueService;
 use App\Services\Salary\SalaryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,6 +15,7 @@ class SalaryController extends Controller
     public function __construct(
         private SalaryService $salaryService,
         private OtherClaimService $otherClaimService,
+        private PaymentQueueService $paymentQueueService,
     ) {}
 
     public function profile(Request $request): JsonResponse
@@ -94,6 +96,21 @@ class SalaryController extends Controller
     public function attachment(Request $request, int $id)
     {
         return $this->salaryService->attachment($request, $id);
+    }
+
+    public function paymentQueue(Request $request): JsonResponse
+    {
+        return $this->paymentQueueService->queue($request);
+    }
+
+    public function paymentQueueDetail(Request $request, int $staffId, string $period): JsonResponse
+    {
+        return $this->paymentQueueService->detail($request, $staffId, $period);
+    }
+
+    public function markPaymentQueuePaid(Request $request): JsonResponse
+    {
+        return $this->paymentQueueService->markPaid($request);
     }
 
     public function otherClaimRecords(Request $request): JsonResponse

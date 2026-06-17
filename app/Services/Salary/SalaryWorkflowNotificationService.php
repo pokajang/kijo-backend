@@ -149,6 +149,42 @@ class SalaryWorkflowNotificationService
         return $this->notifyWorkflowAction($request, self::OTHER_CLAIM_SUBJECT_TYPE, $applicationId, $action);
     }
 
+    public function notifyRecordAmended(
+        Request $request,
+        string $subjectType,
+        int $applicationId,
+        array $recipientIds,
+        string $reason,
+    ): bool {
+        return $this->notifyRecordChanged($request, $subjectType, $applicationId, $recipientIds, 'amended', $reason);
+    }
+
+    public function notifyRecordCancelled(
+        Request $request,
+        string $subjectType,
+        int $applicationId,
+        array $recipientIds,
+        string $reason,
+    ): bool {
+        $context = $this->context($subjectType, $applicationId);
+        if ($context) {
+            $this->notifications()->resolveActive(
+                $context['financialModule'],
+                $context['entityType'],
+                $applicationId,
+                null,
+            );
+            $this->notifications()->resolveActive(
+                $context['applicantModule'],
+                $context['entityType'],
+                $applicationId,
+                null,
+            );
+        }
+
+        return $this->notifyRecordChanged($request, $subjectType, $applicationId, $recipientIds, 'cancelled', $reason);
+    }
+
     private function notifySubmitted(Request $request, string $subjectType, int $applicationId): bool
     {
         $context = $this->context($subjectType, $applicationId);
@@ -185,6 +221,53 @@ class SalaryWorkflowNotificationService
         ]);
 
         return ! empty($recipientIds);
+    }
+
+    private function notifyRecordChanged(
+        Request $request,
+        string $subjectType,
+        int $applicationId,
+        array $recipientIds,
+        string $changeLabel,
+        string $reason,
+    ): bool {
+        $context = $this->context($subjectType, $applicationId);
+        if (! $context) {
+            return false;
+        }
+
+        $record = $context['record'];
+        $actorId = $this->staffId($request);
+        $applicantId = (int) ($record->staff_id ?? 0);
+        $applicantName = $this->staffLabel(
+            (string) ($record->staff_name ?? ''),
+            (string) ($record->staff_code ?? ''),
+            $applicantId,
+        );
+        $recipients = array_values(array_diff(
+            array_unique(array_filter(array_map('intval', $recipientIds))),
+            [$actorId, $applicantId],
+        ));
+
+        if ($recipients === []) {
+            return false;
+        }
+
+        $title = $context['title'].' '.$changeLabel;
+        $this->notifications()->createForStaff($recipients, [
+            'actor_staff_id' => $actorId,
+            'module_key' => $context['financialModule'],
+            'entity_type' => $context['entityType'],
+            'entity_id' => $applicationId,
+            'type' => $context['typePrefix'].'.'.$changeLabel,
+            'title' => $title,
+            'message' => "{$applicantName}'s {$context['lowerTitle']} for {$context['period']} was {$changeLabel}. Reason: {$reason}",
+            'route' => $context['financialRoute'],
+            'severity' => $changeLabel === 'cancelled' ? 'danger' : 'warning',
+            'metadata' => ['reason' => $reason],
+        ]);
+
+        return true;
     }
 
     private function context(string $subjectType, int $applicationId): ?array

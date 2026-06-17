@@ -19,6 +19,10 @@ class OtherClaimService extends PdfRenderer
     private const CLAIM_TYPES = ['Allowance', 'Expense', 'Mileage', 'Medical'];
     private const FINANCIAL_ACTIONS = ['check', 'approve', 'reject'];
     private const STAFF_MUTABLE_STATUSES = ['Draft', 'Submitted', 'Prepared', 'Rejected'];
+    private const REVIEWED_MUTABLE_STATUSES = ['Checked', 'Approved'];
+    private const PAID_STATUSES = ['Paid'];
+    private const CANCELLED_STATUS = 'Cancelled';
+    private const SUBJECT_TYPE = 'other_claim_application';
 
     public function __construct(
         private WorkflowService $workflowService,
@@ -30,6 +34,7 @@ class OtherClaimService extends PdfRenderer
     {
         $records = DB::table('hr_other_claim_applications')
             ->where('staff_id', $this->staffId($request))
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->orderByDesc('claim_month')
             ->orderByDesc('id')
             ->get()
@@ -54,7 +59,7 @@ class OtherClaimService extends PdfRenderer
                 'approver.full_name as approver_name',
                 'approver.name_code as approver_code',
             ])
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->orderByDesc('application.claim_month')
             ->orderByDesc('application.submitted_at')
             ->orderByDesc('application.id')
@@ -93,6 +98,9 @@ class OtherClaimService extends PdfRenderer
         if (! $record) {
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
         }
+        if ((string) $record->status === self::CANCELLED_STATUS) {
+            return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
+        }
         if ((string) $record->status === 'Draft') {
             return response()->json(['status' => 'error', 'message' => 'Other claim draft is not ready for financial action.'], 422);
         }
@@ -113,6 +121,7 @@ class OtherClaimService extends PdfRenderer
         $record = DB::table('hr_other_claim_applications')
             ->where('staff_id', $this->staffId($request))
             ->where('id', $id)
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         if (! $record) {
@@ -130,7 +139,7 @@ class OtherClaimService extends PdfRenderer
         $record = $this->pdfRecordQuery()
             ->where('application.staff_id', $this->staffId($request))
             ->where('application.id', $id)
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
         if (! $record) {
@@ -144,7 +153,7 @@ class OtherClaimService extends PdfRenderer
     {
         $record = $this->pdfRecordQuery()
             ->where('application.id', $id)
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
         if (! $record) {
@@ -159,10 +168,80 @@ class OtherClaimService extends PdfRenderer
         $record = DB::table('hr_other_claim_applications')
             ->where('staff_id', $this->staffId($request))
             ->where('id', $id)
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         if (! $record) {
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
+        }
+        if ($this->isPaidStatus((string) $record->status)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Paid other claim records cannot be changed.',
+            ], 422);
+        }
+        if ($this->isReviewedMutableStatus((string) $record->status)) {
+            $staffId = $this->staffId($request);
+            $reason = trim((string) $request->input('reason', ''));
+            if ($reason === '') {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Enter a reason before cancelling a checked or approved other claim.',
+                    'errors' => ['reason' => ['Enter a reason before cancelling a checked or approved other claim.']],
+                ], 422);
+            }
+
+            $recipientIds = $this->workflowParticipantIds($record, self::SUBJECT_TYPE, [$staffId]);
+            DB::transaction(function () use ($id, $record, $reason, $staffId): void {
+                $this->recordWorkflowEvent(
+                    self::SUBJECT_TYPE,
+                    $id,
+                    'cancel',
+                    $staffId,
+                    (string) $record->status,
+                    self::CANCELLED_STATUS,
+                    $reason,
+                    $this->snapshotRecord($record, includeClaims: true),
+                );
+                $instances = DB::table('workflow_instances')
+                    ->where('subject_type', self::SUBJECT_TYPE)
+                    ->where('subject_id', $id)
+                    ->get(['id', 'current_step_id', 'status']);
+                foreach ($instances as $instance) {
+                    DB::table('workflow_actions')->insert([
+                        'instance_id' => $instance->id,
+                        'step_id' => $instance->current_step_id,
+                        'action' => 'cancel',
+                        'status_from' => (string) ($instance->status ?? $record->status),
+                        'status_to' => self::CANCELLED_STATUS,
+                        'actor_staff_id' => $staffId,
+                        'remarks' => $reason,
+                        'acted_at' => now(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+                DB::table('hr_other_claim_applications')->where('id', $id)->update([
+                    'status' => self::CANCELLED_STATUS,
+                    'cancelled_at' => now(),
+                    'cancelled_by' => $staffId,
+                    'cancel_reason' => $reason,
+                    'updated_at' => now(),
+                ]);
+                DB::table('workflow_instances')
+                    ->where('subject_type', self::SUBJECT_TYPE)
+                    ->where('subject_id', $id)
+                    ->update([
+                        'current_step_id' => null,
+                        'status' => self::CANCELLED_STATUS,
+                        'completed_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+            });
+
+            $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
+
+            return response()->json(['status' => 'success', 'message' => 'Other claim cancelled.']);
         }
         if (! in_array((string) $record->status, self::STAFF_MUTABLE_STATUSES, true)) {
             return response()->json([
@@ -236,7 +315,7 @@ class OtherClaimService extends PdfRenderer
             if ($existing) {
                 $this->deleteApplicationClaims(
                     (int) $existing->id,
-                    $preservedAttachments->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    collect($preservedAttachments)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
                 );
             }
 
@@ -309,13 +388,15 @@ class OtherClaimService extends PdfRenderer
         $settings = $this->submissionSettings($staffId);
         $mileageRate = $settings['mileageRate'];
         $savedRecord = null;
+        $amendmentNotification = null;
 
-        DB::transaction(function () use ($request, $data, $staffId, $settings, $mileageRate, &$savedRecord): void {
+        DB::transaction(function () use ($request, $data, $staffId, $settings, $mileageRate, &$savedRecord, &$amendmentNotification): void {
             $applicationIdForEdit = (int) ($data['application_id'] ?? 0);
             $existing = $applicationIdForEdit > 0
                 ? DB::table('hr_other_claim_applications')
                     ->where('staff_id', $staffId)
                     ->where('id', $applicationIdForEdit)
+                    ->where('status', '<>', self::CANCELLED_STATUS)
                     ->lockForUpdate()
                     ->first()
                 : null;
@@ -324,10 +405,44 @@ class OtherClaimService extends PdfRenderer
                     'application_id' => ['Other claim record not found.'],
                 ]);
             }
-            if ($existing && ! in_array((string) $existing->status, self::STAFF_MUTABLE_STATUSES, true)) {
-                throw ValidationException::withMessages([
-                    'application_id' => ['This other claim has already moved into financial review and cannot be edited.'],
-                ]);
+            if ($existing) {
+                $existingStatus = (string) $existing->status;
+                if ($this->isPaidStatus($existingStatus)) {
+                    abort(response()->json([
+                        'status' => 'error',
+                        'message' => 'Paid other claim records cannot be changed.',
+                        'errors' => ['application_id' => ['Paid other claim records cannot be changed.']],
+                    ], 422));
+                }
+                if ($this->isReviewedMutableStatus($existingStatus) && trim((string) ($data['amendment_reason'] ?? '')) === '') {
+                    throw ValidationException::withMessages([
+                        'amendment_reason' => ['Enter a reason before editing a checked or approved other claim.'],
+                    ]);
+                }
+                if (! $this->isStaffEditableStatus($existingStatus)) {
+                    throw ValidationException::withMessages([
+                        'application_id' => ['This other claim has already moved into financial review and cannot be edited.'],
+                    ]);
+                }
+                if ($this->isReviewedMutableStatus($existingStatus)) {
+                    $reason = trim((string) $data['amendment_reason']);
+                    $amendmentNotification = [
+                        'subjectType' => self::SUBJECT_TYPE,
+                        'applicationId' => (int) $existing->id,
+                        'recipientIds' => $this->workflowParticipantIds($existing, self::SUBJECT_TYPE, [$staffId]),
+                        'reason' => $reason,
+                    ];
+                    $this->recordWorkflowEvent(
+                        self::SUBJECT_TYPE,
+                        (int) $existing->id,
+                        'amend',
+                        $staffId,
+                        $existingStatus,
+                        'Submitted',
+                        $reason,
+                        $this->snapshotRecord($existing, includeClaims: true),
+                    );
+                }
             }
 
             $files = $request->file('attachments', []);
@@ -351,7 +466,7 @@ class OtherClaimService extends PdfRenderer
             if ($existing) {
                 $this->deleteApplicationClaims(
                     (int) $existing->id,
-                    $preservedAttachments->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    collect($preservedAttachments)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
                 );
             }
 
@@ -390,6 +505,15 @@ class OtherClaimService extends PdfRenderer
 
         $mailSent = false;
         if ($savedRecord && isset($savedRecord['id'])) {
+            if ($amendmentNotification) {
+                $this->workflowNotifications->notifyRecordAmended(
+                    $request,
+                    $amendmentNotification['subjectType'],
+                    $amendmentNotification['applicationId'],
+                    $amendmentNotification['recipientIds'],
+                    $amendmentNotification['reason'],
+                );
+            }
             $mailSent = $this->workflowNotifications->notifySubmittedOtherClaim($request, (int) $savedRecord['id']);
         }
 
@@ -476,7 +600,7 @@ class OtherClaimService extends PdfRenderer
         $claims = $this->decodeJsonField($request, 'claims', [], $jsonErrors);
         $draftPayload = $this->decodeJsonField($request, 'draft_payload', [], $jsonErrors);
         $payload = [
-            ...$request->only(['application_id', 'claim_month']),
+            ...$request->only(['application_id', 'claim_month', 'amendment_reason']),
             'claims' => is_array($claims) ? $claims : [],
             'draft_payload' => is_array($draftPayload) ? $draftPayload : [],
         ];
@@ -484,6 +608,7 @@ class OtherClaimService extends PdfRenderer
         $rules = [
             'application_id' => ['nullable', 'integer', 'min:1'],
             'claim_month' => ['required', 'date_format:Y-m'],
+            'amendment_reason' => ['nullable', 'string', 'max:1000'],
             'claims' => [$isDraft ? 'nullable' : 'required', 'array'],
             'claims.*.id' => [$isDraft ? 'nullable' : 'required', 'string', 'max:191'],
             'claims.*.type' => [$isDraft ? 'nullable' : 'required', 'string', 'in:'.implode(',', self::CLAIM_TYPES)],
@@ -666,6 +791,9 @@ class OtherClaimService extends PdfRenderer
             'approvedAt' => $record->approved_at ?? null,
             'approvedStatus' => (string) ($record->approved_status ?? ''),
             'approvedRemarks' => (string) ($record->approved_remarks ?? ''),
+            'cancelledAt' => $record->cancelled_at ?? null,
+            'cancelledBy' => isset($record->cancelled_by) ? (int) $record->cancelled_by : null,
+            'cancelReason' => (string) ($record->cancel_reason ?? ''),
         ];
         foreach ([
             'staffName' => 'staff_name',
@@ -1084,7 +1212,7 @@ class OtherClaimService extends PdfRenderer
             ->where('application.staff_id', $staffId)
             ->where('application.salary_month', 'like', $year.'-%')
             ->where('claim.type', 'Medical')
-            ->whereNotIn('application.status', ['Draft', 'Rejected'])
+            ->whereNotIn('application.status', ['Draft', 'Rejected', self::CANCELLED_STATUS])
             ->sum('claim.amount');
 
         $otherClaimUsed = DB::table('hr_other_claim_items as claim')
@@ -1092,7 +1220,7 @@ class OtherClaimService extends PdfRenderer
             ->where('application.staff_id', $staffId)
             ->where('application.claim_month', 'like', $year.'-%')
             ->where('claim.type', 'Medical')
-            ->whereNotIn('application.status', ['Draft', 'Rejected'])
+            ->whereNotIn('application.status', ['Draft', 'Rejected', self::CANCELLED_STATUS])
             ->when(
                 $excludeOtherClaimApplicationId,
                 fn ($query) => $query->where('application.id', '<>', $excludeOtherClaimApplicationId),
@@ -1137,9 +1265,105 @@ class OtherClaimService extends PdfRenderer
     {
         return match ($status) {
             'Prepared' => 'Submitted',
-            'Paid' => 'Approved',
             default => $status,
         };
+    }
+
+    private function isStaffEditableStatus(string $status): bool
+    {
+        return in_array($status, [...self::STAFF_MUTABLE_STATUSES, ...self::REVIEWED_MUTABLE_STATUSES], true);
+    }
+
+    private function isReviewedMutableStatus(string $status): bool
+    {
+        return in_array($status, self::REVIEWED_MUTABLE_STATUSES, true);
+    }
+
+    private function isPaidStatus(string $status): bool
+    {
+        return in_array($status, self::PAID_STATUSES, true);
+    }
+
+    private function workflowParticipantIds(object $record, string $subjectType, array $excludeStaffIds = []): array
+    {
+        $ids = [
+            (int) ($record->checked_by ?? 0),
+            (int) ($record->approved_by ?? 0),
+        ];
+
+        $instanceIds = DB::table('workflow_instances')
+            ->where('subject_type', $subjectType)
+            ->where('subject_id', (int) $record->id)
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
+        if ($instanceIds !== []) {
+            $ids = [
+                ...$ids,
+                ...DB::table('workflow_actions')
+                    ->whereIn('instance_id', $instanceIds)
+                    ->pluck('actor_staff_id')
+                    ->map(fn ($id): int => (int) $id)
+                    ->all(),
+            ];
+        }
+
+        $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
+
+        return array_values(array_diff(array_unique(array_filter($ids)), $exclude));
+    }
+
+    private function snapshotRecord(object $record, bool $includeClaims = true): array
+    {
+        $snapshot = [
+            'id' => (int) $record->id,
+            'staffId' => (int) $record->staff_id,
+            'claimMonth' => (string) $record->claim_month_label,
+            'claimMonthValue' => (string) $record->claim_month,
+            'claimsTotal' => (float) $record->claims_total,
+            'status' => (string) $record->status,
+            'submittedAt' => $record->submitted_at ?? null,
+            'checkedBy' => isset($record->checked_by) ? (int) $record->checked_by : null,
+            'checkedAt' => $record->checked_at ?? null,
+            'approvedBy' => isset($record->approved_by) ? (int) $record->approved_by : null,
+            'approvedAt' => $record->approved_at ?? null,
+        ];
+
+        if ($includeClaims) {
+            $snapshot['claims'] = $this->claimsForApplication((int) $record->id);
+        }
+
+        return $snapshot;
+    }
+
+    private function recordWorkflowEvent(
+        string $subjectType,
+        int $subjectId,
+        string $action,
+        int $actorStaffId,
+        ?string $statusFrom,
+        ?string $statusTo,
+        string $reason,
+        array $previousSnapshot,
+    ): void {
+        if (! \Illuminate\Support\Facades\Schema::hasTable('hr_salary_workflow_events')) {
+            return;
+        }
+
+        DB::table('hr_salary_workflow_events')->insert([
+            'subject_type' => $subjectType,
+            'subject_id' => $subjectId,
+            'action' => $action,
+            'actor_staff_id' => $actorStaffId > 0 ? $actorStaffId : null,
+            'status_from' => $statusFrom,
+            'status_to' => $statusTo,
+            'reason' => $reason,
+            'previous_snapshot_json' => json_encode($previousSnapshot, JSON_THROW_ON_ERROR),
+            'acted_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
     private function staffId(Request $request): int

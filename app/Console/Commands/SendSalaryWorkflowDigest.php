@@ -127,12 +127,14 @@ class SendSalaryWorkflowDigest extends Command
                     ->where(function ($salaryQuery): void {
                         $salaryQuery
                             ->where('instance.subject_type', self::SALARY_SUBJECT_TYPE)
-                            ->whereNotNull('salary.id');
+                            ->whereNotNull('salary.id')
+                            ->where('salary.status', '<>', 'Cancelled');
                     })
                     ->orWhere(function ($otherClaimQuery): void {
                         $otherClaimQuery
                             ->where('instance.subject_type', self::OTHER_CLAIM_SUBJECT_TYPE)
-                            ->whereNotNull('other_claim.id');
+                            ->whereNotNull('other_claim.id')
+                            ->where('other_claim.status', '<>', 'Cancelled');
                     });
             })
             ->select([

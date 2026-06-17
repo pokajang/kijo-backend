@@ -514,6 +514,9 @@ Route::middleware('auth.session')->group(function () {
 
     Route::get('hr/salary/profile', [SalaryController::class, 'profile']);
     Route::put('hr/salary/profile', [SalaryController::class, 'updateProfile']);
+    Route::get('hr/salary/payment-queue', [SalaryController::class, 'paymentQueue'])->middleware('role:HR,Manager,System Admin,Finance,Account,Bank,Staff');
+    Route::get('hr/salary/payment-queue/{staffId}/{period}', [SalaryController::class, 'paymentQueueDetail'])->whereNumber('staffId')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank,Staff');
+    Route::post('hr/salary/payment-queue/mark-paid', [SalaryController::class, 'markPaymentQueuePaid'])->middleware('role:HR,Manager,Finance,Account,Bank');
     Route::get('hr/salary/other-claims/financial-records', [SalaryController::class, 'otherClaimFinancialRecords'])->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
     Route::get('hr/salary/other-claims/financial-records/{id}/claims-pdf', [SalaryController::class, 'otherClaimFinancialClaimsPdf'])->whereNumber('id')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
     Route::post('hr/salary/other-claims/financial-records/{id}/action', [SalaryController::class, 'otherClaimFinancialRecordAction'])->whereNumber('id')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');

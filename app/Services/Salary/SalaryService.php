@@ -23,6 +23,10 @@ class SalaryService extends PdfRenderer
     private const FINANCIAL_ACTIONS = ['check', 'approve', 'reject'];
 
     private const STAFF_MUTABLE_STATUSES = ['Draft', 'Submitted', 'Prepared', 'Rejected'];
+    private const REVIEWED_MUTABLE_STATUSES = ['Checked', 'Approved'];
+    private const PAID_STATUSES = ['Paid'];
+    private const CANCELLED_STATUS = 'Cancelled';
+    private const SUBJECT_TYPE = 'salary_application';
 
     public function __construct(
         private WorkflowService $workflowService,
@@ -109,6 +113,7 @@ class SalaryService extends PdfRenderer
                 'medical_claims_total',
             )
             ->where('staff_id', $this->staffId($request))
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->orderByDesc('salary_month')
             ->orderByDesc('id')
             ->get()
@@ -133,7 +138,7 @@ class SalaryService extends PdfRenderer
                 'approver.full_name as approver_name',
                 'approver.name_code as approver_code',
             ])
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->orderByDesc('application.salary_month')
             ->orderByDesc('application.submitted_at')
             ->orderByDesc('application.id')
@@ -178,6 +183,9 @@ class SalaryService extends PdfRenderer
         if (! $record) {
             return response()->json(['status' => 'error', 'message' => 'Salary record not found.'], 404);
         }
+        if ((string) $record->status === self::CANCELLED_STATUS) {
+            return response()->json(['status' => 'error', 'message' => 'Salary record not found.'], 404);
+        }
         if ((string) $record->status === 'Draft') {
             return response()->json(['status' => 'error', 'message' => 'Salary draft is not ready for financial action.'], 422);
         }
@@ -200,6 +208,7 @@ class SalaryService extends PdfRenderer
         $record = DB::table('hr_salary_applications')
             ->where('staff_id', $this->staffId($request))
             ->where('id', $id)
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         if (! $record) {
@@ -224,7 +233,7 @@ class SalaryService extends PdfRenderer
             ])
             ->where('application.staff_id', $this->staffId($request))
             ->where('application.id', $id)
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
         if (! $record) {
@@ -245,7 +254,7 @@ class SalaryService extends PdfRenderer
                 'staff.email as staff_email',
             ])
             ->where('application.id', $id)
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
         if (! $record) {
@@ -271,7 +280,7 @@ class SalaryService extends PdfRenderer
             ])
             ->where('application.staff_id', $this->staffId($request))
             ->where('application.id', $id)
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
         if (! $record) {
@@ -292,7 +301,7 @@ class SalaryService extends PdfRenderer
                 'staff.email as staff_email',
             ])
             ->where('application.id', $id)
-            ->where('application.status', '<>', 'Draft')
+            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
         if (! $record) {
@@ -500,10 +509,84 @@ class SalaryService extends PdfRenderer
         $record = DB::table('hr_salary_applications')
             ->where('staff_id', $staffId)
             ->where('id', $id)
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         if (! $record) {
             return response()->json(['status' => 'error', 'message' => 'Salary record not found.'], 404);
+        }
+
+        if ($this->isPaidStatus((string) $record->status)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Paid salary records cannot be changed.',
+            ], 422);
+        }
+
+        if ($this->isReviewedMutableStatus((string) $record->status)) {
+            $reason = trim((string) $request->input('reason', ''));
+            if ($reason === '') {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Enter a reason before cancelling a checked or approved salary record.',
+                    'errors' => ['reason' => ['Enter a reason before cancelling a checked or approved salary record.']],
+                ], 422);
+            }
+
+            $recipientIds = $this->workflowParticipantIds($record, self::SUBJECT_TYPE, [$staffId]);
+            DB::transaction(function () use ($id, $record, $reason, $staffId): void {
+                $this->recordWorkflowEvent(
+                    self::SUBJECT_TYPE,
+                    $id,
+                    'cancel',
+                    $staffId,
+                    (string) $record->status,
+                    self::CANCELLED_STATUS,
+                    $reason,
+                    $this->snapshotRecord($record, includeClaims: true),
+                );
+                $instances = DB::table('workflow_instances')
+                    ->where('subject_type', self::SUBJECT_TYPE)
+                    ->where('subject_id', $id)
+                    ->get(['id', 'current_step_id', 'status']);
+                foreach ($instances as $instance) {
+                    DB::table('workflow_actions')->insert([
+                        'instance_id' => $instance->id,
+                        'step_id' => $instance->current_step_id,
+                        'action' => 'cancel',
+                        'status_from' => (string) ($instance->status ?? $record->status),
+                        'status_to' => self::CANCELLED_STATUS,
+                        'actor_staff_id' => $staffId,
+                        'remarks' => $reason,
+                        'acted_at' => now(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+                DB::table('hr_salary_applications')->where('id', $id)->update([
+                    'status' => self::CANCELLED_STATUS,
+                    'cancelled_at' => now(),
+                    'cancelled_by' => $staffId,
+                    'cancel_reason' => $reason,
+                    'updated_at' => now(),
+                ]);
+                DB::table('workflow_instances')
+                    ->where('subject_type', self::SUBJECT_TYPE)
+                    ->where('subject_id', $id)
+                    ->update([
+                        'current_step_id' => null,
+                        'status' => self::CANCELLED_STATUS,
+                        'completed_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+            });
+
+            $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Salary application cancelled.',
+            ]);
         }
 
         if (! in_array((string) $record->status, self::STAFF_MUTABLE_STATUSES, true)) {
@@ -538,6 +621,7 @@ class SalaryService extends PdfRenderer
             ->where('staff_id', $this->staffId($request))
             ->where('salary_month', $data['salary_month'])
             ->where('status', 'Draft')
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         return response()->json([
@@ -554,16 +638,27 @@ class SalaryService extends PdfRenderer
         $savedRecord = null;
 
         DB::transaction(function () use ($request, $data, $staffId, $settings, &$savedRecord): void {
-            $existing = DB::table('hr_salary_applications')
+            $activeRecords = DB::table('hr_salary_applications')
                 ->where('staff_id', $staffId)
                 ->where('salary_month', $data['salary_month'])
+                ->where('status', '<>', self::CANCELLED_STATUS)
                 ->lockForUpdate()
-                ->first();
-            if ($existing && (string) $existing->status !== 'Draft') {
-                $savedRecord = $this->recordPayload($existing, includeClaims: true, request: $request);
+                ->get();
+            $existingNonDraft = $activeRecords->first(
+                fn (object $record): bool => (string) $record->status !== 'Draft',
+            );
+            if ($existingNonDraft) {
+                $savedRecord = $this->recordPayload($existingNonDraft, includeClaims: true, request: $request);
 
                 return;
             }
+            if ($activeRecords->count() > 1) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Multiple active salary drafts exist for this month. Cancel or resolve the duplicate records before saving again.',
+                ], 422));
+            }
+            $existing = $activeRecords->first();
 
             $files = $request->file('attachments', []);
             $preservedAttachments = $existing
@@ -573,12 +668,13 @@ class SalaryService extends PdfRenderer
                 $data['claims'],
                 $settings['mileageRate'],
             );
+            $data['claims'] = collect($data['claims'])->values()->all();
             $summary = $this->salaryCalculator->summarize($settings['basicSalary'], $data['claims']);
 
             if ($existing) {
                 $this->deleteApplicationClaims(
                     (int) $existing->id,
-                    $preservedAttachments->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    collect($preservedAttachments)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
                 );
             }
 
@@ -674,6 +770,7 @@ class SalaryService extends PdfRenderer
             ->where('staff_id', $this->staffId($request))
             ->where('salary_month', $data['salary_month'])
             ->where('status', 'Draft')
+            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         if ($record) {
@@ -704,33 +801,79 @@ class SalaryService extends PdfRenderer
         $finalRecordExists = DB::table('hr_salary_applications')
             ->where('staff_id', $staffId)
             ->where('salary_month', $data['salary_month'])
-            ->whereIn('status', ['Paid', 'Approved', 'Checked'])
+            ->whereIn('status', self::PAID_STATUSES)
             ->exists();
         if ($finalRecordExists) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'This salary month has already entered review or final approval and cannot be replaced.',
+                'message' => 'Paid salary records cannot be changed.',
                 'errors' => [
-                    'salary_month' => ['This salary month has already entered review or final approval and cannot be replaced.'],
+                    'salary_month' => ['Paid salary records cannot be changed.'],
                 ],
             ], 422);
         }
+        $amendmentNotification = null;
 
-        DB::transaction(function () use ($request, $data, $staffId, $settings, &$savedRecord): void {
-            $existing = DB::table('hr_salary_applications')
+        DB::transaction(function () use ($request, $data, $staffId, $settings, &$savedRecord, &$amendmentNotification): void {
+            $activeRecords = DB::table('hr_salary_applications')
                 ->where('staff_id', $staffId)
                 ->where('salary_month', $data['salary_month'])
+                ->where('status', '<>', self::CANCELLED_STATUS)
                 ->lockForUpdate()
-                ->first();
+                ->get();
+            if ($activeRecords->count() > 1) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Multiple active salary records exist for this month. Cancel or resolve the duplicate records before submitting again.',
+                    'errors' => [
+                        'salary_month' => ['Multiple active salary records exist for this month. Cancel or resolve the duplicate records before submitting again.'],
+                    ],
+                ], 422));
+            }
+            $existing = $activeRecords->first();
             $preservedAttachments = collect();
             $files = $request->file('attachments', []);
 
             if ($existing) {
-                if (! in_array((string) $existing->status, self::STAFF_MUTABLE_STATUSES, true)) {
+                $existingStatus = (string) $existing->status;
+                if ($this->isPaidStatus($existingStatus)) {
+                    abort(response()->json([
+                        'status' => 'error',
+                        'message' => 'Paid salary records cannot be changed.',
+                    ], 422));
+                }
+                if ($this->isReviewedMutableStatus($existingStatus) && trim((string) ($data['amendment_reason'] ?? '')) === '') {
+                    abort(response()->json([
+                        'status' => 'error',
+                        'message' => 'Enter a reason before editing a checked or approved salary record.',
+                        'errors' => ['amendment_reason' => ['Enter a reason before editing a checked or approved salary record.']],
+                    ], 422));
+                }
+                if (! $this->isStaffEditableStatus($existingStatus)) {
                     abort(response()->json([
                         'status' => 'error',
                         'message' => 'Only draft, submitted, or rejected salary applications can be edited by staff.',
                     ], 422));
+                }
+
+                if ($this->isReviewedMutableStatus($existingStatus)) {
+                    $reason = trim((string) $data['amendment_reason']);
+                    $amendmentNotification = [
+                        'subjectType' => self::SUBJECT_TYPE,
+                        'applicationId' => (int) $existing->id,
+                        'recipientIds' => $this->workflowParticipantIds($existing, self::SUBJECT_TYPE, [$staffId]),
+                        'reason' => $reason,
+                    ];
+                    $this->recordWorkflowEvent(
+                        self::SUBJECT_TYPE,
+                        (int) $existing->id,
+                        'amend',
+                        $staffId,
+                        $existingStatus,
+                        'Submitted',
+                        $reason,
+                        $this->snapshotRecord($existing, includeClaims: true),
+                    );
                 }
 
                 $preservedAttachments = $this->preservedClaimAttachments(
@@ -743,6 +886,7 @@ class SalaryService extends PdfRenderer
             $this->assertClaimRules($data['claims'], $files, $preservedAttachments);
             $data['basic_salary'] = $settings['basicSalary'];
             $data['claims'] = $this->salaryCalculator->prepareClaims($data['claims'], $settings['mileageRate']);
+            $data['claims'] = collect($data['claims'])->values()->all();
             $this->assertMedicalClaimLimit(
                 $staffId,
                 $data['salary_month'],
@@ -754,7 +898,7 @@ class SalaryService extends PdfRenderer
             if ($existing) {
                 $this->deleteApplicationClaims(
                     (int) $existing->id,
-                    $preservedAttachments->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    collect($preservedAttachments)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
                 );
             }
 
@@ -829,6 +973,15 @@ class SalaryService extends PdfRenderer
 
         $mailSent = false;
         if ($savedRecord && isset($savedRecord['id'])) {
+            if ($amendmentNotification) {
+                $this->workflowNotifications->notifyRecordAmended(
+                    $request,
+                    $amendmentNotification['subjectType'],
+                    $amendmentNotification['applicationId'],
+                    $amendmentNotification['recipientIds'],
+                    $amendmentNotification['reason'],
+                );
+            }
             $mailSent = $this->workflowNotifications->notifySubmittedSalary($request, (int) $savedRecord['id']);
         }
 
@@ -1015,6 +1168,7 @@ class SalaryService extends PdfRenderer
                 'employee_deductions',
                 'employer_contributions',
                 'payable_salary',
+                'amendment_reason',
             ]),
             'claims' => $claims,
             'deductions' => $deductions,
@@ -1027,6 +1181,7 @@ class SalaryService extends PdfRenderer
             'employee_deductions' => ['nullable', 'numeric', 'min:0', 'max:9999999.99'],
             'employer_contributions' => ['nullable', 'numeric', 'min:0', 'max:9999999.99'],
             'payable_salary' => ['nullable', 'numeric', 'min:-9999999.99', 'max:9999999.99'],
+            'amendment_reason' => ['nullable', 'string', 'max:1000'],
             'claims' => ['array'],
             'claims.*.id' => ['required', 'string', 'max:191'],
             'claims.*.type' => ['required', 'string', 'in:'.implode(',', self::CLAIM_TYPES)],
@@ -1048,6 +1203,15 @@ class SalaryService extends PdfRenderer
                 $validator->errors()->add($field, $message);
             }
 
+            foreach ($claims as $index => $claim) {
+                if (($claim['type'] ?? '') !== 'Allowance') {
+                    $validator->errors()->add("claims.{$index}.type", 'Salary applications only accept payroll allowance or adjustment rows. Use Other Claim for expense, mileage, and medical claims.');
+                }
+                if (isset($claim['attachmentId']) && $claim['attachmentId'] !== null && $claim['attachmentId'] !== '') {
+                    $validator->errors()->add("claims.{$index}.attachmentId", 'Salary adjustments cannot include claim attachments. Use Other Claim for attachment-backed reimbursements.');
+                }
+            }
+
             foreach ($request->file('attachments', []) as $key => $file) {
                 $claimExists = collect($claims)->contains(fn ($claim) => (string) ($claim['id'] ?? '') === (string) $key);
                 if (! $claimExists) {
@@ -1055,22 +1219,7 @@ class SalaryService extends PdfRenderer
 
                     continue;
                 }
-                $matchedClaim = collect($claims)->first(
-                    fn ($claim) => (string) ($claim['id'] ?? '') === (string) $key,
-                );
-                $claimType = is_array($matchedClaim) ? ($matchedClaim['type'] ?? null) : null;
-                if ($claimType === 'Mileage') {
-                    $validator->errors()->add("attachments.{$key}", 'Mileage claims cannot include attachments.');
-
-                    continue;
-                }
-                $fileValidator = Validator::make(
-                    ['attachment' => $file],
-                    ['attachment' => ['file', 'mimes:pdf,jpg,jpeg,png', 'max:5120']],
-                );
-                if ($fileValidator->fails()) {
-                    $validator->errors()->add("attachments.{$key}", 'Upload a PDF, JPG, JPEG, or PNG file up to 5 MB.');
-                }
+                $validator->errors()->add("attachments.{$key}", 'Salary adjustments cannot include claim attachments. Use Other Claim for attachment-backed reimbursements.');
             }
         });
 
@@ -1082,7 +1231,8 @@ class SalaryService extends PdfRenderer
         $jsonErrors = [];
         $claims = $this->decodeJsonField($request, 'claims', [], $jsonErrors);
         $draftPayload = $this->decodeJsonField($request, 'draft_payload', [], $jsonErrors);
-        $claims = $this->completeDraftClaims(is_array($claims) ? $claims : []);
+        $rawClaims = is_array($claims) ? $claims : [];
+        $claims = $this->completeDraftClaims($rawClaims);
 
         $payload = [
             ...$request->only(['salary_month', 'basic_salary']),
@@ -1109,22 +1259,23 @@ class SalaryService extends PdfRenderer
             'draft_payload' => ['array'],
         ]);
 
-        $validator->after(function ($validator) use ($request, $claims, $jsonErrors): void {
+        $validator->after(function ($validator) use ($request, $rawClaims, $jsonErrors): void {
             foreach ($jsonErrors as $field => $message) {
                 $validator->errors()->add($field, $message);
             }
 
+            foreach ($rawClaims as $index => $claim) {
+                if (($claim['type'] ?? 'Allowance') !== 'Allowance') {
+                    $validator->errors()->add("claims.{$index}.type", 'Salary drafts only accept payroll allowance or adjustment rows. Use Other Claim for expense, mileage, and medical claims.');
+                }
+            }
+
             foreach ($request->file('attachments', []) as $key => $file) {
-                $claimExists = collect($claims)->contains(fn ($claim) => (string) ($claim['id'] ?? '') === (string) $key);
+                $claimExists = collect($rawClaims)->contains(fn ($claim) => (string) ($claim['id'] ?? '') === (string) $key);
                 if (! $claimExists) {
                     continue;
                 }
-                $matchedClaim = collect($claims)->first(
-                    fn ($claim) => (string) ($claim['id'] ?? '') === (string) $key,
-                );
-                if (is_array($matchedClaim) && ($matchedClaim['type'] ?? null) === 'Mileage') {
-                    continue;
-                }
+                $validator->errors()->add("attachments.{$key}", 'Salary adjustments cannot include claim attachments. Use Other Claim for attachment-backed reimbursements.');
             }
         });
 
@@ -1141,7 +1292,7 @@ class SalaryService extends PdfRenderer
                 $date = (string) ($claim['date'] ?? '');
                 $amount = (float) ($claim['amount'] ?? 0);
                 $km = (float) ($claim['km'] ?? 0);
-                if (! in_array($type, self::CLAIM_TYPES, true)) {
+                if ($type !== 'Allowance') {
                     return false;
                 }
                 if (trim((string) ($claim['id'] ?? '')) === '') {
@@ -1172,13 +1323,6 @@ class SalaryService extends PdfRenderer
                     return false;
                 }
 
-                if ($type === 'Mileage') {
-                    return ! empty($claim['date'])
-                        && trim((string) ($claim['startLocation'] ?? '')) !== ''
-                        && trim((string) ($claim['endLocation'] ?? '')) !== ''
-                        && $km > 0;
-                }
-
                 return $amount > 0;
             })
             ->values()
@@ -1197,19 +1341,17 @@ class SalaryService extends PdfRenderer
                 : null;
             $hasPreservedAttachment = $attachmentId !== null && $preservedAttachments->has($attachmentId);
 
-            if ($type === 'Mileage') {
-                if (empty($claim['date']) || trim((string) ($claim['startLocation'] ?? '')) === '' || trim((string) ($claim['endLocation'] ?? '')) === '' || (float) ($claim['km'] ?? 0) <= 0) {
-                    $errors["claims.{$index}.km"][] = 'Mileage claims require date, from, to, and one-way KM.';
-                }
-                if ($hasNewAttachment || $attachmentId !== null) {
-                    $errors["claims.{$index}.attachment"][] = 'Mileage claims cannot include attachments.';
-                }
-            } elseif ((float) ($claim['amount'] ?? 0) <= 0) {
-                $errors["claims.{$index}.amount"][] = "{$type} claims require a valid amount.";
+            if ($type !== 'Allowance') {
+                $errors["claims.{$index}.type"][] = 'Salary applications only accept payroll allowance or adjustment rows. Use Other Claim for expense, mileage, and medical claims.';
+                continue;
             }
 
-            if (in_array($type, ['Expense', 'Medical'], true) && ! $hasNewAttachment && ! $hasPreservedAttachment) {
-                $errors["claims.{$index}.attachment"][] = "{$type} claims require an attachment.";
+            if ((float) ($claim['amount'] ?? 0) <= 0) {
+                $errors["claims.{$index}.amount"][] = 'Salary adjustments require a valid amount.';
+            }
+
+            if ($hasNewAttachment || $attachmentId !== null || $hasPreservedAttachment) {
+                $errors["claims.{$index}.attachment"][] = 'Salary adjustments cannot include claim attachments. Use Other Claim for attachment-backed reimbursements.';
             }
 
             if ($attachmentId !== null && ! $hasPreservedAttachment) {
@@ -1242,51 +1384,20 @@ class SalaryService extends PdfRenderer
         array $claims,
         float $yearlyMedicalClaim,
     ): void {
-        $medicalTotal = (float) $this->money(collect($claims)
-            ->filter(fn (array $claim): bool => ($claim['type'] ?? '') === 'Medical')
-            ->sum(fn (array $claim): float => (float) ($claim['amount'] ?? 0)));
-        if ($medicalTotal <= 0) {
-            return;
-        }
-
-        $available = (float) $this->money($yearlyMedicalClaim - $this->usedMedicalClaimsForYear(
-            $staffId,
-            substr($salaryMonth, 0, 4),
-            $salaryMonth,
-        ));
-
-        if ($medicalTotal > $available) {
-            throw ValidationException::withMessages([
-                'claims' => [
-                    'Medical claims exceed the annual medical claim balance of '.$this->money(max(0, $available)).'.',
-                ],
-            ]);
-        }
+        return;
     }
 
     private function usedMedicalClaimsForYear(int $staffId, string $year, ?string $excludeSalaryMonth = null): float
     {
-        $salaryUsed = DB::table('hr_salary_claims as claim')
-            ->join('hr_salary_applications as application', 'application.id', '=', 'claim.application_id')
-            ->where('application.staff_id', $staffId)
-            ->where('application.salary_month', 'like', $year.'-%')
-            ->where('claim.type', 'Medical')
-            ->whereNotIn('application.status', ['Draft', 'Rejected'])
-            ->when(
-                $excludeSalaryMonth,
-                fn ($query) => $query->where('application.salary_month', '<>', $excludeSalaryMonth),
-            )
-            ->sum('claim.amount');
-
         $otherClaimUsed = DB::table('hr_other_claim_items as claim')
             ->join('hr_other_claim_applications as application', 'application.id', '=', 'claim.application_id')
             ->where('application.staff_id', $staffId)
             ->where('application.claim_month', 'like', $year.'-%')
             ->where('claim.type', 'Medical')
-            ->whereNotIn('application.status', ['Draft', 'Rejected'])
+            ->whereNotIn('application.status', ['Draft', 'Rejected', self::CANCELLED_STATUS])
             ->sum('claim.amount');
 
-        return (float) $this->money((float) $salaryUsed + (float) $otherClaimUsed);
+        return (float) $this->money((float) $otherClaimUsed);
     }
 
     private function medicalClaimsTotalForApplication(int $applicationId): float
@@ -1539,6 +1650,9 @@ class SalaryService extends PdfRenderer
             'approvedAt' => $record->approved_at ?? null,
             'approvedStatus' => (string) ($record->approved_status ?? ''),
             'approvedRemarks' => (string) ($record->approved_remarks ?? ''),
+            'cancelledAt' => $record->cancelled_at ?? null,
+            'cancelledBy' => isset($record->cancelled_by) ? (int) $record->cancelled_by : null,
+            'cancelReason' => (string) ($record->cancel_reason ?? ''),
         ];
 
         if (property_exists($record, 'staff_name') || property_exists($record, 'staff_code')) {
@@ -1686,9 +1800,109 @@ class SalaryService extends PdfRenderer
     {
         return match ($status) {
             'Prepared' => 'Submitted',
-            'Paid' => 'Approved',
             default => $status,
         };
+    }
+
+    private function isStaffEditableStatus(string $status): bool
+    {
+        return in_array($status, [...self::STAFF_MUTABLE_STATUSES, ...self::REVIEWED_MUTABLE_STATUSES], true);
+    }
+
+    private function isReviewedMutableStatus(string $status): bool
+    {
+        return in_array($status, self::REVIEWED_MUTABLE_STATUSES, true);
+    }
+
+    private function isPaidStatus(string $status): bool
+    {
+        return in_array($status, self::PAID_STATUSES, true);
+    }
+
+    private function workflowParticipantIds(object $record, string $subjectType, array $excludeStaffIds = []): array
+    {
+        $ids = [
+            (int) ($record->checked_by ?? 0),
+            (int) ($record->approved_by ?? 0),
+        ];
+
+        $instanceIds = DB::table('workflow_instances')
+            ->where('subject_type', $subjectType)
+            ->where('subject_id', (int) $record->id)
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
+        if ($instanceIds !== []) {
+            $ids = [
+                ...$ids,
+                ...DB::table('workflow_actions')
+                    ->whereIn('instance_id', $instanceIds)
+                    ->pluck('actor_staff_id')
+                    ->map(fn ($id): int => (int) $id)
+                    ->all(),
+            ];
+        }
+
+        $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
+
+        return array_values(array_diff(array_unique(array_filter($ids)), $exclude));
+    }
+
+    private function snapshotRecord(object $record, bool $includeClaims = true): array
+    {
+        $snapshot = [
+            'id' => (int) $record->id,
+            'staffId' => (int) $record->staff_id,
+            'salaryMonth' => (string) $record->salary_month_label,
+            'salaryMonthValue' => (string) $record->salary_month,
+            'basicSalary' => (float) $record->basic_salary,
+            'claimsTotal' => (float) $record->claims_total,
+            'employeeDeductions' => (float) $record->employee_deductions,
+            'employerContributions' => (float) $record->employer_contributions,
+            'payableSalary' => (float) $record->payable_salary,
+            'status' => (string) $record->status,
+            'submittedAt' => $record->submitted_at ?? null,
+            'checkedBy' => isset($record->checked_by) ? (int) $record->checked_by : null,
+            'checkedAt' => $record->checked_at ?? null,
+            'approvedBy' => isset($record->approved_by) ? (int) $record->approved_by : null,
+            'approvedAt' => $record->approved_at ?? null,
+        ];
+
+        if ($includeClaims) {
+            $snapshot['claims'] = $this->claimsForApplication((int) $record->id);
+        }
+
+        return $snapshot;
+    }
+
+    private function recordWorkflowEvent(
+        string $subjectType,
+        int $subjectId,
+        string $action,
+        int $actorStaffId,
+        ?string $statusFrom,
+        ?string $statusTo,
+        string $reason,
+        array $previousSnapshot,
+    ): void {
+        if (! Schema::hasTable('hr_salary_workflow_events')) {
+            return;
+        }
+
+        DB::table('hr_salary_workflow_events')->insert([
+            'subject_type' => $subjectType,
+            'subject_id' => $subjectId,
+            'action' => $action,
+            'actor_staff_id' => $actorStaffId > 0 ? $actorStaffId : null,
+            'status_from' => $statusFrom,
+            'status_to' => $statusTo,
+            'reason' => $reason,
+            'previous_snapshot_json' => json_encode($previousSnapshot, JSON_THROW_ON_ERROR),
+            'acted_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
     private function claimsForApplication(int $applicationId): array

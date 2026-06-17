@@ -821,6 +821,11 @@ class AppNotificationService
             return false;
         }
 
+        $applicationStatus = DB::table($applicationTable)->where('id', $instance->subject_id)->value('status');
+        if ((string) $applicationStatus === 'Cancelled') {
+            return false;
+        }
+
         if (! $isSystemAdmin && (string) $instance->step_key === 'approve') {
             $checkerId = DB::table($applicationTable)->where('id', $instance->subject_id)->value('checked_by');
             if ((int) $checkerId === $actorId) {

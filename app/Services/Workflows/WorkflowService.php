@@ -28,6 +28,8 @@ class WorkflowService
 
     private const SALARY_PENDING_CHECK_STATUSES = ['Submitted', 'Prepared'];
 
+    private const CANCELLED_STATUS = 'Cancelled';
+
     private const MANAGE_ROLES = ['Manager', 'System Admin'];
 
     private const VENDOR_FALLBACK_ROLES = [
@@ -257,6 +259,21 @@ class WorkflowService
             })
             ->where('template.process_key', self::SALARY_TEMPLATE_KEY)
             ->whereIn('instance.status', [...self::SALARY_PENDING_CHECK_STATUSES, 'Checked'])
+            ->where(function ($query): void {
+                $query
+                    ->where(function ($salaryQuery): void {
+                        $salaryQuery
+                            ->where('instance.subject_type', self::SALARY_SUBJECT_TYPE)
+                            ->whereNotNull('salary.id')
+                            ->where('salary.status', '<>', self::CANCELLED_STATUS);
+                    })
+                    ->orWhere(function ($otherClaimQuery): void {
+                        $otherClaimQuery
+                            ->where('instance.subject_type', self::OTHER_CLAIM_SUBJECT_TYPE)
+                            ->whereNotNull('other_claim.id')
+                            ->where('other_claim.status', '<>', self::CANCELLED_STATUS);
+                    });
+            })
             ->select([
                 'instance.*',
                 'template.process_key',
@@ -692,6 +709,9 @@ class WorkflowService
         if (! $salary) {
             abort(response()->json(['status' => 'error', 'message' => 'Salary record not found.'], 404));
         }
+        if ((string) $salary->status === self::CANCELLED_STATUS) {
+            abort(response()->json(['status' => 'error', 'message' => 'Salary record not found.'], 404));
+        }
         if ((string) $instance->status === 'Rejected' || (string) $salary->status === 'Rejected') {
             abort(response()->json(['status' => 'error', 'message' => 'Rejected salary records cannot be actioned further.'], 422));
         }
@@ -805,6 +825,9 @@ class WorkflowService
     {
         $claim = DB::table('hr_other_claim_applications')->where('id', $instance->subject_id)->lockForUpdate()->first();
         if (! $claim) {
+            abort(response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404));
+        }
+        if ((string) $claim->status === self::CANCELLED_STATUS) {
             abort(response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404));
         }
         if ((string) $instance->status === 'Rejected' || (string) $claim->status === 'Rejected') {
@@ -1147,7 +1170,6 @@ class WorkflowService
     {
         return match ($status) {
             'Prepared' => self::SALARY_SUBMITTED_STATUS,
-            'Paid' => 'Approved',
             default => $status,
         };
     }
