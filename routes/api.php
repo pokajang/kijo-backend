@@ -128,6 +128,7 @@ Route::middleware('auth.session')->group(function () {
 
     // Batch 1 — Feedback
     Route::get('feedback', [FeedbackController::class, 'index']);
+    Route::get('feedback/metrics/monthly', [FeedbackController::class, 'monthlyMetrics']);
     Route::post('feedback', [FeedbackController::class, 'store']);
     Route::put('feedback/{id}', [FeedbackController::class, 'update']);
     Route::delete('feedback/{id}', [FeedbackController::class, 'destroy']);
