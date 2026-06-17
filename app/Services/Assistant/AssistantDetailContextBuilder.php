@@ -45,6 +45,11 @@ class AssistantDetailContextBuilder
             }
 
             if (! $this->canAccess($spec, $request)) {
+                AssistantDiagnosticsRecorder::recordDenied(
+                    'detail_record',
+                    (string) ($spec['source_type'] ?? $spec['type'] ?? 'record'),
+                    'route_access_denied',
+                );
                 continue;
             }
 
@@ -73,6 +78,11 @@ class AssistantDetailContextBuilder
             $staffId = (int) $request->session()->get('staff_id');
             $selfColumn = $spec['self_column'] ?? 'staff_id';
             if (! Schema::hasColumn($spec['table'], $selfColumn) || $staffId <= 0) {
+                AssistantDiagnosticsRecorder::recordDenied(
+                    'detail_record',
+                    (string) ($spec['source_type'] ?? $spec['type'] ?? 'record'),
+                    'self_scope_unavailable',
+                );
                 return null;
             }
             $query->where($selfColumn, $staffId);
@@ -80,6 +90,14 @@ class AssistantDetailContextBuilder
 
         $record = $query->first();
         if (! $record) {
+            if (in_array(($spec['scope'] ?? null), ['self', 'self_or_roles'], true) && ! $this->hasRoleAccess($spec, $request)) {
+                AssistantDiagnosticsRecorder::recordDenied(
+                    'detail_record',
+                    (string) ($spec['source_type'] ?? $spec['type'] ?? 'record'),
+                    'self_scope_record_denied_or_missing',
+                );
+            }
+
             return null;
         }
 

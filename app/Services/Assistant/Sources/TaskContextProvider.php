@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Schema;
 
 class TaskContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const ROUTE_PATTERNS = [
         '~/task-manager/(\d+)(?:/|$)~i',
         '~/staff/tasks/(\d+)(?:/|$)~i',
@@ -80,6 +82,20 @@ class TaskContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->taskListSource($filtered ?: array_slice($rows, 0, 8), $allStaff));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/task-manager', '/task-manager/{id}', '/staff/tasks', '/staff/tasks/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'self-or-manager-admin',
+            'smoke_sample' => 'show overdue tasks',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function taskRows(Request $request, bool $allStaff): array

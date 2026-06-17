@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Assistant\AssistantDiagnosticsRecorder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -107,6 +108,40 @@ class AdminAssistantGovernanceController extends Controller
             ->values();
 
         return response()->json(['status' => 'success', 'data' => $rows]);
+    }
+
+    public function messageDiagnostics(Request $request, int $messageId): JsonResponse
+    {
+        if ($response = $this->authorizeSystemAdmin($request)) {
+            return $response;
+        }
+        if (! Schema::hasTable('assistant_request_diagnostics')) {
+            return response()->json(['status' => 'error', 'message' => 'Assistant diagnostics storage is not ready.'], 503);
+        }
+
+        $row = DB::table('assistant_request_diagnostics')
+            ->where('message_id', $messageId)
+            ->first();
+        if (! $row) {
+            return response()->json(['status' => 'error', 'message' => 'Assistant diagnostics not found.'], 404);
+        }
+
+        $payload = AssistantDiagnosticsRecorder::redactedPayload($this->decodeJson($row->diagnostics_json ?? '{}'));
+        $question = AssistantDiagnosticsRecorder::redactedPayload(['question' => $row->question])['question'] ?? null;
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'message_id' => (int) $row->message_id,
+                'thread_id' => $row->thread_id ? (int) $row->thread_id : null,
+                'question_hash' => $row->question_hash,
+                'question' => $question,
+                'current_route' => $row->current_route,
+                'diagnostics' => $payload,
+                'created_at' => $row->created_at,
+                'updated_at' => $row->updated_at,
+            ],
+        ]);
     }
 
     public function cache(Request $request): JsonResponse

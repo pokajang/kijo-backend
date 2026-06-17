@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Schema;
 
 class InvoiceContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const ROUTE_PATTERNS = [
         '~/(?:commercial/)?invoice/(\d+)(?:/|$)~i',
     ];
@@ -76,6 +78,20 @@ class InvoiceContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->invoiceListSource($filtered ?: array_slice($rows, 0, 8)));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/commercial/invoice', '/commercial/invoice/{id}', '/invoices/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'invoice services/session',
+            'smoke_sample' => 'show unpaid invoices',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function invoiceRows(Request $request): array

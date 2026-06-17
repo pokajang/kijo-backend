@@ -4,6 +4,7 @@ namespace App\Services\Assistant\Sources;
 
 use App\Services\Assistant\AssistantContextProvider;
 use App\Services\Assistant\AssistantContextResult;
+use App\Services\Assistant\AssistantProviderAuditMetadata;
 use App\Services\Assistant\AssistantRetrievalPlan;
 use App\Services\Assistant\AssistantText;
 use App\Services\Assistant\PlannedAssistantContextProvider;
@@ -11,7 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-class HandbookContextProvider implements AssistantContextProvider, PlannedAssistantContextProvider
+class HandbookContextProvider implements AssistantContextProvider, PlannedAssistantContextProvider, AssistantProviderAuditMetadata
 {
     private const MAX_SOURCE_EXCERPT_LENGTH = 2500;
 
@@ -41,6 +42,23 @@ class HandbookContextProvider implements AssistantContextProvider, PlannedAssist
     public function retrievePlanned(AssistantRetrievalPlan $plan, string $question, string $currentRoute, Request $request): AssistantContextResult
     {
         return $this->retrieveForQuestion($plan->expandedQuestion($question), $currentRoute);
+    }
+
+    public function auditMetadata(): array
+    {
+        return [
+            'provider_key' => $this->key(),
+            'supported_routes' => ['/handbook'],
+            'exact_ref_support' => false,
+            'detail_route_support' => false,
+            'list_support' => false,
+            'sanitizer_coverage' => 'not-applicable',
+            'source_status_metadata' => 'not-applicable',
+            'permission_scope' => 'published handbook only',
+            'smoke_sample' => 'what is working time in amiosh',
+            'tests_present' => 'covered',
+            'classification' => 'not-applicable',
+        ];
     }
 
     private function retrieveForQuestion(string $question, string $currentRoute): AssistantContextResult

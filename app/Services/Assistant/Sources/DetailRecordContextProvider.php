@@ -70,4 +70,21 @@ class DetailRecordContextProvider extends ModuleContextProvider
             [$this->key()],
         );
     }
+
+    public function auditMetadata(): array
+    {
+        return [
+            'provider_key' => $this->key(),
+            'supported_routes' => ['current detail routes from AssistantDetailContextBuilder'],
+            'exact_ref_support' => false,
+            'detail_route_support' => true,
+            'list_support' => false,
+            'sanitizer_coverage' => 'covered',
+            'source_status_metadata' => 'covered',
+            'permission_scope' => 'route spec self-or-role',
+            'smoke_sample' => 'Explain this record from a supported detail route.',
+            'tests_present' => 'partial',
+            'classification' => 'detail-ready',
+        ];
+    }
 }

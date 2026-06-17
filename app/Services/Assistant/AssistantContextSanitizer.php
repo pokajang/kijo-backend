@@ -250,6 +250,10 @@ class AssistantContextSanitizer
             return true;
         }
 
+        if (preg_match('/https?:\/\/\S+\?(?:\S*(&|&amp;)?(?:signature|expires|X-Amz-Signature|X-Amz-Credential)=\S+)/i', $text)) {
+            return true;
+        }
+
         if (preg_match('/^data:(?:application|image)\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+\/=\r\n]{80,}$/i', $text)) {
             return true;
         }

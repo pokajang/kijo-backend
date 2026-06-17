@@ -47,6 +47,10 @@ class SalaryApiFeatureTest extends TestCase
             '--path' => 'database/migrations/2026_06_17_220000_create_salary_payment_runs.php',
             '--realpath' => false,
         ])->run();
+        $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_06_17_230000_harden_salary_payment_run_voids.php',
+            '--realpath' => false,
+        ])->run();
     }
 
     protected function tearDown(): void
@@ -1277,6 +1281,26 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('items.0.label', 'Restricted')
             ->assertJsonPath('items.0.amount', null);
 
+        DB::table('system_users')->insert([
+            'id' => 99,
+            'staff_id' => 10,
+            'email' => 'sysadmin.staff@example.test',
+            'role' => json_encode(['System Admin']),
+            'is_active' => 1,
+            'total_lock' => 0,
+            'account_locked_until' => null,
+        ]);
+
+        $this->actingSession(99, 10, ['System Admin'])
+            ->getJson('/hr/salary/payment-queue')
+            ->assertOk()
+            ->assertJsonPath('records.0.staffName', 'Restricted')
+            ->assertJsonPath('records.0.salaryDue', null)
+            ->assertJsonPath('records.0.otherClaimDue', null)
+            ->assertJsonPath('records.0.totalDue', null)
+            ->assertJsonPath('records.0.canViewValues', false)
+            ->assertJsonPath('records.0.canMarkPaid', false);
+
         $this->actingSession(3, 30, ['Manager'])
             ->getJson('/hr/salary/payment-queue/10/2026-05')
             ->assertOk()
@@ -1414,7 +1438,7 @@ class SalaryApiFeatureTest extends TestCase
         $this->assertDatabaseCount('hr_salary_payment_run_items', 0);
     }
 
-    public function test_payment_queue_mark_paid_is_atomic_idempotent_and_hides_paid_records(): void
+    public function test_payment_queue_mark_paid_is_atomic_idempotent_visible_and_undoable(): void
     {
         $salaryId = DB::table('hr_salary_applications')->insertGetId([
             'staff_id' => 10,
@@ -1491,7 +1515,242 @@ class SalaryApiFeatureTest extends TestCase
         $this->actingSession(5, 50, ['Bank'])
             ->getJson('/hr/salary/payment-queue')
             ->assertOk()
-            ->assertJsonCount(0, 'records');
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.status', 'Paid')
+            ->assertJsonPath('records.0.canMarkPaid', false)
+            ->assertJsonPath('records.0.canUndoPaid', true)
+            ->assertJsonPath('records.0.totalDue', 3908.95);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/undo-paid', [
+                'staff_id' => 10,
+                'payment_period' => '2026-05',
+                'reason' => 'Payment entered against the wrong bank batch.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Payment was undone.');
+
+        $this->assertDatabaseHas('hr_salary_applications', ['id' => $salaryId, 'status' => 'Approved']);
+        $this->assertDatabaseHas('hr_other_claim_applications', ['id' => $otherClaimId, 'status' => 'Approved']);
+        $this->assertDatabaseMissing('hr_salary_payment_runs', [
+            'staff_id' => 10,
+            'payment_period' => '2026-05',
+            'voided_at' => null,
+        ]);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->getJson('/hr/salary/payment-queue')
+            ->assertOk()
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.status', 'Pending Payment')
+            ->assertJsonPath('records.0.canMarkPaid', true);
+
+        $payload['idempotency_key'] = 'pay-2026-05-staff-10-after-undo';
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/mark-paid', $payload)
+            ->assertOk()
+            ->assertJsonPath('message', 'Payment marked as paid.');
+
+        $this->assertDatabaseCount('hr_salary_payment_runs', 2);
+    }
+
+    public function test_payment_queue_bulk_mark_paid_and_bulk_undo_report_selected_row_results(): void
+    {
+        foreach ([10 => '2026-05', 20 => '2026-06'] as $staffId => $period) {
+            $salaryId = DB::table('hr_salary_applications')->insertGetId([
+                'staff_id' => $staffId,
+                'salary_month' => $period,
+                'salary_month_label' => Carbon::parse($period.'-01')->format('F Y'),
+                'basic_salary' => 3000,
+                'claims_total' => 0,
+                'employee_deductions' => 300,
+                'employer_contributions' => 450,
+                'payable_salary' => 2700,
+                'status' => 'Approved',
+                'deductions_json' => json_encode(['employeeTotal' => 300]),
+                'submitted_at' => now(),
+                'checked_by' => 30,
+                'checked_at' => now(),
+                'checked_status' => 'Checked',
+                'approved_by' => 50,
+                'approved_at' => now(),
+                'approved_status' => 'Approved',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $this->createApprovedWorkflow('salary_application', $salaryId, actorStaffId: 50);
+        }
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/bulk-mark-paid', [
+                'rows' => [
+                    ['staff_id' => 10, 'payment_period' => '2026-05'],
+                    ['staff_id' => 20, 'payment_period' => '2026-06'],
+                ],
+                'payment_date' => '2026-06-30',
+                'payment_reference' => 'BULK-001',
+                'payment_method' => 'Bank Transfer',
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.success', 2)
+            ->assertJsonPath('summary.skipped', 0)
+            ->assertJsonPath('summary.failed', 0);
+
+        $this->assertDatabaseCount('hr_salary_payment_runs', 2);
+        $this->assertDatabaseHas('hr_salary_applications', [
+            'staff_id' => 10,
+            'salary_month' => '2026-05',
+            'status' => 'Paid',
+        ]);
+        $this->assertDatabaseHas('hr_salary_applications', [
+            'staff_id' => 20,
+            'salary_month' => '2026-06',
+            'status' => 'Paid',
+        ]);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/bulk-undo-paid', [
+                'rows' => [
+                    ['staff_id' => 10, 'payment_period' => '2026-05'],
+                    ['staff_id' => 20, 'payment_period' => '2026-07'],
+                ],
+                'reason' => 'Bulk payment batch was reversed.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.success', 1)
+            ->assertJsonPath('summary.skipped', 1)
+            ->assertJsonPath('summary.failed', 0);
+
+        $this->assertDatabaseHas('hr_salary_applications', [
+            'staff_id' => 10,
+            'salary_month' => '2026-05',
+            'status' => 'Approved',
+        ]);
+        $this->assertDatabaseHas('hr_salary_applications', [
+            'staff_id' => 20,
+            'salary_month' => '2026-06',
+            'status' => 'Paid',
+        ]);
+    }
+
+    public function test_payment_queue_does_not_hide_new_unpaid_items_after_prior_paid_run(): void
+    {
+        $salaryId = DB::table('hr_salary_applications')->insertGetId([
+            'staff_id' => 10,
+            'salary_month' => '2026-05',
+            'salary_month_label' => 'May 2026',
+            'basic_salary' => 3000,
+            'claims_total' => 0,
+            'employee_deductions' => 300,
+            'employer_contributions' => 450,
+            'payable_salary' => 2700,
+            'status' => 'Approved',
+            'deductions_json' => json_encode(['employeeTotal' => 300]),
+            'submitted_at' => now(),
+            'checked_by' => 30,
+            'checked_at' => now(),
+            'checked_status' => 'Checked',
+            'approved_by' => 50,
+            'approved_at' => now(),
+            'approved_status' => 'Approved',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->createApprovedWorkflow('salary_application', $salaryId, actorStaffId: 50);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/mark-paid', [
+                'staff_id' => 10,
+                'payment_period' => '2026-05',
+                'payment_date' => '2026-06-30',
+                'payment_reference' => 'SALARY-BATCH',
+                'payment_method' => 'Bank Transfer',
+                'idempotency_key' => 'salary-first-2026-05-staff-10',
+            ])
+            ->assertOk();
+
+        $otherClaimId = DB::table('hr_other_claim_applications')->insertGetId([
+            'staff_id' => 10,
+            'claim_month' => '2026-05',
+            'claim_month_label' => 'May 2026',
+            'claims_total' => 125,
+            'status' => 'Approved',
+            'submitted_at' => now(),
+            'checked_by' => 30,
+            'checked_at' => now(),
+            'checked_status' => 'Checked',
+            'approved_by' => 50,
+            'approved_at' => now(),
+            'approved_status' => 'Approved',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->createApprovedWorkflow('other_claim_application', $otherClaimId, actorStaffId: 50);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->getJson('/hr/salary/payment-queue')
+            ->assertOk()
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.status', 'Pending Payment')
+            ->assertJsonPath('records.0.salaryDue', 0)
+            ->assertJsonPath('records.0.otherClaimDue', 125)
+            ->assertJsonPath('records.0.totalDue', 125)
+            ->assertJsonPath('records.0.canMarkPaid', true);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/mark-paid', [
+                'staff_id' => 10,
+                'payment_period' => '2026-05',
+                'payment_date' => '2026-07-01',
+                'payment_reference' => 'CLAIM-BATCH',
+                'payment_method' => 'Bank Transfer',
+                'idempotency_key' => 'claim-second-2026-05-staff-10',
+            ])
+            ->assertOk();
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->getJson('/hr/salary/payment-queue')
+            ->assertOk()
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.status', 'Paid')
+            ->assertJsonPath('records.0.itemCount', 2)
+            ->assertJsonPath('records.0.totalDue', 2825);
+
+        $this->assertDatabaseCount('hr_salary_payment_runs', 2);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $otherClaimId,
+            'status' => 'Paid',
+        ]);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/hr/salary/payment-queue/undo-paid', [
+                'staff_id' => 10,
+                'payment_period' => '2026-05',
+                'reason' => 'Reverse the combined month payment.',
+            ])
+            ->assertOk()
+            ->assertJsonCount(2, 'paymentRunIds');
+
+        $this->assertDatabaseHas('hr_salary_applications', [
+            'id' => $salaryId,
+            'status' => 'Approved',
+        ]);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $otherClaimId,
+            'status' => 'Approved',
+        ]);
+        $this->assertDatabaseMissing('hr_salary_payment_runs', [
+            'staff_id' => 10,
+            'payment_period' => '2026-05',
+            'voided_at' => null,
+        ]);
     }
 
     public function test_financial_records_lists_all_submitted_salary_records_for_privileged_roles(): void

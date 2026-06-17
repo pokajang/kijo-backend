@@ -61,6 +61,23 @@ class QuoteRecordContextProvider extends ModuleContextProvider implements Planne
         return $this->retrieveForQuestion($plan->expandedQuestion($question), $currentRoute, $request);
     }
 
+    public function auditMetadata(): array
+    {
+        return [
+            'provider_key' => $this->key(),
+            'supported_routes' => ['/crm/quotes', '/quote-records/*'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'source_status_metadata' => 'covered',
+            'permission_scope' => 'session controller/listing service',
+            'smoke_sample' => 'explain quote QTR26-0001AZ',
+            'tests_present' => 'partial',
+            'classification' => 'detail-ready',
+        ];
+    }
+
     private function retrieveForQuestion(string $question, string $currentRoute, Request $request): AssistantContextResult
     {
         $routeMatch = $this->routes->quoteRoute($currentRoute);

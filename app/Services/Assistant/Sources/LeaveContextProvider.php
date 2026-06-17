@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Schema;
 
 class LeaveContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const PERSONAL_ROUTE_PATTERNS = [
         '~/my/leaves/records/(\d+)(?:/|$)~i',
         '~/staff/leaves/records/(\d+)(?:/|$)~i',
@@ -80,6 +82,20 @@ class LeaveContextProvider extends ModuleContextProvider
         $matches = array_column(array_slice($ranked, 0, 8), 'row');
 
         return $this->resultFromSource($this->leaveListSource($matches ?: array_slice($rows, 0, 8), $entitlements, $wantsAllStaff));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/my/leaves', '/my/leaves/records/{id}', '/staff/leaves', '/staff/leaves/records/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'self-or-HR-manager-admin',
+            'smoke_sample' => 'show my leave balance',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function leaveRows(Request $request, bool $allStaff): array

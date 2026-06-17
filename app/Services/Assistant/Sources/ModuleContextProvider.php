@@ -4,6 +4,7 @@ namespace App\Services\Assistant\Sources;
 
 use App\Services\Assistant\AssistantContextProvider;
 use App\Services\Assistant\AssistantContextQualityService;
+use App\Services\Assistant\AssistantProviderAuditMetadata;
 use App\Services\Assistant\AssistantText;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\JsonResponse;
@@ -11,7 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Throwable;
 
-abstract class ModuleContextProvider implements AssistantContextProvider
+abstract class ModuleContextProvider implements AssistantContextProvider, AssistantProviderAuditMetadata
 {
     public function __construct(protected readonly AssistantText $text) {}
 
@@ -143,6 +144,23 @@ abstract class ModuleContextProvider implements AssistantContextProvider
     protected function freshnessLabel(): string
     {
         return 'As of '.Carbon::now()->format('d M Y, H:i');
+    }
+
+    public function auditMetadata(): array
+    {
+        return [
+            'provider_key' => $this->key(),
+            'supported_routes' => [],
+            'exact_ref_support' => false,
+            'detail_route_support' => false,
+            'list_support' => false,
+            'sanitizer_coverage' => 'unknown',
+            'source_status_metadata' => 'partial',
+            'permission_scope' => 'unknown',
+            'smoke_sample' => null,
+            'tests_present' => 'unknown',
+            'classification' => 'summary-only',
+        ];
     }
 
     private function sourceLifecycleMetadata(array $payload): array

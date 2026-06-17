@@ -14,6 +14,8 @@ use Illuminate\Http\Request;
 
 class VendorContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const ROUTE_PATTERNS = [
         '~/(?:vendor|vendors)(?:/[^/]+)?/(\d+)(?:/|$)~i',
     ];
@@ -78,6 +80,20 @@ class VendorContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->vendorListSource($matches ?: array_slice($vendorRows, 0, 5)));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/vendor/manage', '/vendor/paid/{id}', '/vendors/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'vendor services/session',
+            'smoke_sample' => 'show vendor payment status',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function vendorRows(Request $request): array

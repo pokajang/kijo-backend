@@ -33,6 +33,7 @@ class KnowledgeAssistantTest extends TestCase
 
         config(['services.knowledge_assistant.planner_enabled' => false]);
 
+        Schema::dropIfExists('assistant_request_diagnostics');
         Schema::dropIfExists('knowledge_assistant_messages');
         Schema::dropIfExists('knowledge_assistant_thread_contexts');
         Schema::dropIfExists('knowledge_assistant_threads');
@@ -50,6 +51,8 @@ class KnowledgeAssistantTest extends TestCase
         Schema::dropIfExists('hr_handbook_versions');
         Schema::dropIfExists('knowledge_articles');
         Schema::dropIfExists('hr_appraisal');
+        Schema::dropIfExists('hr_salary_claims');
+        Schema::dropIfExists('hr_salary_applications');
         Schema::dropIfExists('task_comments');
         Schema::dropIfExists('tasks');
         Schema::dropIfExists('hr_leaves_allocation');
@@ -124,6 +127,25 @@ class KnowledgeAssistantTest extends TestCase
             $table->text('feedback')->nullable();
             $table->string('status')->nullable();
             $table->unsignedBigInteger('created_by')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('hr_salary_applications', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->unsignedBigInteger('staff_id');
+            $table->string('salary_month')->nullable();
+            $table->string('status')->nullable();
+            $table->decimal('basic_salary', 12, 2)->nullable();
+            $table->decimal('net_pay', 12, 2)->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('hr_salary_claims', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->unsignedInteger('application_id');
+            $table->string('claim_type')->nullable();
+            $table->decimal('amount', 12, 2)->nullable();
+            $table->string('receipt_path')->nullable();
             $table->timestamps();
         });
 
@@ -745,6 +767,17 @@ class KnowledgeAssistantTest extends TestCase
             $table->string('confidence', 20)->nullable();
             $table->unsignedInteger('input_tokens')->nullable();
             $table->unsignedInteger('output_tokens')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('assistant_request_diagnostics', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('message_id')->unique();
+            $table->unsignedBigInteger('thread_id')->nullable()->index();
+            $table->string('question_hash', 64)->index();
+            $table->text('question')->nullable();
+            $table->string('current_route', 255)->nullable();
+            $table->json('diagnostics_json');
             $table->timestamps();
         });
 
@@ -3718,6 +3751,73 @@ Contoh soalan:
         $this->assertSame([], $staffRouteDenied->sources);
         $this->assertSame('appraisal', $staffRouteManager->sources[0]['source_type'] ?? null);
         $this->assertStringContainsString('Other staff appraisal feedback', json_encode($staffRouteManager->sources[0]));
+    }
+
+    public function test_salary_detail_route_respects_personal_scope_and_normal_response_hides_diagnostics(): void
+    {
+        DB::table('hr_salary_applications')->insert([
+            [
+                'id' => 301,
+                'staff_id' => 7,
+                'salary_month' => '2026-05',
+                'status' => 'Approved',
+                'basic_salary' => 5000,
+                'net_pay' => 4500,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'id' => 302,
+                'staff_id' => 8,
+                'salary_month' => '2026-05',
+                'status' => 'Approved',
+                'basic_salary' => 9000,
+                'net_pay' => 8500,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+        DB::table('hr_salary_claims')->insert([
+            'application_id' => 302,
+            'claim_type' => 'Private claim',
+            'amount' => 123,
+            'receipt_path' => 'storage/app/private/receipts/private.pdf',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $provider = app(DetailRecordContextProvider::class);
+        $ownResult = $provider->retrieve(
+            'Summarize this salary',
+            '/my/salary/records/301',
+            $this->assistantRequest(7),
+        );
+        $otherResult = $provider->retrieve(
+            'Summarize this salary',
+            '/my/salary/records/302',
+            $this->assistantRequest(7),
+        );
+
+        $this->assertSame('salary', $ownResult->sources[0]['source_type'] ?? null);
+        $this->assertStringContainsString('2026-05', json_encode($ownResult->sources[0]));
+        $this->assertSame([], $otherResult->sources);
+
+        $response = $this->authenticated(1, 7, ['Staff'])
+            ->postJson('/knowledge/assistant', [
+                'question' => 'Summarize this salary',
+                'current_route' => '/my/salary/records/302',
+            ]);
+        $response
+            ->assertOk()
+            ->assertJsonMissing(['diagnostics']);
+        $response->assertDontSee('8500', false);
+        $response->assertDontSee('private.pdf', false);
+
+        $diagnostics = json_decode((string) DB::table('assistant_request_diagnostics')->value('diagnostics_json'), true);
+        $this->assertIsArray($diagnostics);
+        $this->assertNotEmpty($diagnostics['denied_retrievals'] ?? []);
+        $this->assertStringNotContainsString('8500', json_encode($diagnostics));
+        $this->assertStringNotContainsString('private.pdf', json_encode($diagnostics));
     }
 
     public function test_current_procedure_detail_route_matches_frontend_route_shape(): void

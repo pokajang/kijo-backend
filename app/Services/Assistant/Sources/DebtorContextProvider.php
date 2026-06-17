@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Schema;
 
 class DebtorContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     public function __construct(
         AssistantText $text,
         private readonly DebtorService $debtors,
@@ -75,6 +77,20 @@ class DebtorContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->debtorListSource($matches ?: array_slice($rows, 0, 8)));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/commercial/debtors', '/commercial/debtors/manual/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'debtor services/session',
+            'smoke_sample' => 'show overdue debtors',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function debtorRows(string $question, Request $request): array

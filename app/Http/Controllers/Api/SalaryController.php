@@ -113,6 +113,21 @@ class SalaryController extends Controller
         return $this->paymentQueueService->markPaid($request);
     }
 
+    public function undoPaymentQueuePaid(Request $request): JsonResponse
+    {
+        return $this->paymentQueueService->undoPaid($request);
+    }
+
+    public function bulkMarkPaymentQueuePaid(Request $request): JsonResponse
+    {
+        return $this->paymentQueueService->bulkMarkPaid($request);
+    }
+
+    public function bulkUndoPaymentQueuePaid(Request $request): JsonResponse
+    {
+        return $this->paymentQueueService->bulkUndoPaid($request);
+    }
+
     public function otherClaimRecords(Request $request): JsonResponse
     {
         return $this->otherClaimService->records($request);

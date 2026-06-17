@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class AdminAssistantGovernanceTest extends TestCase
@@ -14,6 +16,7 @@ class AdminAssistantGovernanceTest extends TestCase
         parent::setUp();
 
         foreach ([
+            'assistant_request_diagnostics',
             'assistant_source_gap_actions',
             'assistant_source_gaps',
             'assistant_provider_feedback_memory',
@@ -46,6 +49,17 @@ class AdminAssistantGovernanceTest extends TestCase
             $table->string('confidence', 20)->nullable();
             $table->unsignedInteger('input_tokens')->nullable();
             $table->unsignedInteger('output_tokens')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('assistant_request_diagnostics', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('message_id')->unique();
+            $table->unsignedBigInteger('thread_id')->nullable()->index();
+            $table->string('question_hash', 64)->index();
+            $table->text('question')->nullable();
+            $table->string('current_route', 255)->nullable();
+            $table->json('diagnostics_json');
             $table->timestamps();
         });
 
@@ -215,6 +229,71 @@ class AdminAssistantGovernanceTest extends TestCase
         $this->withSession(['user_id' => 2, 'staff_id' => 20, 'roles' => ['Manager']])
             ->getJson('/admin/assistant/overview')
             ->assertStatus(403);
+    }
+
+    public function test_system_admin_can_read_message_diagnostics_and_payload_is_redacted(): void
+    {
+        DB::table('knowledge_assistant_messages')->insert([
+            'id' => 91,
+            'thread_id' => 5,
+            'role' => 'assistant',
+            'content' => 'Answer',
+            'sources_json' => json_encode(['sources' => []]),
+            'confidence' => 'low',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('assistant_request_diagnostics')->insert([
+            'message_id' => 91,
+            'thread_id' => 5,
+            'question_hash' => sha1('question'),
+            'question' => 'question token=secret-value',
+            'current_route' => '/crm/quotes',
+            'diagnostics_json' => json_encode([
+                'retrieval_question' => 'question',
+                'providers' => [['provider_key' => 'knowledge', 'status' => 'ran']],
+                'raw_error' => 'Bearer abcdefghijklmnopqrstuvwxyz',
+                'file_path' => 'storage/app/private/secret.pdf',
+            ]),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->withAdminSession()
+            ->getJson('/admin/assistant/messages/91/diagnostics')
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('data.message_id', 91)
+            ->assertJsonPath('data.diagnostics.providers.0.provider_key', 'knowledge')
+            ->assertJsonMissing(['secret.pdf'])
+            ->assertJsonMissing(['abcdefghijklmnopqrstuvwxyz']);
+
+        $this->withSession(['user_id' => 2, 'staff_id' => 20, 'roles' => ['Manager']])
+            ->getJson('/admin/assistant/messages/91/diagnostics')
+            ->assertStatus(403);
+    }
+
+    public function test_provider_audit_and_evaluation_commands_run(): void
+    {
+        Storage::fake('local');
+
+        $this->assertSame(0, Artisan::call('assistant:provider-audit'));
+        $auditPath = 'assistant-provider-audit-'.now()->format('Ymd').'.md';
+        Storage::disk('local')->assertExists($auditPath);
+        $auditReport = Storage::disk('local')->get($auditPath);
+        $this->assertStringContainsString('| Provider | Classification | Detail | Exact Ref | List | Sanitizer | Source Status | Permission | Tests |', $auditReport);
+        $this->assertStringContainsString('| `project` | detail-ready | yes | yes | yes | covered', $auditReport);
+        $this->assertStringContainsString('| `invoice` | detail-ready | yes | yes | yes | covered', $auditReport);
+        $this->assertStringContainsString('| `leave` | detail-ready | yes | yes | yes | covered', $auditReport);
+        $this->assertStringContainsString('| `handbook` | not-applicable', $auditReport);
+        $this->assertStringContainsString('## Provider Details', $auditReport);
+        $this->assertStringContainsString('smoke sample', $auditReport);
+
+        $this->assertSame(0, Artisan::call('assistant:evaluate', [
+            '--fixture' => 'backend-laravel/tests/Fixtures/assistant_eval_cases.json',
+            '--dry-run' => true,
+        ]));
+        $this->assertNotEmpty(Storage::disk('local')->files('assistant-eval'));
     }
 
     public function test_system_admin_can_update_source_gap_status_and_unblock_signature(): void

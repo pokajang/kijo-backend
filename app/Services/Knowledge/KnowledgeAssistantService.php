@@ -9,6 +9,7 @@ use App\Services\Assistant\AssistantAnswerQualityService;
 use App\Services\Assistant\AssistantConversationContextResolver;
 use App\Services\Assistant\AssistantContextRegistry;
 use App\Services\Assistant\AssistantContextResult;
+use App\Services\Assistant\AssistantDiagnosticsRecorder;
 use App\Services\Assistant\AssistantFeedbackMemory;
 use App\Services\Assistant\AssistantMetaQuestionDetector;
 use App\Services\Assistant\AssistantQuestionIntent;
@@ -125,11 +126,15 @@ class KnowledgeAssistantService
 
         $question = $this->normalizePlainText((string) $data['question']);
         $currentRoute = trim((string) ($data['current_route'] ?? ''));
+        AssistantDiagnosticsRecorder::start($question, $currentRoute);
+        AssistantDiagnosticsRecorder::setNormalizedQuestion($this->assistantText->normalizedQuestionKey($question));
         $thread = $this->findOrCreateThread($staffId, $question, (int) ($data['thread_id'] ?? 0));
         $this->storeMessage((int) $thread->id, 'user', $question);
 
         $conversation = $this->conversationContext->resolve((int) $thread->id, $question, $currentRoute);
         $retrievalQuestion = (string) ($conversation['retrieval_question'] ?? $this->assistantText->normalizeAssistantQueryTerms($question));
+        AssistantDiagnosticsRecorder::setRetrievalQuestion($retrievalQuestion);
+        AssistantDiagnosticsRecorder::setConversationFocus($conversation['conversation_focus'] ?? null);
         $isActionRequest = $this->intentResolver->resolve($retrievalQuestion, $currentRoute)->primaryIntent === AssistantQuestionIntent::ACTION_REQUEST;
 
         if (! empty($conversation['clarification_needed'])) {
@@ -152,6 +157,7 @@ class KnowledgeAssistantService
                 'static',
                 'clarification_needed',
             );
+            AssistantDiagnosticsRecorder::recordSourceGap('clarification_needed', $this->providerKeysFromClarificationOptions($conversation['clarification_options'] ?? []), 'low', 'static');
 
             $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
 
@@ -166,6 +172,7 @@ class KnowledgeAssistantService
         }
 
         $retrievalPlan = $this->retrievalPlanner->plan($retrievalQuestion, $currentRoute, $request);
+        AssistantDiagnosticsRecorder::setPlanner($retrievalPlan);
         $context = $this->contextRegistry->retrieve($retrievalQuestion, $currentRoute, $request, $retrievalPlan);
         $sources = $context->sources;
         $routeCandidates = $this->routeCandidatesForSources($sources);
@@ -199,6 +206,8 @@ class KnowledgeAssistantService
                 'ai_failure_stage' => $plannerLimitReached ? 'retrieval_planning' : null,
             ];
             $this->sourceGaps->record($question, $currentRoute, [], $context->providerKeys, 'low', 'static', 'no_source');
+            AssistantDiagnosticsRecorder::recordSourceGap('no_source', $context->providerKeys, 'low', 'static');
+            AssistantDiagnosticsRecorder::setAiStatus($answer['ai_status'] ?? 'ok', $answer['ai_failure_stage'] ?? null);
 
             $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
 
@@ -220,6 +229,7 @@ class KnowledgeAssistantService
                 'missing_fields' => $context->missingFields,
             ];
             $this->sourceGaps->record($question, $currentRoute, $sources, $context->providerKeys, 'low', $context->answerMode, 'insufficient_context');
+            AssistantDiagnosticsRecorder::recordSourceGap('insufficient_context', $context->providerKeys, 'low', $context->answerMode);
 
             $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
 
@@ -233,9 +243,10 @@ class KnowledgeAssistantService
                 $context,
                 'not_configured',
                 'not_configured',
-                'configuration',
+            'configuration',
             );
             $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
+            AssistantDiagnosticsRecorder::setAiStatus($answer['ai_status'] ?? 'ok', $answer['ai_failure_stage'] ?? null);
 
             return $this->finishAssistantResponse($thread, $staffId, $question, $answer, $sources, null);
         }
@@ -311,7 +322,9 @@ class KnowledgeAssistantService
                 (string) ($answer['answer_mode'] ?? $context->answerMode),
                 'low_confidence',
             );
+            AssistantDiagnosticsRecorder::recordSourceGap('low_confidence', $context->providerKeys, 'low', (string) ($answer['answer_mode'] ?? $context->answerMode));
         }
+        AssistantDiagnosticsRecorder::setAiStatus($answer['ai_status'] ?? 'ok', $answer['ai_failure_stage'] ?? null);
 
         return $this->finishAssistantResponse($thread, $staffId, $question, $answer, $sources, $result);
     }
@@ -951,7 +964,8 @@ class KnowledgeAssistantService
     ): JsonResponse {
         $threadId = (int) $thread->id;
         $answer = $this->withClarificationOptions($answer, $sources);
-        $this->storeAssistantMessage($threadId, $answer, $sources, $result);
+        $messageId = $this->storeAssistantMessage($threadId, $answer, $sources, $result);
+        AssistantDiagnosticsRecorder::finishForMessage($messageId, $threadId);
         $this->conversationContext->remember($threadId, $question, $answer, $sources);
         $this->trimThread($threadId);
         $thread = $this->threadForStaff($staffId, $threadId) ?? $thread;
@@ -1008,11 +1022,11 @@ class KnowledgeAssistantService
         ))));
     }
 
-    private function storeAssistantMessage(int $threadId, array $answer, array $sources, mixed $result): void
+    private function storeAssistantMessage(int $threadId, array $answer, array $sources, mixed $result): int
     {
         $answerSignature = (string) ($answer['answer_signature'] ?? $this->answerQuality->answerSignature($answer));
 
-        DB::table('knowledge_assistant_messages')->insert([
+        return (int) DB::table('knowledge_assistant_messages')->insertGetId([
             'thread_id' => $threadId,
             'role' => 'assistant',
             'content' => $answer['answer_markdown'],

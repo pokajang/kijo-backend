@@ -14,6 +14,8 @@ use Illuminate\Support\Carbon;
 
 class ClientContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const ROUTE_PATTERNS = [
         '~/(?:client|clients|client-companies)(?:/[^/]+)?/(\d+)(?:/|$)~i',
     ];
@@ -79,6 +81,20 @@ class ClientContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->clientListSource($matches ?: array_slice($clientRows, 0, 5)));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/client/manage', '/client/manage/{id}', '/client/roi', '/client-companies/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'client services/session',
+            'smoke_sample' => 'who is our number 1 returning client now?',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function clientRows(): array

@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Schema;
 
 class SalesInquiryContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const ROUTE_PATTERNS = [
         '~/pipeline/inquiries/(\d+)(?:/|$)~i',
     ];
@@ -77,6 +79,20 @@ class SalesInquiryContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->inquiryListSource($filtered ?: array_slice($rows, 0, 8)));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/pipeline/inquiries', '/pipeline/inquiries/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'sales inquiry services/session',
+            'smoke_sample' => 'show qualified sales inquiries',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function inquiryRows(Request $request): array

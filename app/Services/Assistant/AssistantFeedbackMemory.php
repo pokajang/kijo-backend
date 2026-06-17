@@ -44,6 +44,13 @@ class AssistantFeedbackMemory
             $negativePenalty = min(35, ((int) ($memory->negative_count ?? 0)) * 8);
             $baseScore = is_numeric($source['score'] ?? null) ? (float) $source['score'] : 0.0;
             $source['score'] = max(1, $baseScore + $positiveBoost - $negativePenalty);
+            $source['score_explanations'] = array_values(array_filter((array) ($source['score_explanations'] ?? []), 'is_string'));
+            if ($positiveBoost > 0) {
+                $source['score_explanations'][] = "feedback_positive +{$positiveBoost}";
+            }
+            if ($negativePenalty > 0) {
+                $source['score_explanations'][] = "feedback_negative -{$negativePenalty}";
+            }
 
             return $source;
         }, $sources);

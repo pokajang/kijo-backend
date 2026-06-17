@@ -81,6 +81,32 @@ abstract class SimpleTableContextProvider extends ModuleContextProvider
         return $this->resultFromSource($this->listSource($matches ?: array_slice($rows, 0, 8)));
     }
 
+    public function auditMetadata(): array
+    {
+        $specs = $this->tableSpecs();
+        $routes = array_values(array_unique(array_filter(array_merge(
+            $this->routeHints(),
+            array_map(static fn (array $spec): string => (string) ($spec['route'] ?? ''), $specs),
+        ))));
+        $hasSelfScope = collect($specs)->contains(
+            static fn (array $spec): bool => ! empty($spec['self_staff_column']) || ! empty($spec['admin_roles']),
+        );
+
+        return [
+            'provider_key' => $this->key(),
+            'supported_routes' => $routes,
+            'exact_ref_support' => collect($specs)->contains(static fn (array $spec): bool => ! empty($spec['route_pattern'])),
+            'detail_route_support' => false,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'source_status_metadata' => 'partial',
+            'permission_scope' => $hasSelfScope ? 'self-or-privileged-role' : 'session-role',
+            'smoke_sample' => $this->tokens()[0] ?? $this->key(),
+            'tests_present' => 'unknown',
+            'classification' => 'summary-only',
+        ];
+    }
+
     protected function hasAnyAvailableTable(): bool
     {
         foreach ($this->tableSpecs() as $spec) {

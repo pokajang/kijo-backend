@@ -87,17 +87,23 @@ class AssistantContextRegistry
         $freshnessLabels = [];
 
         foreach ($this->providers() as $provider) {
+            $providerKey = $provider->key();
             $planned = $plan !== null
                 && $provider instanceof PlannedAssistantContextProvider
                 && $provider->supportsPlan($plan, $question, $currentRoute, $request);
 
             if (! $planned && ! $provider->supports($question, $currentRoute, $request)) {
+                AssistantDiagnosticsRecorder::recordProviderSkip(
+                    $providerKey,
+                    $plan !== null && $provider instanceof PlannedAssistantContextProvider ? 'plan_not_supported' : 'unsupported',
+                );
                 continue;
             }
 
             $result = $planned
                 ? $provider->retrievePlanned($plan, $question, $currentRoute, $request)
                 : $provider->retrieve($question, $currentRoute, $request);
+            AssistantDiagnosticsRecorder::recordProviderRun($providerKey, $planned, $result);
             if (isset($result->metadata['direct_answer'])) {
                 return $result;
             }
@@ -113,16 +119,42 @@ class AssistantContextRegistry
         }
 
         $intent = $this->intentResolver->resolve($question, $currentRoute, $plan);
+        AssistantDiagnosticsRecorder::recordScoreStage('before_feedback_memory', $sources);
         $sources = $this->feedbackMemory->applySourceScores($question, $currentRoute, $request, $sources);
+        AssistantDiagnosticsRecorder::recordScoreStage('after_feedback_memory', $sources);
         $sources = $this->intentRanker->rank($sources, $intent, $question, $currentRoute);
+        AssistantDiagnosticsRecorder::recordScoreStage('after_intent_ranking', $sources);
 
-        $sources = collect($sources)
+        $rankedSources = $sources;
+        $sources = collect($rankedSources)
             ->filter(fn (array $source): bool => ($source['score'] ?? 0) > 0)
             ->sortByDesc(fn (array $source): int|float => $source['score'] ?? 0)
             ->unique(fn (array $source): string => (string) ($source['slug'] ?? $source['ref'] ?? $source['title'] ?? ''))
             ->take(self::MAX_SOURCES)
             ->values()
             ->all();
+        $selectedKeys = array_flip(array_map(
+            static fn (array $source): string => (string) ($source['slug'] ?? $source['ref'] ?? $source['title'] ?? ''),
+            $sources,
+        ));
+        AssistantDiagnosticsRecorder::recordSelectedSources($sources);
+        AssistantDiagnosticsRecorder::recordSuppressedSources(array_values(array_map(
+            static function (array $source) use ($selectedKeys): array {
+                $key = (string) ($source['slug'] ?? $source['ref'] ?? $source['title'] ?? '');
+                if (($source['score'] ?? 0) <= 0) {
+                    $source['suppression_reason'] = 'non_positive_score';
+                } elseif (! isset($selectedKeys[$key])) {
+                    $source['suppression_reason'] = 'not_in_top_ranked_sources';
+                }
+
+                return $source;
+            },
+            array_filter(
+                $rankedSources,
+                static fn (array $source): bool => ($source['score'] ?? 0) <= 0
+                    || ! isset($selectedKeys[(string) ($source['slug'] ?? $source['ref'] ?? $source['title'] ?? '')]),
+            ),
+        )));
 
         if ($sources === []) {
             return new AssistantContextResult([], 'static', null, $providerKeys, 'insufficient', ['source']);

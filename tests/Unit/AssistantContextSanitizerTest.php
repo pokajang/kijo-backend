@@ -77,6 +77,7 @@ class AssistantContextSanitizerTest extends TestCase
             'notes' => 'Attachment stored at C:\\laragon\\www\\kijoV2\\storage\\app\\private\\secret.pdf',
             'remarks' => 'Authorization: Bearer sk_test_should_not_leave_backend',
             'payload' => 'data:application/pdf;base64,'.str_repeat('A', 120),
+            'signed_link_note' => 'https://example.test/private/file.pdf?expires=999999&signature=abcdef',
             'private_key' => '-----BEGIN PRIVATE KEY----- secret -----END PRIVATE KEY-----',
             'access_key' => 'AKIA_TEST_ACCESS_KEY',
             'plain_note' => 'password=abc123',
@@ -95,6 +96,7 @@ class AssistantContextSanitizerTest extends TestCase
         $this->assertStringNotContainsString('storage\\app\\private', $encoded);
         $this->assertStringNotContainsString('Bearer', $encoded);
         $this->assertStringNotContainsString('data:application/pdf;base64', $encoded);
+        $this->assertStringNotContainsString('signature=abcdef', $encoded);
         $this->assertStringNotContainsString('PRIVATE KEY', $encoded);
         $this->assertStringNotContainsString('AKIA_TEST_ACCESS_KEY', $encoded);
         $this->assertStringNotContainsString('password=abc123', $encoded);

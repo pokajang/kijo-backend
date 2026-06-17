@@ -13,6 +13,8 @@ use Illuminate\Http\Request;
 
 class ProposalTemplateContextProvider extends ModuleContextProvider implements PlannedAssistantContextProvider
 {
+    use ProviderAuditMetadata;
+
     public function __construct(
         AssistantText $text,
         private readonly AssistantRecordRouteParser $routes,
@@ -48,6 +50,22 @@ class ProposalTemplateContextProvider extends ModuleContextProvider implements P
     public function retrievePlanned(AssistantRetrievalPlan $plan, string $question, string $currentRoute, Request $request): AssistantContextResult
     {
         return $this->retrieveForQuestion($plan->expandedQuestion($question), $currentRoute);
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/templates/proposals', '/templates/proposals/{type}/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'source_status_metadata' => 'covered',
+            'permission_scope' => 'proposal template tables',
+            'smoke_sample' => 'what is chra service',
+            'tests_present' => 'covered',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function retrieveForQuestion(string $question, string $currentRoute): AssistantContextResult

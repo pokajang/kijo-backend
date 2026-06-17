@@ -18,6 +18,8 @@ class AssistantSourceGapService
         string $answerMode,
         string $reason = 'low_confidence',
     ): void {
+        AssistantDiagnosticsRecorder::recordSourceGap($reason, $providerKeys, $confidence, $answerMode);
+
         if (! Schema::hasTable('assistant_source_gaps')) {
             return;
         }

@@ -12,6 +12,8 @@ use Illuminate\Http\Request;
 
 class ProjectContextProvider extends ModuleContextProvider
 {
+    use ProviderAuditMetadata;
+
     private const ROUTE_PATTERNS = [
         '~/(?:project|projects)(?:/[^/]+)?/(\d+)(?:/|$)~i',
     ];
@@ -76,6 +78,20 @@ class ProjectContextProvider extends ModuleContextProvider
         }
 
         return $this->resultFromSource($this->projectListSource($matches ?: array_slice($projectRows, 0, 5)));
+    }
+
+    public function auditMetadata(): array
+    {
+        return $this->auditMetadataRow([
+            'supported_routes' => ['/project/manage', '/project/manage/{id}', '/projects/{id}'],
+            'exact_ref_support' => true,
+            'detail_route_support' => true,
+            'list_support' => true,
+            'sanitizer_coverage' => 'covered',
+            'permission_scope' => 'project services/session',
+            'smoke_sample' => 'what is the status of this project?',
+            'classification' => 'detail-ready',
+        ]);
     }
 
     private function projectOptions(Request $request): array
