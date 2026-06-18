@@ -25,6 +25,7 @@ use App\Services\Assistant\Sources\SalesInquiryContextProvider;
 use App\Services\Assistant\Sources\StaffDirectoryContextProvider;
 use App\Services\Assistant\Sources\SystemFeedbackContextProvider;
 use App\Services\Assistant\Sources\TaskContextProvider;
+use App\Services\Assistant\Sources\UserTraceContextProvider;
 use App\Services\Assistant\Sources\VendorContextProvider;
 use App\Services\Assistant\Sources\WhatsNewContextProvider;
 use Illuminate\Http\Request;
@@ -47,6 +48,7 @@ class AssistantContextRegistry
     {
         return [
             app(AssistantHelpContextProvider::class),
+            app(UserTraceContextProvider::class),
             app(KnowledgeArticleContextProvider::class),
             app(HandbookContextProvider::class),
             app(DashboardContextProvider::class),
@@ -186,6 +188,7 @@ class AssistantContextRegistry
             'procedure' => true,
             'appraisal' => true,
             'whats_new' => true,
+            'user_trace' => true,
         ];
         $hasLive = count(array_filter(
             $sources,

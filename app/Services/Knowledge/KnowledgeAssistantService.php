@@ -128,6 +128,7 @@ class KnowledgeAssistantService
         $currentRoute = trim((string) ($data['current_route'] ?? ''));
         AssistantDiagnosticsRecorder::start($question, $currentRoute);
         AssistantDiagnosticsRecorder::setNormalizedQuestion($this->assistantText->normalizedQuestionKey($question));
+        AssistantDiagnosticsRecorder::setLanguageHint($this->languageHint($question));
         $thread = $this->findOrCreateThread($staffId, $question, (int) ($data['thread_id'] ?? 0));
         $this->storeMessage((int) $thread->id, 'user', $question);
 
@@ -139,7 +140,7 @@ class KnowledgeAssistantService
 
         if (! empty($conversation['clarification_needed'])) {
             $answer = [
-                'answer_markdown' => (string) ($conversation['clarification_question'] ?? 'Which previous item should I use for this follow-up?'),
+                'answer_markdown' => (string) ($conversation['clarification_question'] ?? $this->defaultFollowUpClarification($question)),
                 'confidence' => 'low',
                 'source_slugs' => [],
                 'suggested_queries' => [],
@@ -159,7 +160,7 @@ class KnowledgeAssistantService
             );
             AssistantDiagnosticsRecorder::recordSourceGap('clarification_needed', $this->providerKeysFromClarificationOptions($conversation['clarification_options'] ?? []), 'low', 'static');
 
-            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
+            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest, $question);
 
             return $this->finishAssistantResponse($thread, $staffId, $question, $answer, [], null);
         }
@@ -190,10 +191,7 @@ class KnowledgeAssistantService
                 $this->logAiFailure($plannerFailure, 'retrieval_planning');
             }
             $plannerLimitReached = in_array($plannerFailureStatus, ['usage_limit', 'rate_limit'], true);
-            $clarification = $plannerLimitReached
-                ? 'AI answer generation is temporarily unavailable because the AI usage limit or credit budget has been reached. I also could not find an approved Kijo source for this question. Try asking with a module name, record reference, policy topic, client, project, or vendor name.'
-                : ($retrievalPlan->clarificationQuestion
-                    ?: 'I could not find an approved Kijo source for that yet. Which module, record, policy topic, or exact reference should I check?');
+            $clarification = $this->noSourceClarification($question, $plannerLimitReached, $retrievalPlan->clarificationQuestion);
             $answer = [
                 'answer_markdown' => $clarification,
                 'confidence' => 'low',
@@ -209,14 +207,14 @@ class KnowledgeAssistantService
             AssistantDiagnosticsRecorder::recordSourceGap('no_source', $context->providerKeys, 'low', 'static');
             AssistantDiagnosticsRecorder::setAiStatus($answer['ai_status'] ?? 'ok', $answer['ai_failure_stage'] ?? null);
 
-            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
+            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest, $question);
 
             return $this->finishAssistantResponse($thread, $staffId, $question, $answer, [], null);
         }
 
         if ($context->contextQuality === 'insufficient') {
             $answer = [
-                'answer_markdown' => 'I found a possible Kijo source, but it does not contain enough safe fields to answer this reliably. Try asking with a more specific module name, record reference, client/project/vendor name, or date range.',
+                'answer_markdown' => $this->insufficientContextMessage($question),
                 'confidence' => 'low',
                 'source_slugs' => array_column($sources, 'slug'),
                 'suggested_queries' => $this->suggestedQueries($question),
@@ -231,7 +229,7 @@ class KnowledgeAssistantService
             $this->sourceGaps->record($question, $currentRoute, $sources, $context->providerKeys, 'low', $context->answerMode, 'insufficient_context');
             AssistantDiagnosticsRecorder::recordSourceGap('insufficient_context', $context->providerKeys, 'low', $context->answerMode);
 
-            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
+            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest, $question);
 
             return $this->finishAssistantResponse($thread, $staffId, $question, $answer, $sources, null);
         }
@@ -243,9 +241,10 @@ class KnowledgeAssistantService
                 $context,
                 'not_configured',
                 'not_configured',
-            'configuration',
+                'configuration',
+                $question,
             );
-            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
+            $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest, $question);
             AssistantDiagnosticsRecorder::setAiStatus($answer['ai_status'] ?? 'ok', $answer['ai_failure_stage'] ?? null);
 
             return $this->finishAssistantResponse($thread, $staffId, $question, $answer, $sources, null);
@@ -260,7 +259,7 @@ class KnowledgeAssistantService
             $request,
         );
         if ($cachedAnswer !== null) {
-            $cachedAnswer = $this->withReadOnlyActionBoundary($cachedAnswer, $isActionRequest);
+            $cachedAnswer = $this->withReadOnlyActionBoundary($cachedAnswer, $isActionRequest, $question);
 
             return $this->finishAssistantResponse($thread, $staffId, $question, $cachedAnswer, $sources, null);
         }
@@ -279,15 +278,16 @@ class KnowledgeAssistantService
                 $sources,
                 $context,
                 $routeCandidates,
-                fn (array $fallbackSources, string $prefix, ?AssistantContextResult $fallbackContext): array => $this->fallbackAnswer($fallbackSources, $prefix, $fallbackContext),
+                fn (array $fallbackSources, string $prefix, ?AssistantContextResult $fallbackContext): array => $this->fallbackAnswer($fallbackSources, $prefix, $fallbackContext, question: $question),
             )
             : $this->fallbackAnswer(
                 $sources,
-                $this->aiFailureFallbackPrefix($result),
+                $this->aiFailureFallbackPrefix($result, $question),
                 $context,
                 $this->aiFailureStatus($result),
                 $this->aiFailureReason($this->aiFailureStatus($result)),
                 $result->ok ? null : 'answer_generation',
+                $question,
             );
 
         if (! $result->ok) {
@@ -295,10 +295,10 @@ class KnowledgeAssistantService
         }
 
         if ($this->feedbackMemory->isBlockedSignature($answer['answer_signature'] ?? $this->answerQuality->answerSignature($answer))) {
-            $answer = $this->fallbackAnswer($sources, 'I found related Kijo sources, but a previous matching response was marked unhelpful. Please check these sources or ask with more detail.', $context);
+            $answer = $this->fallbackAnswer($sources, 'I found related Kijo sources, but a previous matching response was marked unhelpful. Please check these sources or ask with more detail.', $context, question: $question);
         }
 
-        $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest);
+        $answer = $this->withReadOnlyActionBoundary($answer, $isActionRequest, $question);
 
         if ($result->ok) {
             $this->answerCache->store(
@@ -542,8 +542,9 @@ class KnowledgeAssistantService
                     'For how-to questions, return concise step-by-step action instructions.',
                     'For live dashboard, metric, project, client, vendor, invoice, debtor, registration, quote, inquiry, leave, task, staff, legal compliance, proposal template, JD14, feedback, catalog, purchase order, meeting, procedure, appraisal, or WhatsNew answers, include the provided freshness timestamp in the answer.',
                     'If live module sources are ambiguous, clearly ask the user to specify the exact record and list the relevant matches.',
-                    'Answer in the same language as the user question. If the user asks in Bahasa Malaysia or Malay, answer in Bahasa Malaysia.',
-                    'You may translate source instructions into the user language, but keep all facts grounded in the provided sources.',
+                    'Answer in the same language as the user question. If language_hint is bahasa_malaysia, answer in natural Malaysian workplace Bahasa Malaysia.',
+                    'For Bahasa Malaysia answers, keep official app terms, source titles, record codes, statuses, legal/technical labels, and route labels unchanged when translation could make them unclear.',
+                    'You may translate explanation text into the user language, but keep all facts grounded in the provided sources and do not invent translated facts.',
                     'Return only JSON matching the provided schema.',
                 ]),
             ],
@@ -647,6 +648,73 @@ class KnowledgeAssistantService
         return $schema;
     }
 
+    private function noSourceClarification(string $question, bool $plannerLimitReached, ?string $plannerClarification): string
+    {
+        if ($this->isBahasaMalaysiaQuestion($question)) {
+            if ($plannerLimitReached) {
+                return 'Penjanaan jawapan AI tidak tersedia sementara kerana had penggunaan atau bajet kredit AI telah dicapai. Saya juga tidak dapat jumpa sumber Kijo yang diluluskan untuk soalan ini. Cuba tanya dengan nama module, rujukan rekod, topik polisi, client, project, atau vendor.';
+            }
+
+            return 'Saya belum dapat jumpa sumber Kijo yang diluluskan untuk soalan itu. Module, rekod, topik polisi, atau rujukan tepat mana yang perlu saya semak?';
+        }
+
+        if ($plannerLimitReached) {
+            return 'AI answer generation is temporarily unavailable because the AI usage limit or credit budget has been reached. I also could not find an approved Kijo source for this question. Try asking with a module name, record reference, policy topic, client, project, or vendor name.';
+        }
+
+        return $plannerClarification
+            ?: 'I could not find an approved Kijo source for that yet. Which module, record, policy topic, or exact reference should I check?';
+    }
+
+    private function insufficientContextMessage(string $question): string
+    {
+        if ($this->isBahasaMalaysiaQuestion($question)) {
+            return 'Saya jumpa sumber Kijo yang mungkin berkaitan, tetapi sumber itu tidak mempunyai medan selamat yang cukup untuk jawab dengan yakin. Cuba tanya dengan nama module, rujukan rekod, nama client/project/vendor, atau julat tarikh yang lebih khusus.';
+        }
+
+        return 'I found a possible Kijo source, but it does not contain enough safe fields to answer this reliably. Try asking with a more specific module name, record reference, client/project/vendor name, or date range.';
+    }
+
+    private function defaultFollowUpClarification(string $question): string
+    {
+        return $this->isBahasaMalaysiaQuestion($question)
+            ? 'Item sebelum ini yang mana saya perlu guna untuk follow-up ini?'
+            : 'Which previous item should I use for this follow-up?';
+    }
+
+    private function localizedFallbackPrefix(string $prefix, ?string $question): string
+    {
+        if (! $this->isBahasaMalaysiaQuestion($question)) {
+            return $prefix;
+        }
+
+        return match ($prefix) {
+            'I found possible Kijo sources, but they do not directly verify an answer to this question. Try asking with a module name, record name, client/project/vendor name, dashboard metric, policy topic, or action.'
+                => 'Saya jumpa sumber Kijo yang mungkin berkaitan, tetapi sumber itu tidak mengesahkan jawapan untuk soalan ini secara terus. Cuba tanya dengan nama module, nama rekod, client/project/vendor, metrik dashboard, topik polisi, atau tindakan.',
+            'I found related Kijo sources, but could not verify an inline app link in the AI response.'
+                => 'Saya jumpa sumber Kijo yang berkaitan, tetapi tidak dapat sahkan link app dalam jawapan AI.',
+            'I found related Kijo sources, but could not verify live-data freshness.'
+                => 'Saya jumpa sumber Kijo yang berkaitan, tetapi tidak dapat sahkan freshness data live.',
+            'I found related Kijo sources, but the AI response claimed an action that this read-only assistant cannot perform.'
+                => 'Saya jumpa sumber Kijo yang berkaitan, tetapi jawapan AI menyatakan tindakan telah dibuat walaupun assistant ini read-only.',
+            'I found related Kijo sources, but could not verify a route or link in the AI response.'
+                => 'Saya jumpa sumber Kijo yang berkaitan, tetapi tidak dapat sahkan route atau link dalam jawapan AI.',
+            'The AI assistant is not configured, but these Kijo sources look relevant.'
+                => 'AI assistant belum dikonfigurasi, tetapi sumber Kijo ini nampak berkaitan.',
+            'AI answer generation is temporarily unavailable because the AI usage limit or credit budget has been reached. I found these approved Kijo sources that may help.'
+                => 'Penjanaan jawapan AI tidak tersedia sementara kerana had penggunaan atau bajet kredit AI telah dicapai. Saya jumpa sumber Kijo yang diluluskan ini dan mungkin membantu.',
+            'AI answer generation is temporarily unavailable. I found these approved Kijo sources that may help.'
+                => 'Penjanaan jawapan AI tidak tersedia sementara. Saya jumpa sumber Kijo yang diluluskan ini dan mungkin membantu.',
+            'I found possible Kijo sources, but could not generate a reliable AI answer right now.'
+                => 'Saya jumpa sumber Kijo yang mungkin berkaitan, tetapi tidak dapat jana jawapan AI yang boleh dipercayai sekarang.',
+            'I found related Kijo sources, but a previous matching response was marked unhelpful. Please check these sources or ask with more detail.'
+                => 'Saya jumpa sumber Kijo yang berkaitan, tetapi jawapan sepadan sebelum ini ditanda tidak membantu. Sila semak sumber ini atau tanya dengan lebih terperinci.',
+            'I found related Kijo sources.'
+                => 'Saya jumpa sumber Kijo yang berkaitan.',
+            default => $prefix,
+        };
+    }
+
     private function fallbackAnswer(
         array $sources,
         string $prefix = 'I found related Kijo sources.',
@@ -654,9 +722,11 @@ class KnowledgeAssistantService
         string $aiStatus = 'source_fallback',
         ?string $degradedReason = 'source_fallback',
         ?string $aiFailureStage = null,
+        ?string $question = null,
     ): array {
         $sourceTitles = array_map(fn (array $source): string => '- '.$source['title'], $sources);
         $contextMetadata = $context?->metadata ?? [];
+        $prefix = $this->localizedFallbackPrefix($prefix, $question);
 
         return [
             'answer_markdown' => trim($prefix."\n\n".implode("\n", $sourceTitles)),
@@ -677,17 +747,19 @@ class KnowledgeAssistantService
         ];
     }
 
-    private function withReadOnlyActionBoundary(array $answer, bool $isActionRequest): array
+    private function withReadOnlyActionBoundary(array $answer, bool $isActionRequest, ?string $question = null): array
     {
         if (! $isActionRequest) {
             return $answer;
         }
 
-        $notice = 'I cannot perform actions from this chat. I can only guide you using approved Kijo sources.';
+        $notice = $this->isBahasaMalaysiaQuestion($question)
+            ? 'Saya tidak boleh melakukan tindakan dari chat ini. Saya hanya boleh beri panduan menggunakan sumber Kijo yang diluluskan.'
+            : 'I cannot perform actions from this chat. I can only guide you using approved Kijo sources.';
         $content = trim((string) ($answer['answer_markdown'] ?? ''));
         if ($content === '') {
             $answer['answer_markdown'] = $notice;
-        } elseif (! preg_match('/cannot perform actions from this chat/i', $content)) {
+        } elseif (! preg_match('/cannot perform actions from this chat|tidak boleh melakukan tindakan dari chat ini/i', $content)) {
             $answer['answer_markdown'] = $notice."\n\n".$content;
         }
 
@@ -696,16 +768,18 @@ class KnowledgeAssistantService
         return $answer;
     }
 
-    private function aiFailureFallbackPrefix(OpenAiJsonResult $result): string
+    private function aiFailureFallbackPrefix(OpenAiJsonResult $result, ?string $question = null): string
     {
         $status = $this->aiFailureStatus($result);
 
-        return match ($status) {
+        $prefix = match ($status) {
             'usage_limit', 'rate_limit' => 'AI answer generation is temporarily unavailable because the AI usage limit or credit budget has been reached. I found these approved Kijo sources that may help.',
             'not_configured' => 'The AI assistant is not configured, but these Kijo sources look relevant.',
             'temporary_unavailable' => 'AI answer generation is temporarily unavailable. I found these approved Kijo sources that may help.',
             default => 'I found possible Kijo sources, but could not generate a reliable AI answer right now.',
         };
+
+        return $this->localizedFallbackPrefix($prefix, $question);
     }
 
     private function aiFailureStatus(?OpenAiJsonResult $result): string
@@ -1368,6 +1442,11 @@ class KnowledgeAssistantService
     private function languageHint(string $question): string
     {
         return $this->assistantText->languageHint($question);
+    }
+
+    private function isBahasaMalaysiaQuestion(?string $question): bool
+    {
+        return is_string($question) && $this->languageHint($question) === 'bahasa_malaysia';
     }
 
     private function threadExpired(mixed $expiresAt): bool

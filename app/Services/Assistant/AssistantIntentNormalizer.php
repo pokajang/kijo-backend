@@ -20,20 +20,34 @@ class AssistantIntentNormalizer
         'customer' => 'client',
         'customers' => 'client',
         'clients' => 'client',
+        'bayar' => 'payment',
+        'belum' => 'unpaid',
+        'bil' => 'invoice',
         'cuti' => 'leave',
         'debtors' => 'debtor',
         'feedbacks' => 'feedback',
+        'gaji' => 'salary',
         'harga' => 'quotation',
         'invois' => 'invoice',
+        'kelulusan' => 'approval',
         'kuotasi' => 'quotation',
+        'lulus' => 'approval',
+        'pelanggan' => 'client',
+        'pembekal' => 'vendor',
+        'perkembangan' => 'progress',
+        'polisi' => 'policy',
         'po' => 'purchase_order',
         'purchase' => 'purchase_order',
         'quotations' => 'quotation',
         'quote' => 'quotation',
+        'resit' => 'receipt',
         'sebutharga' => 'quotation',
+        'slip' => 'payslip',
         'staf' => 'staff',
         'tasks' => 'task',
+        'tunjuk' => 'show',
         'vendors' => 'vendor',
+        'waktu' => 'working',
     ];
 
     private const MODULE_HINTS = [
@@ -42,7 +56,7 @@ class AssistantIntentNormalizer
         'client' => ['client', 'customer', 'pelanggan'],
         'dashboard' => ['dashboard', 'metric', 'sales', 'financial', 'monitoring'],
         'debtor' => ['debtor', 'overdue', 'receivable'],
-        'invoice' => ['invoice', 'receipt', 'billing'],
+        'invoice' => ['invoice', 'receipt', 'billing', 'bill'],
         'jd14' => ['jd14', 'jd', 'delivery'],
         'knowledge' => ['guide', 'knowledge', 'learn'],
         'leave' => ['leave', 'cuti'],
@@ -50,7 +64,8 @@ class AssistantIntentNormalizer
         'meeting' => ['meeting', 'minutes', 'agenda'],
         'procedure' => ['procedure', 'sop'],
         'project' => ['project', 'projek'],
-        'proposal_template' => ['proposal', 'template', 'service'],
+        'proposal_template' => ['proposal', 'template', 'service', 'quotation'],
+        'salary' => ['salary', 'payslip'],
         'staff' => ['staff', 'staf', 'employee', 'hr'],
         'system_feedback' => ['feedback', 'issue', 'bug', 'support'],
         'task' => ['task', 'workload'],
@@ -101,9 +116,11 @@ class AssistantIntentNormalizer
 
     private function language(string $question): string
     {
-        $tokens = array_flip($this->tokens($question));
-        foreach (['apa', 'bagaimana', 'buat', 'cara', 'cuti', 'macam', 'mana', 'nak', 'sebutharga'] as $marker) {
-            if (isset($tokens[$marker]) || str_contains(strtolower($question), $marker)) {
+        $normalized = strtolower((string) preg_replace('/[^a-z0-9]+/i', ' ', $question));
+        $tokens = array_flip(array_filter(explode(' ', $normalized)));
+
+        foreach (['apa', 'bagaimana', 'berapa', 'buat', 'cara', 'cuti', 'gaji', 'kelulusan', 'lulus', 'macam', 'mana', 'nak', 'pelanggan', 'pembekal', 'polisi', 'projek', 'rehat', 'resit', 'sebut', 'sebutharga', 'tunjuk', 'waktu'] as $marker) {
+            if (isset($tokens[$marker])) {
                 return 'bahasa_malaysia';
             }
         }
@@ -185,6 +202,10 @@ class AssistantIntentNormalizer
 
     private function singularize(string $token): string
     {
+        if (in_array($token, ['invois'], true)) {
+            return $token;
+        }
+
         if (strlen($token) > 4 && str_ends_with($token, 'ies')) {
             return substr($token, 0, -3).'y';
         }

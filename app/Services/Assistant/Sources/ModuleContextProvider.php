@@ -31,7 +31,7 @@ abstract class ModuleContextProvider implements AssistantContextProvider, Assist
 
     protected function hasListIntent(string $question): bool
     {
-        return (bool) preg_match('/\b(all|available|list|show|find|search|which|what|active|inactive|open|current|recent)\b/i', $question);
+        return (bool) preg_match('/\b(all|available|list|show|find|search|which|what|active|inactive|open|current|recent|semua|senarai|tunjuk|cari|terkini)\b/i', $question);
     }
 
     protected function hasAnyRole(Request $request, array $allowedRoles): bool

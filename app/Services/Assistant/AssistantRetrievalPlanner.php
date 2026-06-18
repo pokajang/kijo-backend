@@ -81,24 +81,52 @@ class AssistantRetrievalPlanner
         $intent = 'unknown';
         $normalized = strtolower($question);
         $route = strtolower(trim($currentRoute));
+        $tokens = $this->text->tokens($question);
 
-        if (str_starts_with($route, '/handbook') || preg_match('/\b(working time|working hours|office hours|lunch break|dress code|handbook|policy|attendance|employee|staff|hr)\b/i', $question)) {
+        if (
+            str_starts_with($route, '/handbook')
+            || preg_match('/\b(working time|working hours|office hours|lunch break|dress code|handbook|policy|polisi|waktu kerja|rehat tengah hari|attendance|employee|staff|hr)\b/i', $question)
+            || array_intersect($tokens, ['handbook', 'policy', 'working', 'hours', 'lunch', 'break', 'attendance', 'employee', 'staff', 'hr'])
+        ) {
             $domains[] = 'handbook';
             $intent = 'policy_question';
         }
-        foreach (['working time', 'working hours', 'office hours', 'lunch break', 'dress code'] as $term) {
+        foreach (['working time', 'working hours', 'office hours', 'lunch break', 'dress code', 'waktu kerja', 'rehat tengah hari'] as $term) {
             if (str_contains($normalized, $term)) {
                 $terms[] = $term;
             }
         }
 
-        if (str_contains($route, '/templates/proposals') || preg_match('/\b(proposal|template|service|training|course|assessment|monitoring|inspection|manpower|supply)\b/i', $question)) {
+        if (
+            str_contains($route, '/templates/proposals')
+            || preg_match('/\b(proposal|template|service|training|course|assessment|monitoring|inspection|manpower|supply|perkhidmatan)\b/i', $question)
+            || array_intersect($tokens, ['proposal', 'template', 'service', 'training', 'course', 'assessment', 'monitoring', 'inspection', 'manpower', 'supply'])
+        ) {
             $domains[] = 'proposal_template';
         }
 
-        if (str_contains($route, '/crm/quotes') || preg_match('/\b(quote|quotes|quotation|quotations|pricing|award|follow[- ]?up)\b/i', $question)) {
+        if (
+            str_contains($route, '/crm/quotes')
+            || preg_match('/\b(quote|quotes|quotation|quotations|pricing|award|follow[- ]?up|sebut harga|sebutharga)\b/i', $question)
+            || array_intersect($tokens, ['quote', 'quotation', 'pricing', 'award'])
+        ) {
             $domains[] = 'quote_record';
             $intent = $intent === 'unknown' ? 'record_detail' : $intent;
+        }
+
+        foreach ([
+            'project' => 'project',
+            'client' => 'client',
+            'vendor' => 'vendor',
+            'invoice' => 'invoice',
+            'leave' => 'leave',
+            'task' => 'task',
+            'staff' => 'staff',
+        ] as $token => $domain) {
+            if (in_array($token, $tokens, true) || str_contains($route, '/'.$token)) {
+                $domains[] = $domain;
+                $intent = $intent === 'unknown' ? 'record_detail' : $intent;
+            }
         }
 
         if (preg_match_all('/\b[A-Z]{2,}[A-Z0-9]*(?:-[A-Z0-9]+)*\b/', $question, $matches)) {
@@ -122,12 +150,12 @@ class AssistantRetrievalPlanner
                 'what' => true,
                 'where' => true,
             ];
-            foreach ($this->text->tokens($question) as $token) {
+            foreach ($tokens as $token) {
                 if (
                     strlen($token) >= 2
                     && strlen($token) <= 20
                     && ! isset($ignored[$token])
-                    && ! in_array($token, ['service', 'quote', 'quotation', 'proposal', 'template'], true)
+                    && ! in_array($token, ['service', 'quote', 'quotation', 'proposal', 'template', 'record', 'status', 'project', 'client', 'vendor', 'invoice', 'leave', 'task', 'staff'], true)
                 ) {
                     $refs[] = strtoupper($token);
                 }
@@ -295,7 +323,8 @@ class AssistantRetrievalPlanner
 
     private function hasServiceOrRecordIntent(string $question): bool
     {
-        return (bool) preg_match('/\b(explain|service|quote|quotation|proposal|template|record|ref|reference|code)\b/i', $question);
+        return (bool) preg_match('/\b(explain|service|quote|quotation|proposal|template|record|rekod|ref|reference|code|sebut harga|sebutharga)\b/i', $question)
+            || array_intersect($this->text->tokens($question), ['service', 'quote', 'quotation', 'proposal', 'template', 'record', 'project', 'client', 'vendor', 'invoice', 'leave', 'task', 'staff']);
     }
 
     private function plannerAiEnabled(): bool

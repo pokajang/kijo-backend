@@ -11,6 +11,7 @@ class AssistantSourceIntentRanker
         'quote_record_match' => 550,
         'policy_source_match' => 450,
         'quote_intent_tag_match' => 350,
+        'list_target_type_match' => 260,
         'target_type_match' => 120,
         'title_or_code_match' => 80,
         'body_match' => 25,
@@ -103,6 +104,15 @@ class AssistantSourceIntentRanker
 
         if ($intent->targetTypes !== [] && in_array($sourceType, $intent->targetTypes, true)) {
             $score = $this->add($source, $score, 'target_type_match');
+        }
+
+        if (
+            $intent->is(AssistantQuestionIntent::LIST_SEARCH)
+            && $intent->targetTypes !== []
+            && in_array($sourceType, $intent->targetTypes, true)
+            && $this->isListOrAmbiguous($source)
+        ) {
+            $score = $this->add($source, $score, 'list_target_type_match');
         }
 
         if ($this->titleOrCodeMatches($source, $intent, $question)) {

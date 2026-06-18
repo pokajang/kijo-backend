@@ -17,6 +17,7 @@ class AssistantDiagnosticsRecorder
             'question' => self::redactScalar($question),
             'question_hash' => sha1($question),
             'current_route' => self::redactScalar($currentRoute),
+            'language_hint' => null,
             'normalized_question' => null,
             'retrieval_question' => null,
             'conversation_focus' => null,
@@ -26,6 +27,7 @@ class AssistantDiagnosticsRecorder
             'suppressed_sources' => [],
             'selected_source_fingerprints' => [],
             'denied_retrievals' => [],
+            'trace' => null,
             'source_gap' => null,
             'ai_status' => 'ok',
             'created_at' => now()->toDateTimeString(),
@@ -35,6 +37,11 @@ class AssistantDiagnosticsRecorder
     public static function setNormalizedQuestion(string $question): void
     {
         self::set('normalized_question', $question);
+    }
+
+    public static function setLanguageHint(string $languageHint): void
+    {
+        self::set('language_hint', $languageHint);
     }
 
     public static function setRetrievalQuestion(string $question): void
@@ -124,7 +131,7 @@ class AssistantDiagnosticsRecorder
         }
     }
 
-    public static function recordDenied(string $providerKey, string $recordType, string $reason): void
+    public static function recordDenied(string $providerKey, string $recordType, string $reason, array $metadata = []): void
     {
         if (! self::$current) {
             return;
@@ -134,6 +141,20 @@ class AssistantDiagnosticsRecorder
             'provider_key' => $providerKey,
             'record_type' => $recordType,
             'reason' => $reason,
+        ] + $metadata);
+    }
+
+    public static function recordTrace(string $analyzer, string $scope, array $dateRange, array $missingFields = []): void
+    {
+        if (! self::$current) {
+            return;
+        }
+
+        self::$current['trace'] = self::redact([
+            'analyzer' => $analyzer,
+            'scope' => $scope,
+            'date_range' => $dateRange,
+            'missing_fields' => $missingFields,
         ]);
     }
 

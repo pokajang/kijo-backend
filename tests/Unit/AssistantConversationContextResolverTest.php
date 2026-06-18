@@ -227,4 +227,48 @@ class AssistantConversationContextResolverTest extends TestCase
         $this->assertSame('handbook:1:9-common-rules', $resolved['conversation_focus']['slug'] ?? null);
         $this->assertStringContainsString('Handbook: 9.0 Common Rules', $resolved['retrieval_question']);
     }
+
+    public function test_direct_self_trace_questions_bypass_ambiguous_follow_up_clarification(): void
+    {
+        DB::table('knowledge_assistant_thread_contexts')->insert([
+            'thread_id' => 11,
+            'context_json' => json_encode([
+                'active_entities' => [
+                    $this->traceEntity('user-trace:user_trace.kpi_status:aaa111', 'My KPI trace'),
+                    $this->traceEntity('user-trace:user_trace.leave_taken:bbb222', 'My leave trace'),
+                    $this->traceEntity('user-trace:user_trace.quote_issued:ccc333', 'My quotation trace'),
+                ],
+            ]),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach ([
+            'how can i improve further',
+            'how many years have i spent here in this company',
+            'berapa quotation saya tahun ini',
+        ] as $question) {
+            $resolved = app(AssistantConversationContextResolver::class)->resolve(11, $question, '');
+
+            $this->assertFalse($resolved['clarification_needed'], $question);
+            $this->assertNull($resolved['conversation_focus'], $question);
+            $this->assertSame($resolved['normalized_question'], $resolved['retrieval_question'], $question);
+        }
+    }
+
+    private function traceEntity(string $slug, string $title): array
+    {
+        return [
+            'slug' => $slug,
+            'source_type' => 'user_trace',
+            'entity_type' => 'user_trace',
+            'title' => $title,
+            'related_route' => '/my/profile',
+            'service_key' => null,
+            'codes' => [],
+            'keywords' => ['user', 'trace'],
+            'priority' => 320,
+            'last_seen_message_id' => 40,
+        ];
+    }
 }

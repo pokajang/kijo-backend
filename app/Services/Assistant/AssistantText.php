@@ -52,7 +52,7 @@ class AssistantText
             'apa' => true, 'bagaimana' => true, 'boleh' => true, 'cara' => true, 'dan' => true,
             'dalam' => true, 'dengan' => true, 'di' => true, 'ini' => true, 'itu' => true,
             'ke' => true, 'macam' => true, 'mana' => true, 'nak' => true, 'saya' => true,
-            'untuk' => true, 'yang' => true,
+            'tolong' => true, 'untuk' => true, 'yang' => true,
         ];
         $tokens = array_filter(
             explode(' ', $normalized),
@@ -69,14 +69,30 @@ class AssistantText
         $malayMarkers = [
             'apa' => true,
             'bagaimana' => true,
+            'berapa' => true,
+            'bil' => true,
             'buat' => true,
             'cara' => true,
+            'cuti' => true,
+            'gaji' => true,
+            'kelulusan' => true,
+            'lulus' => true,
             'macam' => true,
             'mana' => true,
             'nak' => true,
+            'pelanggan' => true,
+            'pembekal' => true,
+            'polisi' => true,
+            'projek' => true,
+            'rehat' => true,
+            'resit' => true,
             'saya' => true,
             'sebut' => true,
             'sebutharga' => true,
+            'slip' => true,
+            'tengah' => true,
+            'tunjuk' => true,
+            'waktu' => true,
         ];
 
         foreach ($malayMarkers as $marker => $_) {
@@ -121,6 +137,10 @@ class AssistantText
 
     private function singularize(string $token): string
     {
+        if (in_array($token, ['invois'], true)) {
+            return $token;
+        }
+
         if (strlen($token) > 4 && str_ends_with($token, 'ies')) {
             return substr($token, 0, -3).'y';
         }
@@ -140,25 +160,39 @@ class AssistantText
     {
         $synonyms = [
             'buat' => ['create', 'make'],
+            'bayar' => ['paid', 'payment'],
+            'belum' => ['unpaid', 'pending'],
+            'bil' => ['bill', 'invoice'],
             'buka' => ['open'],
             'cari' => ['find', 'search'],
             'cipta' => ['create'],
             'cuti' => ['leave'],
+            'gaji' => ['salary', 'payslip'],
             'harga' => ['quotation', 'quote'],
             'invois' => ['invoice'],
+            'kelulusan' => ['approval', 'approved'],
             'kemaskini' => ['update', 'edit'],
             'kuotasi' => ['quotation', 'quote'],
             'laporan' => ['report'],
+            'lulus' => ['approval', 'approved'],
             'padam' => ['delete', 'remove'],
             'pelanggan' => ['client', 'customer'],
+            'pembekal' => ['vendor', 'supplier'],
             'perkhidmatan' => ['service'],
+            'perkembangan' => ['progress', 'status'],
             'permohonan' => ['request', 'application'],
+            'polisi' => ['policy'],
             'projek' => ['project'],
+            'rehat' => ['break', 'lunch'],
             'rekod' => ['record'],
+            'resit' => ['receipt', 'invoice'],
             'sebut' => ['quotation', 'quote'],
             'sebutharga' => ['quotation', 'quote'],
+            'slip' => ['payslip', 'salary'],
             'staf' => ['staff'],
             'tengok' => ['view'],
+            'tunjuk' => ['show', 'list'],
+            'waktu' => ['time', 'hours', 'working'],
         ];
 
         $expanded = [];

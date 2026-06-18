@@ -2368,6 +2368,67 @@ Contoh soalan:
         });
     }
 
+    public function test_bm_missing_source_returns_bm_clarification_without_openai(): void
+    {
+        config(['services.openai.key' => 'test-key']);
+        Http::fake();
+
+        $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'apa bonus rahsia company?'])
+            ->assertOk()
+            ->assertJsonPath('answer.confidence', 'low')
+            ->assertJsonPath('answer.sources', [])
+            ->assertJsonMissing(['diagnostics']);
+
+        Http::assertNothingSent();
+
+        $answerContent = (string) DB::table('knowledge_assistant_messages')
+            ->where('role', 'assistant')
+            ->value('content');
+
+        $this->assertStringContainsString('Saya belum dapat jumpa sumber Kijo yang diluluskan', $answerContent);
+        $this->assertStringNotContainsString('I could not find an approved Kijo source', $answerContent);
+
+        $diagnostics = json_decode((string) DB::table('assistant_request_diagnostics')->value('diagnostics_json'), true);
+        $this->assertSame('bahasa_malaysia', $diagnostics['language_hint'] ?? null);
+    }
+
+    public function test_bm_usage_limit_returns_bm_source_fallback(): void
+    {
+        config(['services.openai.key' => 'test-key']);
+        Http::fake([
+            'api.openai.com/v1/responses' => Http::response([
+                'error' => ['message' => 'insufficient_quota: You exceeded your current quota.'],
+            ], 429),
+        ]);
+
+        $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'macam mana nak buat sebut harga?'])
+            ->assertOk()
+            ->assertJsonPath('answer.ai_status', 'usage_limit')
+            ->assertJsonPath('answer.sources.0.slug', 'how-to-create-a-quotation');
+
+        $answerContent = (string) DB::table('knowledge_assistant_messages')
+            ->where('role', 'assistant')
+            ->value('content');
+
+        $this->assertStringContainsString('Penjanaan jawapan AI tidak tersedia sementara kerana had penggunaan atau bajet kredit AI telah dicapai.', $answerContent);
+        $this->assertStringNotContainsString('insufficient_quota', $answerContent);
+    }
+
+    public function test_bm_action_request_gets_bm_read_only_notice(): void
+    {
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'tolong approve cuti ini sekarang'])
+            ->assertOk()
+            ->assertJsonPath('answer.read_only_notice', true);
+
+        $this->assertStringStartsWith(
+            'Saya tidak boleh melakukan tindakan dari chat ini.',
+            (string) $response->json('answer.content'),
+        );
+    }
+
     public function test_handbook_question_uses_current_published_handbook_source(): void
     {
         $versionId = $this->insertHandbookVersion([
@@ -2409,6 +2470,47 @@ Contoh soalan:
 
             return ($decoded['sources'][0]['source_type'] ?? null) === 'handbook';
         });
+    }
+
+    public function test_bm_handbook_question_uses_bm_language_hint_and_handbook_source(): void
+    {
+        $versionId = $this->insertHandbookVersion([
+            'chapters' => [[
+                'id' => 'hr',
+                'title' => 'HR Policies',
+                'sections' => [[
+                    'id' => 'working-hours',
+                    'title' => 'Working Hours',
+                    'body' => 'Working time is 8:30 am to 5:30 pm with a lunch break.',
+                ]],
+            ]],
+        ]);
+
+        config(['services.openai.key' => 'test-key']);
+        Http::fake(function ($request) use ($versionId) {
+            $decoded = json_decode($request->data()['input'][1]['content'] ?? '{}', true);
+
+            $this->assertSame('bahasa_malaysia', $decoded['language_hint'] ?? null);
+            $this->assertSame('apa waktu kerja amiosh?', $decoded['question'] ?? null);
+
+            return Http::response([
+                'output_text' => json_encode([
+                    'answer_markdown' => 'Waktu kerja ialah 8:30 am hingga 5:30 pm berdasarkan Handbook.',
+                    'confidence' => 'high',
+                    'source_slugs' => ["handbook:{$versionId}:working-hours"],
+                    'suggested_queries' => ['rehat tengah hari'],
+                    'freshness_label' => null,
+                    'answer_mode' => 'static',
+                    'route_refs' => [],
+                ]),
+            ]);
+        });
+
+        $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'apa waktu kerja amiosh?'])
+            ->assertOk()
+            ->assertJsonPath('answer.sources.0.source_type', 'handbook')
+            ->assertJsonPath('answer.content', 'Waktu kerja ialah 8:30 am hingga 5:30 pm berdasarkan Handbook.');
     }
 
     public function test_static_answer_cache_reuses_grounded_answers(): void
@@ -2686,6 +2788,48 @@ Contoh soalan:
             ->assertJsonPath('answer.sources.0.related_route', "/project/manage/{$projectId}");
     }
 
+    public function test_bm_project_status_question_resolves_live_project_source(): void
+    {
+        $projectId = $this->insertProject('Projek Keselamatan Alpha', 'Active', 1);
+        DB::table('project_progress')->insert([
+            'project_id' => $projectId,
+            'progress_date' => '2026-05-20',
+            'progress_text' => 'Dokumen training sudah siap.',
+            'updated_by' => 7,
+            'updated_on' => now(),
+        ]);
+
+        config(['services.openai.key' => 'test-key']);
+        Http::fake(function ($request) {
+            $decoded = json_decode($request->data()['input'][1]['content'] ?? '{}', true);
+            $source = collect($decoded['sources'] ?? [])->firstWhere('source_type', 'project');
+
+            $this->assertSame('bahasa_malaysia', $decoded['language_hint'] ?? null);
+
+            return Http::response([
+                'output_text' => json_encode([
+                    'answer_markdown' => 'Setakat ini, Projek Keselamatan Alpha berstatus Active.',
+                    'confidence' => 'high',
+                    'source_slugs' => [$source['slug']],
+                    'suggested_queries' => [],
+                    'freshness_label' => $source['freshness_label'],
+                    'answer_mode' => 'live',
+                    'route_refs' => [],
+                ]),
+            ]);
+        });
+
+        $this->authenticated()
+            ->postJson('/knowledge/assistant', [
+                'question' => 'apa status projek Keselamatan Alpha?',
+                'current_route' => '/project/manage',
+            ])
+            ->assertOk()
+            ->assertJsonPath('answer.answer_mode', 'live')
+            ->assertJsonPath('answer.sources.0.source_type', 'project')
+            ->assertJsonPath('answer.sources.0.related_route', "/project/manage/{$projectId}");
+    }
+
     public function test_current_project_detail_route_uses_full_detail_context(): void
     {
         $clientId = $this->insertClient('Detail Client Sdn Bhd');
@@ -2933,6 +3077,59 @@ Contoh soalan:
             ->assertJsonPath('answer.answer_mode', 'live')
             ->assertJsonFragment(['source_type' => 'invoice'])
             ->assertJsonFragment(['related_route' => '/commercial/invoice/88']);
+    }
+
+    public function test_bm_invoice_question_resolves_unpaid_invoice_source(): void
+    {
+        $clientId = $this->insertClient('BM Invoice Client Sdn Bhd');
+        $projectId = $this->insertProject('BM Invoice Project', 'Active', $clientId);
+        DB::table('invoices')->insert([
+            'id' => 89,
+            'client_id' => $clientId,
+            'project_id' => $projectId,
+            'invoice_ref_no' => 'INV-2026-089',
+            'service_type' => 'Training',
+            'invoice_date' => now()->subDays(5)->toDateString(),
+            'grand_total' => 12500,
+            'status' => 'Pending',
+            'invoice_client_name' => 'BM Invoice Client Sdn Bhd',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('invoice_breakdown')->insert([
+            'invoice_id' => 89,
+            'item_description' => 'Training service',
+            'quantity' => 1,
+            'unit_price' => 12500,
+            'subtotal' => 12500,
+        ]);
+
+        config(['services.openai.key' => 'test-key']);
+        Http::fake(function ($request) {
+            $decoded = json_decode($request->data()['input'][1]['content'] ?? '{}', true);
+            $source = collect($decoded['sources'] ?? [])->firstWhere('source_type', 'invoice');
+
+            $this->assertSame('bahasa_malaysia', $decoded['language_hint'] ?? null);
+
+            return Http::response([
+                'output_text' => json_encode([
+                    'answer_markdown' => 'Invoice INV-2026-089 masih Pending.',
+                    'confidence' => 'high',
+                    'source_slugs' => [$source['slug']],
+                    'suggested_queries' => [],
+                    'freshness_label' => $source['freshness_label'],
+                    'answer_mode' => 'live',
+                    'route_refs' => [],
+                ]),
+            ]);
+        });
+
+        $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'tunjuk invois belum bayar'])
+            ->assertOk()
+            ->assertJsonPath('answer.answer_mode', 'live')
+            ->assertJsonPath('answer.sources.0.source_type', 'invoice')
+            ->assertJsonPath('answer.sources.0.related_route', '/commercial/invoice');
     }
 
     public function test_current_invoice_detail_route_includes_breakdown_and_linked_project(): void
@@ -3576,6 +3773,47 @@ Contoh soalan:
             ->assertJsonFragment(['source_type' => 'leave']);
     }
 
+    public function test_bm_leave_status_question_resolves_personal_leave_source(): void
+    {
+        DB::table('hr_leaves_application')->insert([
+            'id' => 53,
+            'staff_id' => 7,
+            'type' => 'Annual Leave',
+            'reason' => 'Family matter',
+            'start_date' => now()->addDay()->toDateString(),
+            'end_date' => now()->addDay()->toDateString(),
+            'duration_days' => 1,
+            'status' => 'Pending',
+            'applied_at' => now(),
+        ]);
+
+        config(['services.openai.key' => 'test-key']);
+        Http::fake(function ($request) {
+            $decoded = json_decode($request->data()['input'][1]['content'] ?? '{}', true);
+            $source = collect($decoded['sources'] ?? [])->firstWhere('source_type', 'leave');
+
+            $this->assertSame('bahasa_malaysia', $decoded['language_hint'] ?? null);
+
+            return Http::response([
+                'output_text' => json_encode([
+                    'answer_markdown' => 'Status cuti Annual Leave anda ialah Pending.',
+                    'confidence' => 'high',
+                    'source_slugs' => [$source['slug']],
+                    'suggested_queries' => [],
+                    'freshness_label' => $source['freshness_label'],
+                    'answer_mode' => 'live',
+                    'route_refs' => [],
+                ]),
+            ]);
+        });
+
+        $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'apa status cuti saya?'])
+            ->assertOk()
+            ->assertJsonPath('answer.sources.0.source_type', 'leave')
+            ->assertJsonPath('answer.sources.0.related_route', '/my/leaves');
+    }
+
     public function test_task_provider_scopes_personal_and_manager_records(): void
     {
         DB::table('tasks')->insert([
@@ -4179,6 +4417,346 @@ Contoh soalan:
 - How to Create a Quotation');
     }
 
+    public function test_user_trace_counts_only_current_staff_quotations(): void
+    {
+        DB::table('quotes_training')->insert([
+            [
+                'id' => 501,
+                'quote_ref_no' => 'Q-SELF-501',
+                'client_name' => 'Own Client',
+                'grand_total' => 1200,
+                'created_by_id' => 7,
+                'created_by_code' => 'ST7',
+                'revision_no' => 0,
+                'status' => 'Open',
+                'created_at' => now()->subMonth(),
+                'updated_at' => now()->subMonth(),
+            ],
+            [
+                'id' => 503,
+                'quote_ref_no' => 'Q-SELF-501',
+                'client_name' => 'Own Client Revised',
+                'grand_total' => 1300,
+                'created_by_id' => 7,
+                'created_by_code' => 'ST7',
+                'revision_no' => 1,
+                'status' => 'Open',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'id' => 504,
+                'quote_ref_no' => 'Q-CODE-504',
+                'client_name' => 'Code Fallback Client',
+                'grand_total' => 2200,
+                'created_by_id' => null,
+                'created_by_code' => 'ST7',
+                'revision_no' => 0,
+                'status' => 'Open',
+                'created_at' => now()->subWeek(),
+                'updated_at' => now()->subWeek(),
+            ],
+            [
+                'id' => 505,
+                'quote_ref_no' => 'Q-CANCEL-505',
+                'client_name' => 'Cancelled Own Client',
+                'grand_total' => 5000,
+                'created_by_id' => 7,
+                'created_by_code' => 'ST7',
+                'revision_no' => 0,
+                'status' => 'Cancelled',
+                'created_at' => now()->subWeek(),
+                'updated_at' => now()->subWeek(),
+            ],
+            [
+                'id' => 502,
+                'quote_ref_no' => 'Q-OTHER-502',
+                'client_name' => 'Other Client',
+                'grand_total' => 9000,
+                'created_by_id' => 8,
+                'created_by_code' => 'ST8',
+                'revision_no' => 0,
+                'status' => 'Awarded',
+                'created_at' => now()->subMonth(),
+                'updated_at' => now()->subMonth(),
+            ],
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how many quotations have i issued'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources.0.source_type', 'user_trace')
+            ->assertJsonMissing(['diagnostics' => []])
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('found 2 quotation(s) issued', $content);
+        $this->assertStringContainsString('Scope: your own records.', $content);
+        $this->assertStringNotContainsString('Cancelled Own Client', json_encode($response));
+        $this->assertStringNotContainsString('Other Client', json_encode($response));
+    }
+
+    public function test_user_trace_quote_follow_up_reuses_previous_metric(): void
+    {
+        DB::table('quotes_training')->insert([
+            [
+                'id' => 511,
+                'quote_ref_no' => 'Q-SELF-511',
+                'client_name' => 'Month Client A',
+                'grand_total' => 1000,
+                'created_by_id' => 7,
+                'status' => 'Open',
+                'created_at' => now()->subMonth(),
+                'updated_at' => now()->subMonth(),
+            ],
+            [
+                'id' => 512,
+                'quote_ref_no' => 'Q-SELF-512',
+                'client_name' => 'Month Client B',
+                'grand_total' => 2000,
+                'created_by_id' => 7,
+                'status' => 'Failed',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $threadId = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how many quotations have i issued'])
+            ->assertOk()
+            ->json('thread.id');
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', [
+                'thread_id' => $threadId,
+                'question' => 'break it down by month',
+            ])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->json();
+
+        $this->assertStringContainsString('by_month', (string) data_get($response, 'answer.content'));
+        $this->assertSame('user_trace', data_get($response, 'answer.sources.0.source_type'));
+    }
+
+    public function test_user_trace_quote_failed_follow_up_reuses_previous_metric(): void
+    {
+        DB::table('quotes_training')->insert([
+            [
+                'id' => 515,
+                'quote_ref_no' => 'Q-SELF-515',
+                'client_name' => 'Open Client',
+                'grand_total' => 1000,
+                'created_by_id' => 7,
+                'status' => 'Open',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'id' => 516,
+                'quote_ref_no' => 'Q-SELF-516',
+                'client_name' => 'Failed Client',
+                'grand_total' => 2000,
+                'created_by_id' => 7,
+                'status' => 'Failed',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $threadId = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how many quotations have i issued'])
+            ->assertOk()
+            ->json('thread.id');
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', [
+                'thread_id' => $threadId,
+                'question' => 'which failed most?',
+            ])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources.0.title', 'My quotation trace')
+            ->json();
+
+        $this->assertStringContainsString('I found 1 failed quotation(s)', (string) data_get($response, 'answer.content'));
+        $this->assertStringContainsString('"Failed":1', (string) data_get($response, 'answer.content'));
+    }
+
+    public function test_user_trace_leave_counts_approved_days_and_reports_pending_separately(): void
+    {
+        DB::table('hr_leaves_application')->insert([
+            [
+                'id' => 521,
+                'staff_id' => 7,
+                'type' => 'Annual Leave',
+                'reason' => 'Family',
+                'start_date' => now()->subDays(10)->toDateString(),
+                'end_date' => now()->subDays(9)->toDateString(),
+                'duration_days' => 2,
+                'status' => 'Approved',
+                'applied_at' => now()->subDays(20),
+            ],
+            [
+                'id' => 522,
+                'staff_id' => 7,
+                'type' => 'Annual Leave',
+                'reason' => 'Pending plan',
+                'start_date' => now()->addDays(3)->toDateString(),
+                'end_date' => now()->addDays(3)->toDateString(),
+                'duration_days' => 1,
+                'status' => 'Pending',
+                'applied_at' => now(),
+            ],
+            [
+                'id' => 523,
+                'staff_id' => 8,
+                'type' => 'Medical Leave',
+                'reason' => 'Other private leave',
+                'start_date' => now()->subDays(5)->toDateString(),
+                'end_date' => now()->subDays(5)->toDateString(),
+                'duration_days' => 1,
+                'status' => 'Approved',
+                'applied_at' => now()->subDays(7),
+            ],
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how many days have i taken leave'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('you have taken 2 approved leave day(s)', $content);
+        $this->assertStringContainsString('"pending_count":1', $content);
+        $this->assertStringNotContainsString('Other private leave', json_encode($response));
+    }
+
+    public function test_user_trace_kpi_is_self_scoped_and_denies_other_staff(): void
+    {
+        DB::table('hr_appraisal')->insert([
+            [
+                'id' => 531,
+                'staff_id' => 7,
+                'section' => 'Performance',
+                'feedback' => 'Improve documentation follow-up.',
+                'status' => 'Reviewed',
+                'created_by' => 7,
+                'created_at' => now()->subDay(),
+                'updated_at' => now(),
+            ],
+            [
+                'id' => 532,
+                'staff_id' => 8,
+                'section' => 'Performance',
+                'feedback' => 'Other staff private KPI feedback',
+                'status' => 'Reviewed',
+                'created_by' => 8,
+                'created_at' => now()->subDay(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $own = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'what is my kpi status'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->json();
+
+        $this->assertStringContainsString('Your latest KPI/appraisal record is Reviewed', (string) data_get($own, 'answer.content'));
+        $this->assertStringContainsString('Improve documentation follow-up.', (string) data_get($own, 'answer.content'));
+        $this->assertStringNotContainsString('Other staff private KPI feedback', json_encode($own));
+
+        $denied = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => "show Ali's KPI"])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources', [])
+            ->json();
+
+        $this->assertStringContainsString('I can only answer self-scoped trace questions', (string) data_get($denied, 'answer.content'));
+        $this->assertStringNotContainsString('Other staff private KPI feedback', json_encode($denied));
+    }
+
+    public function test_user_trace_denies_team_scope_even_with_my_wording(): void
+    {
+        DB::table('quotes_training')->insert([
+            [
+                'id' => 535,
+                'quote_ref_no' => 'Q-TEAM-535',
+                'client_name' => 'Team Client',
+                'grand_total' => 1000,
+                'created_by_id' => 8,
+                'created_by_code' => 'ST8',
+                'status' => 'Open',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how many quotations has my team issued'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources', [])
+            ->json();
+
+        $this->assertStringContainsString('I can only answer self-scoped trace questions', (string) data_get($response, 'answer.content'));
+        $this->assertStringNotContainsString('Team Client', json_encode($response));
+    }
+
+    public function test_user_trace_employment_tenure_uses_join_date_when_available(): void
+    {
+        Schema::table('staff_general', function (Blueprint $table): void {
+            $table->date('join_date')->nullable();
+            $table->string('department')->nullable();
+            $table->string('position')->nullable();
+        });
+        DB::table('staff_general')->where('staff_id', 7)->update([
+            'join_date' => now()->subYears(2)->subMonths(3)->toDateString(),
+            'department' => 'Operations',
+            'position' => 'Executive',
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how many years have i spent here in this company'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('your tenure is', $content);
+        $this->assertStringContainsString('join_date', json_encode($response));
+        $this->assertStringContainsString('Scope: your own records.', $content);
+    }
+
+    public function test_user_trace_bm_self_questions_use_trace_provider(): void
+    {
+        DB::table('quotes_training')->insert([
+            'id' => 541,
+            'quote_ref_no' => 'Q-BM-541',
+            'client_name' => 'BM Client',
+            'grand_total' => 3000,
+            'created_by_id' => 7,
+            'created_by_code' => 'ST7',
+            'status' => 'Open',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'berapa quotation saya tahun ini'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources.0.source_type', 'user_trace')
+            ->json();
+
+        $this->assertStringContainsString('Untuk rekod anda sendiri', (string) data_get($response, 'answer.content'));
+        $this->assertStringContainsString('Skop: rekod anda sendiri.', (string) data_get($response, 'answer.content'));
+    }
+
     private function authenticated(int $userId = 1, int $staffId = 7, array $roles = ['Staff'])
     {
         return $this->withSession([
@@ -4363,6 +4941,32 @@ Contoh soalan:
 
         $this->assertContains('proposal_template', $plan->domains);
         $this->assertContains('CHRA', $plan->recordRefs);
+    }
+
+    public function test_ai_retrieval_planner_failure_falls_back_to_bm_heuristic_domains(): void
+    {
+        config([
+            'services.openai.key' => 'test-key',
+            'services.knowledge_assistant.planner_enabled' => true,
+        ]);
+        Http::fake([
+            'api.openai.com/v1/responses' => Http::response(['output_text' => '{not-json'], 200),
+        ]);
+
+        $policyPlan = app(AssistantRetrievalPlanner::class)->plan(
+            'apa waktu kerja amiosh?',
+            '',
+            $this->assistantRequest(),
+        );
+        $invoicePlan = app(AssistantRetrievalPlanner::class)->plan(
+            'tunjuk invois belum bayar',
+            '',
+            $this->assistantRequest(),
+        );
+
+        $this->assertContains('handbook', $policyPlan->domains);
+        $this->assertContains('waktu kerja', $policyPlan->searchTerms);
+        $this->assertContains('invoice', $invoicePlan->domains);
     }
 
     public function test_ai_retrieval_planner_does_not_promote_generic_action_words_to_record_refs(): void

@@ -90,7 +90,7 @@ class AssistantQuestionIntentResolver
 
     private function quoteCreationIntent(string $question): bool
     {
-        return (bool) preg_match('/\b(how\s+to\s+quote|quote\s+(this|that|the|for|ini|service)|prepare\s+(a\s+)?quot|create\s+(a\s+)?quot|send\s+(a\s+)?quot|price\s+(this|that|the|ini|service)|macam\s+mana\s+nak\s+quote|cara\s+quote|buat\s+quote|buat\s+sebut\s+harga)\b/i', $question);
+        return (bool) preg_match('/\b(how\s+to\s+quote|quote\s+(this|that|the|for|ini|service)|prepare\s+(a\s+)?quot|create\s+(a\s+)?quot|send\s+(a\s+)?quot|price\s+(this|that|the|ini|service)|macam\s+mana\s+nak\s+quote|cara\s+quote|buat\s+quote|buat\s+sebut\s+harga|buat\s+sebutharga|cara\s+buat\s+sebut\s+harga)\b/i', $question);
     }
 
     private function quoteNegotiationIntent(string $question, array $tokens): bool
@@ -104,18 +104,18 @@ class AssistantQuestionIntentResolver
 
     private function recordStatusIntent(string $question, array $tokens): bool
     {
-        if (! (bool) preg_match('/\b(status|state|stage|progress|open|pending|approved|awarded|failed|apa\s+status)\b/i', $question)) {
+        if (! (bool) preg_match('/\b(status|state|stage|progress|open|pending|approved|approval|awarded|failed|apa\s+status|perkembangan|kelulusan|lulus)\b/i', $question)) {
             return false;
         }
 
-        return $this->hasRecordTerm($tokens) || (bool) preg_match('/\b(this|that|ini|quote|quotation|project|client|task|leave|invoice|record|rekod)\b/i', $question);
+        return $this->hasRecordTerm($tokens) || (bool) preg_match('/\b(this|that|ini|quote|quotation|project|projek|client|pelanggan|task|leave|cuti|invoice|invois|record|rekod)\b/i', $question);
     }
 
     private function policyQuestionIntent(string $question, array $tokens, string $route): bool
     {
         return str_starts_with($route, '/handbook')
-            || (bool) preg_match('/\b(handbook|policy|working\s+time|working\s+hours|office\s+hours|lunch|dress\s+code|attendance|employee|staff|hr)\b/i', $question)
-            || count(array_intersect($tokens, ['handbook', 'policy', 'policie', 'attendance', 'employee', 'working', 'office', 'lunch', 'dress'])) > 0;
+            || (bool) preg_match('/\b(handbook|policy|polisi|working\s+time|working\s+hours|office\s+hours|waktu\s+kerja|lunch|lunch\s+break|rehat\s+tengah\s+hari|dress\s+code|attendance|employee|staff|hr)\b/i', $question)
+            || count(array_intersect($tokens, ['handbook', 'policy', 'policie', 'attendance', 'employee', 'working', 'office', 'lunch', 'dress', 'break', 'hours'])) > 0;
     }
 
     private function serviceExplanationIntent(string $question, array $tokens, string $originalQuestion): bool
@@ -145,7 +145,7 @@ class AssistantQuestionIntentResolver
 
     private function actionRequestIntent(string $question): bool
     {
-        return (bool) preg_match('/\b(create|update|submit|approve|delete|send|apply|buat|hantar|lulus|padam)\s+(this|that|it|ini|for\s+me|now)\b/i', $question)
+        return (bool) preg_match('/\b(create|update|submit|approve|delete|send|apply|buat|hantar|lulus|padam)\s+(this|that|it|ini|for\s+me|now|sekarang)\b/i', $question)
             || (bool) preg_match('/\b(create|update|submit|approve|delete|send|apply|buat|hantar|lulus|padam)\b.{0,60}\b(for\s+me|now|on\s+my\s+behalf|untuk\s+saya|sekarang)\b/i', $question)
             || (bool) preg_match('/\b(do\s+this\s+for\s+me|can\s+you\s+(create|update|submit|approve|delete|send|apply))\b/i', $question);
     }
@@ -167,6 +167,7 @@ class AssistantQuestionIntentResolver
             'client' => 'client',
             'vendor' => 'vendor',
             'invoice' => 'invoice',
+            'salary' => 'salary',
             'task' => 'task',
             'leave' => 'leave',
         ] as $token => $target) {
@@ -191,7 +192,7 @@ class AssistantQuestionIntentResolver
 
     private function hasRecordTerm(array $tokens): bool
     {
-        return count(array_intersect($tokens, ['quote', 'quotation', 'record', 'project', 'client', 'task', 'leave', 'invoice', 'vendor', 'rekod'])) > 0;
+        return count(array_intersect($tokens, ['quote', 'quotation', 'record', 'project', 'client', 'task', 'leave', 'invoice', 'vendor', 'salary', 'rekod'])) > 0;
     }
 
     private function hasServiceCode(string $question): bool

@@ -19,8 +19,9 @@ class AssistantConversationContextResolver
         $hasFollowUpReference = $this->hasFollowUpReference($normalizedQuestion);
         $routeHasDetail = $this->routeHasDetail($currentRoute);
         $questionHasExactReference = $this->hasExactReference($normalizedQuestion);
+        $hasDirectUserTraceIntent = $this->hasDirectUserTraceIntent($normalizedQuestion);
 
-        $matches = $hasFollowUpReference && ! $routeHasDetail && ! $questionHasExactReference
+        $matches = $hasFollowUpReference && ! $routeHasDetail && ! $questionHasExactReference && ! $hasDirectUserTraceIntent
             ? $this->matchingEntities($entities, $normalizedQuestion)
             : [];
 
@@ -38,7 +39,7 @@ class AssistantConversationContextResolver
             'active_entities' => $entities,
             'context_confidence' => $focus && ! $ambiguous ? 'high' : ($hasFollowUpReference ? 'low' : 'none'),
             'clarification_needed' => $ambiguous,
-            'clarification_question' => $ambiguous ? $this->clarificationQuestion($matches) : null,
+            'clarification_question' => $ambiguous ? $this->clarificationQuestion($matches, $question) : null,
             'clarification_options' => $ambiguous ? $this->clarificationOptions($matches) : [],
         ];
     }
@@ -265,7 +266,36 @@ class AssistantConversationContextResolver
 
     private function hasFollowUpReference(string $question): bool
     {
-        return (bool) preg_match('/\b(this|that|it|same|ini|itu|tadi|benda\s+ini|yang\s+tadi|the above|previous|earlier|how\s+about|what\s+about|this service|that service|service ini|this proposal|that proposal|proposal ini|this quote|that quote|quote ini|this record|that record|record ini|rekod ini|client ini|projek ini)\b/i', $question);
+        return (bool) preg_match('/\b(this|that|it|same|ini|itu|tadi|benda\s+ini|yang\s+tadi|the above|previous|earlier|how\s+about|what\s+about|why|which\s+failed|how\s+can\s+i\s+improve|this service|that service|service ini|this proposal|that proposal|proposal ini|this quote|that quote|quote ini|this record|that record|record ini|rekod ini|client ini|projek ini)\b/i', $question);
+    }
+
+    private function hasDirectUserTraceIntent(string $question): bool
+    {
+        if (! preg_match('/\b(i|my|mine|me|saya|aku|sendiri|own|personal)\b/i', $question)) {
+            return false;
+        }
+
+        if (preg_match('/\b(quote|quotes|quotation|quotations|sebut\s+harga|sebutharga|sales|crm)\b/i', $question)) {
+            return (bool) preg_match('/\b(how\s+many|berapa|count|total|sum|average|avg|trend|issued|created|won|awarded|failed|lost|menang|gagal|tahun\s+ini)\b/i', $question);
+        }
+
+        if (preg_match('/\b(leave|cuti|entitlement)\b/i', $question)) {
+            return (bool) preg_match('/\b(how\s+many|berapa|taken|ambil|sudah\s+ambil|pending|remaining|entitlement|balance|baki)\b/i', $question);
+        }
+
+        if (preg_match('/\b(kpi|appraisal|performance|feedback|improve|improvement|perbaiki|tingkat)\b/i', $question)) {
+            return (bool) preg_match('/\b(status|how\s+can\s+i\s+improve|improve\s+further|feedback|perbaiki|tingkat)\b/i', $question);
+        }
+
+        if (preg_match('/\b(years?|tenure|spent here|joined|join date|lama.*kerja|kerja sini|profile|position|department)\b/i', $question)) {
+            return (bool) preg_match('/\b(how\s+many|how\s+long|years?|tenure|spent|berapa\s+lama|lama.*kerja|kerja\s+sini|join(?:ed)?|profile|position|department)\b/i', $question);
+        }
+
+        if (preg_match('/\b(task|tasks|workload|todo|assigned)\b/i', $question)) {
+            return (bool) preg_match('/\b(how\s+many|berapa|count|total|status|open|pending|completed)\b/i', $question);
+        }
+
+        return false;
     }
 
     private function hasExactReference(string $question): bool
@@ -307,6 +337,9 @@ class AssistantConversationContextResolver
         }
         if (preg_match('/\b(leave|cuti)\b/i', $question)) {
             return 'leave';
+        }
+        if (preg_match('/\b(user[_ -]?trace|my quotation trace|my leave trace|my kpi trace|my employment trace|my task trace|break (it|that) down|by month|by status|by client|which failed|why|how can i improve)\b/i', $question)) {
+            return 'user_trace';
         }
         if (preg_match('/\b(staff|employee|pekerja)\b/i', $question)) {
             return 'staff';
@@ -351,12 +384,16 @@ class AssistantConversationContextResolver
         return $gap <= 90;
     }
 
-    private function clarificationQuestion(array $matches): string
+    private function clarificationQuestion(array $matches, string $question): string
     {
         $labels = array_values(array_unique(array_filter(array_map(
             static fn (array $entity): string => (string) ($entity['title'] ?? ''),
             array_slice($matches, 0, 3),
         ))));
+
+        if ($this->text->languageHint($question) === 'bahasa_malaysia') {
+            return 'Item sebelum ini yang mana saya perlu guna untuk follow-up ini: '.implode(', ', $labels).'?';
+        }
 
         return 'Which previous item should I use for this follow-up: '.implode(', ', $labels).'?';
     }
@@ -420,7 +457,7 @@ class AssistantConversationContextResolver
         if (str_starts_with($slug, 'quote-record:') && ! str_contains($slug, ':list:') && ! str_contains($slug, ':ambiguous:')) {
             return 360;
         }
-        if (in_array($sourceType, ['project', 'client', 'vendor', 'invoice', 'debtor', 'sales_inquiry', 'leave', 'task', 'staff'], true)) {
+        if (in_array($sourceType, ['project', 'client', 'vendor', 'invoice', 'debtor', 'sales_inquiry', 'leave', 'task', 'staff', 'user_trace'], true)) {
             return 320;
         }
 

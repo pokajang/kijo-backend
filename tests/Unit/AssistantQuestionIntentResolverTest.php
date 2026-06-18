@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Services\Assistant\AssistantQuestionIntent;
 use App\Services\Assistant\AssistantQuestionIntentResolver;
+use App\Services\Assistant\AssistantText;
 use Tests\TestCase;
 
 class AssistantQuestionIntentResolverTest extends TestCase
@@ -83,5 +84,40 @@ class AssistantQuestionIntentResolverTest extends TestCase
         $intent = app(AssistantQuestionIntentResolver::class)->resolve('what is bonus policie');
 
         $this->assertSame(AssistantQuestionIntent::POLICY_QUESTION, $intent->primaryIntent);
+    }
+
+    public function test_language_hint_detects_bm_and_keeps_english_auto(): void
+    {
+        $text = app(AssistantText::class);
+
+        $this->assertSame('bahasa_malaysia', $text->languageHint('apa status projek ini?'));
+        $this->assertSame('bahasa_malaysia', $text->languageHint('tunjuk invois belum bayar'));
+        $this->assertSame('auto', $text->languageHint('what is project status?'));
+    }
+
+    public function test_bm_quote_creation_policy_status_and_action_intents(): void
+    {
+        $resolver = app(AssistantQuestionIntentResolver::class);
+
+        $this->assertSame(
+            AssistantQuestionIntent::QUOTE_CREATION,
+            $resolver->resolve('cara buat sebut harga service ni')->primaryIntent,
+        );
+        $this->assertSame(
+            AssistantQuestionIntent::POLICY_QUESTION,
+            $resolver->resolve('apa waktu kerja amiosh?')->primaryIntent,
+        );
+        $this->assertSame(
+            AssistantQuestionIntent::POLICY_QUESTION,
+            $resolver->resolve('rehat tengah hari macam mana?')->primaryIntent,
+        );
+        $this->assertSame(
+            AssistantQuestionIntent::RECORD_STATUS,
+            $resolver->resolve('apa status projek ini?')->primaryIntent,
+        );
+        $this->assertSame(
+            AssistantQuestionIntent::ACTION_REQUEST,
+            $resolver->resolve('tolong approve cuti ini sekarang')->primaryIntent,
+        );
     }
 }
