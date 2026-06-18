@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Schema;
 class ProjectListService
 {
     private const STAFF_PROJECT_ROLES = ['leader', 'pic', 'owner', 'assistant', 'collaborator'];
+    private const CLOSE_REMINDER_MONEY_TOLERANCE = 0.01;
 
     private static bool $dompdfAutoloaderRegistered = false;
 
@@ -149,6 +150,8 @@ class ProjectListService
             ];
         }
 
+        $closeReminderByProject = $this->closeReminderSummaries($projects, $closingByProject);
+
         $clientPicRows = DB::select(
             "SELECT company_id, full_name, email, mobile_number, position
              FROM client_pic WHERE status = 'assigned' ORDER BY full_name ASC"
@@ -219,6 +222,11 @@ class ProjectListService
             $project['assigned_staff'] = $staffByProject[$id] ?? [];
             $project['vendors'] = $vendorsByProject[$id] ?? [];
             $project['closing_details'] = $closingByProject[$id] ?? null;
+            $closeReminder = $closeReminderByProject[$id] ?? null;
+            $project['close_reminder_ready'] = $closeReminder !== null;
+            $project['fully_invoiced_at'] = $closeReminder['fully_invoiced_at'] ?? null;
+            $project['close_reminder_signature'] = $closeReminder['signature'] ?? null;
+            $project['close_reminder_billing_state'] = $closeReminder['billing_state'] ?? null;
 
             if (! empty($project['quote_pic_name']) || ! empty($project['quote_pic_email'])) {
                 $project['client_pics'] = [[
@@ -254,6 +262,179 @@ class ProjectListService
         unset($project);
 
         return response()->json($projects);
+    }
+
+    private function closeReminderSummaries(array $projects, array $closingByProject): array
+    {
+        if (
+            empty($projects) ||
+            ! Schema::hasTable('invoices') ||
+            ! Schema::hasColumn('invoices', 'project_id') ||
+            ! Schema::hasColumn('invoices', 'grand_total')
+        ) {
+            return [];
+        }
+
+        $eligibleProjects = [];
+        foreach ($projects as $project) {
+            $projectId = (int) ($project['id'] ?? 0);
+            if ($projectId <= 0 || isset($closingByProject[$projectId])) {
+                continue;
+            }
+
+            if (strtolower(trim((string) ($project['status'] ?? ''))) !== 'active') {
+                continue;
+            }
+
+            $projectValue = round((float) ($project['resolved_project_value'] ?? $project['quote_value'] ?? 0), 2);
+            if ($projectValue <= 0) {
+                continue;
+            }
+
+            $eligibleProjects[$projectId] = $projectValue;
+        }
+
+        if (empty($eligibleProjects)) {
+            return [];
+        }
+
+        $invoiceRows = $this->validInvoiceRowsForProjects(array_keys($eligibleProjects));
+        if (empty($invoiceRows)) {
+            return [];
+        }
+
+        $rowsByProject = [];
+        foreach ($invoiceRows as $row) {
+            $projectId = (int) ($row['project_id'] ?? 0);
+            if (! isset($eligibleProjects[$projectId])) {
+                continue;
+            }
+            $rowsByProject[$projectId][] = $row;
+        }
+
+        $summaries = [];
+        foreach ($rowsByProject as $projectId => $rows) {
+            $projectValue = $eligibleProjects[$projectId];
+            $invoiceTotal = round(array_reduce(
+                $rows,
+                static fn (float $total, array $row): float => $total + round((float) ($row['grand_total'] ?? 0), 2),
+                0.0
+            ), 2);
+
+            if ($invoiceTotal < ($projectValue - self::CLOSE_REMINDER_MONEY_TOLERANCE)) {
+                continue;
+            }
+
+            $billingState =
+                abs($invoiceTotal - $projectValue) <= self::CLOSE_REMINDER_MONEY_TOLERANCE
+                    ? 'matched'
+                    : 'exceeded';
+
+            $runningTotal = 0.0;
+            $fullyInvoicedAt = null;
+            $latestInvoiceId = 0;
+            $latestInvoiceDate = '';
+            $invoiceDateParts = [];
+            $invoiceStatusParts = [];
+
+            foreach ($rows as $row) {
+                $runningTotal = round($runningTotal + round((float) ($row['grand_total'] ?? 0), 2), 2);
+                $invoiceId = (int) ($row['id'] ?? 0);
+                $invoiceDate = $this->dateOnly($row['invoice_date'] ?? $row['created_at'] ?? null);
+                $invoiceDateParts[] = $invoiceId.':'.$invoiceDate;
+                $invoiceStatusParts[] = $invoiceId.':'.strtolower(trim((string) ($row['status'] ?? '')));
+
+                $latestInvoiceId = $invoiceId;
+                if ($invoiceDate !== '') {
+                    $latestInvoiceDate = $invoiceDate;
+                }
+                if ($fullyInvoicedAt === null && ($projectValue - $runningTotal) <= self::CLOSE_REMINDER_MONEY_TOLERANCE) {
+                    $fullyInvoicedAt = $invoiceDate ?: null;
+                }
+            }
+
+            if ($fullyInvoicedAt === null) {
+                continue;
+            }
+
+            $projectValueCents = (int) round($projectValue * 100);
+            $invoiceTotalCents = (int) round($invoiceTotal * 100);
+            $signature = sha1(implode('|', [
+                'v1',
+                $projectId,
+                $projectValueCents,
+                $invoiceTotalCents,
+                count($rows),
+                $latestInvoiceId,
+                $latestInvoiceDate,
+                $fullyInvoicedAt,
+                implode(',', $invoiceDateParts),
+                implode(',', $invoiceStatusParts),
+                $billingState,
+            ]));
+
+            $summaries[$projectId] = [
+                'fully_invoiced_at' => $fullyInvoicedAt,
+                'signature' => $signature,
+                'billing_state' => $billingState,
+            ];
+        }
+
+        return $summaries;
+    }
+
+    private function validInvoiceRowsForProjects(array $projectIds): array
+    {
+        $query = DB::table('invoices')
+            ->whereIn('project_id', $projectIds)
+            ->select([
+                'id',
+                'project_id',
+                'grand_total',
+                Schema::hasColumn('invoices', 'invoice_date')
+                    ? 'invoice_date'
+                    : DB::raw('NULL as invoice_date'),
+                Schema::hasColumn('invoices', 'created_at')
+                    ? 'created_at'
+                    : DB::raw('NULL as created_at'),
+            ]);
+
+        if (Schema::hasColumn('invoices', 'status')) {
+            $query
+                ->whereRaw("LOWER(COALESCE(status, '')) NOT LIKE ?", ['%void%'])
+                ->whereRaw("LOWER(COALESCE(status, '')) NOT LIKE ?", ['%cancel%'])
+                ->addSelect('status');
+        }
+
+        $query->orderBy('project_id');
+        if (Schema::hasColumn('invoices', 'invoice_date')) {
+            $query->orderBy('invoice_date');
+        }
+        if (Schema::hasColumn('invoices', 'created_at')) {
+            $query->orderBy('created_at');
+        }
+        $query->orderBy('id');
+
+        return $query
+            ->get()
+            ->map(static fn ($row): array => (array) $row)
+            ->all();
+    }
+
+    private function dateOnly(mixed $value): string
+    {
+        $text = trim((string) ($value ?? ''));
+        if ($text === '') {
+            return '';
+        }
+        if (str_contains($text, 'T')) {
+            return explode('T', $text, 2)[0];
+        }
+        if (str_contains($text, ' ')) {
+            return explode(' ', $text, 2)[0];
+        }
+
+        return $text;
     }
 
     public function options(Request $request): JsonResponse
