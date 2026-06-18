@@ -4748,6 +4748,18 @@ Contoh soalan:
         $this->assertStringContainsString('your tenure is', $content);
         $this->assertStringContainsString('join_date', json_encode($response));
         $this->assertStringContainsString('Scope: your own records.', $content);
+
+        $workedHereResponse = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'how long have i worked here'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources.0.source_type', 'user_trace')
+            ->json();
+
+        $workedHereContent = (string) data_get($workedHereResponse, 'answer.content');
+        $this->assertStringContainsString('your tenure is', $workedHereContent);
+        $this->assertStringContainsString('Scope: your own records.', $workedHereContent);
+        $this->assertStringNotContainsString('AI response unavailable', $workedHereContent);
     }
 
     public function test_user_trace_bm_self_questions_use_trace_provider(): void

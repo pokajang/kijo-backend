@@ -265,7 +265,7 @@ class UserTraceContextProvider extends ModuleContextProvider
         if ($domain === 'kpi' && preg_match('/\b(kpi\s+status|appraisal\s+status|performance\s+status|how\s+can\s+i\s+improve|improve\s+further|perbaiki|tingkat)\b/i', $question)) {
             return true;
         }
-        if ($domain === 'employment' && preg_match('/\b(years?\s+have\s+i\s+spent|tenure|how\s+long|berapa\s+lama|lama.*kerja|kerja\s+sini|join\s+date|joined)\b/i', $question)) {
+        if ($domain === 'employment' && preg_match('/\b(years?\s+have\s+i\s+spent|tenure|how\s+long|worked\s+here|work(?:ing)?\s+here|been\s+here|been\s+with\s+(this\s+)?company|berapa\s+lama|lama.*kerja|kerja\s+sini|join\s+date|joined)\b/i', $question)) {
             return true;
         }
 
@@ -310,7 +310,7 @@ class UserTraceContextProvider extends ModuleContextProvider
         if (preg_match('/\b(kpi|appraisal|performance|feedback|improve|improvement|perbaiki|tingkat)\b/i', $question)) {
             return 'kpi';
         }
-        if (preg_match('/\b(years?|tenure|spent here|joined|join date|lama.*kerja|kerja sini|profile|position|department)\b/i', $question)) {
+        if (preg_match('/\b(years?|tenure|spent here|worked\s+here|work(?:ing)?\s+here|been\s+here|been\s+with\s+(this\s+)?company|joined|join date|lama.*kerja|kerja sini|profile|position|department)\b/i', $question)) {
             return 'employment';
         }
         if (preg_match('/\b(task|tasks|workload|todo|assigned)\b/i', $question)) {

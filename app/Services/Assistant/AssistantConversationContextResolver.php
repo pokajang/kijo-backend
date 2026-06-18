@@ -287,8 +287,8 @@ class AssistantConversationContextResolver
             return (bool) preg_match('/\b(status|how\s+can\s+i\s+improve|improve\s+further|feedback|perbaiki|tingkat)\b/i', $question);
         }
 
-        if (preg_match('/\b(years?|tenure|spent here|joined|join date|lama.*kerja|kerja sini|profile|position|department)\b/i', $question)) {
-            return (bool) preg_match('/\b(how\s+many|how\s+long|years?|tenure|spent|berapa\s+lama|lama.*kerja|kerja\s+sini|join(?:ed)?|profile|position|department)\b/i', $question);
+        if (preg_match('/\b(years?|tenure|spent here|worked\s+here|work(?:ing)?\s+here|been\s+here|been\s+with\s+(this\s+)?company|joined|join date|lama.*kerja|kerja sini|profile|position|department)\b/i', $question)) {
+            return (bool) preg_match('/\b(how\s+many|how\s+long|years?|tenure|spent|worked\s+here|work(?:ing)?\s+here|been\s+here|been\s+with\s+(this\s+)?company|berapa\s+lama|lama.*kerja|kerja\s+sini|join(?:ed)?|profile|position|department)\b/i', $question);
         }
 
         if (preg_match('/\b(task|tasks|workload|todo|assigned)\b/i', $question)) {
