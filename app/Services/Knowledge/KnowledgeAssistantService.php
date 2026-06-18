@@ -1122,6 +1122,7 @@ class KnowledgeAssistantService
                 'ai_failure_stage' => $answer['ai_failure_stage'] ?? null,
                 'read_only_notice' => $answer['read_only_notice'] ?? false,
                 'clarification_options' => $answer['clarification_options'] ?? [],
+                'display_blocks' => $answer['display_blocks'] ?? [],
             ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             'confidence' => $answer['confidence'] ?? 'low',
             'input_tokens' => $result?->inputTokens,
@@ -1200,6 +1201,7 @@ class KnowledgeAssistantService
         $aiFailureStage = null;
         $readOnlyNotice = false;
         $clarificationOptions = [];
+        $displayBlocks = [];
 
         if (is_array($metadata) && array_is_list($metadata)) {
             $sources = $metadata;
@@ -1221,6 +1223,7 @@ class KnowledgeAssistantService
             $aiFailureStage = is_string($metadata['ai_failure_stage'] ?? null) ? $metadata['ai_failure_stage'] : null;
             $readOnlyNotice = (bool) ($metadata['read_only_notice'] ?? false);
             $clarificationOptions = is_array($metadata['clarification_options'] ?? null) ? $metadata['clarification_options'] : [];
+            $displayBlocks = is_array($metadata['display_blocks'] ?? null) ? $metadata['display_blocks'] : [];
         }
 
         return [
@@ -1241,6 +1244,7 @@ class KnowledgeAssistantService
             'ai_failure_stage' => $aiFailureStage,
             'read_only_notice' => $readOnlyNotice,
             'clarification_options' => $clarificationOptions,
+            'display_blocks' => $displayBlocks,
         ];
     }
 
@@ -1297,6 +1301,7 @@ class KnowledgeAssistantService
             'ai_failure_stage' => $metadata['ai_failure_stage'],
             'read_only_notice' => $metadata['read_only_notice'],
             'clarification_options' => $metadata['clarification_options'],
+            'display_blocks' => $metadata['display_blocks'],
             'created_at' => $row->created_at,
         ];
     }
@@ -1328,6 +1333,7 @@ class KnowledgeAssistantService
                 'ai_failure_stage' => $answer['ai_failure_stage'] ?? null,
                 'read_only_notice' => $answer['read_only_notice'] ?? false,
                 'clarification_options' => $answer['clarification_options'] ?? [],
+                'display_blocks' => $answer['display_blocks'] ?? [],
             ],
             'messages' => $this->messagesForThread((int) $thread->id),
         ];

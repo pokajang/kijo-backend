@@ -186,5 +186,49 @@
     "expected_provider_keys": ["user_trace"],
     "forbidden_source_types": ["salary", "appraisal", "user_trace"],
     "forbidden_answer_contains": ["basic_salary", "net_pay", "private/"]
+  },
+  {
+    "question": "who has the most sales this year",
+    "current_route": "/dashboard/sales",
+    "role": "staff",
+    "expected_provider_keys": ["company_analytics"],
+    "expected_source_types": ["company_analytics"],
+    "forbidden_source_types": ["salary", "appraisal", "leave"],
+    "forbidden_answer_contains": ["basic_salary", "net_pay", "private/"]
+  },
+  {
+    "question": "which client contributes most sales",
+    "current_route": "/client",
+    "role": "staff",
+    "expected_provider_keys": ["company_analytics"],
+    "expected_source_types": ["company_analytics"],
+    "forbidden_source_types": ["salary", "appraisal", "leave"],
+    "forbidden_answer_contains": ["basic_salary", "net_pay", "private/"]
+  },
+  {
+    "question": "show unpaid invoices by client",
+    "current_route": "/commercial/invoice",
+    "role": "finance",
+    "expected_provider_keys": ["company_analytics"],
+    "expected_source_types": ["company_analytics"],
+    "forbidden_source_types": ["salary", "appraisal", "leave"],
+    "forbidden_answer_contains": ["basic_salary", "net_pay", "private/"]
+  },
+  {
+    "question": "quote conversion by service this year",
+    "current_route": "/crm/quotes",
+    "role": "sales",
+    "expected_provider_keys": ["company_analytics"],
+    "expected_source_types": ["company_analytics"],
+    "forbidden_source_types": ["salary", "appraisal", "leave"],
+    "forbidden_answer_contains": ["basic_salary", "net_pay", "private/"]
+  },
+  {
+    "question": "compare my KPI to Person A",
+    "current_route": "/staff/appraise",
+    "role": "staff",
+    "expected_provider_keys": ["company_analytics"],
+    "forbidden_source_types": ["salary", "appraisal", "leave", "company_analytics"],
+    "forbidden_answer_contains": ["basic_salary", "net_pay", "private/"]
   }
 ]

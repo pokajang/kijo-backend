@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Services\Assistant\UserTrace;
+namespace App\Services\Assistant\CompanyAnalytics;
 
 use Carbon\Carbon;
 
-class AssistantTraceDateRangeResolver
+class AssistantCompanyAnalyticsDateRangeResolver
 {
     public function resolve(string $question): array
     {
@@ -24,34 +24,37 @@ class AssistantTraceDateRangeResolver
         }
 
         if (preg_match('/\b(last\s+12\s+months|12\s+bulan\s+lepas)\b/i', $question)) {
-            $start = $today->copy()->subMonthsNoOverflow(11)->startOfMonth();
-            return $this->range('last 12 months', $start, $today);
+            return $this->range('last 12 months', $today->copy()->subMonthsNoOverflow(11)->startOfMonth(), $today);
         }
 
         if (preg_match('/\b(last\s+month|bulan\s+lepas)\b/i', $question)) {
             $month = $today->copy()->subMonthNoOverflow();
+
             return $this->range('last month', $month->copy()->startOfMonth(), $month->copy()->endOfMonth());
         }
 
         if (preg_match('/\b(this\s+month|current\s+month|bulan\s+ini)\b/i', $question)) {
-            return $this->range('this month', $today->copy()->startOfMonth(), $today->copy()->endOfMonth());
+            return $this->range('this month', $today->copy()->startOfMonth(), $today);
         }
 
         if (preg_match('/\b(last\s+year|tahun\s+lepas)\b/i', $question)) {
             $year = $today->year - 1;
+
             return $this->range('last year', Carbon::create($year, 1, 1), Carbon::create($year, 12, 31));
         }
 
         if (preg_match('/\b(20\d{2})\b/', $question, $match)) {
             $year = (int) $match[1];
-            return $this->range((string) $year, Carbon::create($year, 1, 1), Carbon::create($year, 12, 31));
+            $end = $year === $today->year ? $today : Carbon::create($year, 12, 31);
+
+            return $this->range((string) $year, Carbon::create($year, 1, 1), $end);
         }
 
         if (preg_match('/\b(this\s+year|current\s+year|tahun\s+ini)\b/i', $question)) {
-            return $this->range('this year', $today->copy()->startOfYear(), $today->copy()->endOfYear());
+            return $this->range('this year', $today->copy()->startOfYear(), $today);
         }
 
-        return $this->range('current calendar year', $today->copy()->startOfYear(), $today->copy()->endOfYear());
+        return $this->range('current calendar year to today', $today->copy()->startOfYear(), $today);
     }
 
     public function contains(?string $date, array $range): bool

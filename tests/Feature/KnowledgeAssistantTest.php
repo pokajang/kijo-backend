@@ -3810,7 +3810,8 @@ Contoh soalan:
         $this->authenticated()
             ->postJson('/knowledge/assistant', ['question' => 'apa status cuti saya?'])
             ->assertOk()
-            ->assertJsonPath('answer.sources.0.source_type', 'leave')
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources.0.source_type', 'user_trace')
             ->assertJsonPath('answer.sources.0.related_route', '/my/leaves');
     }
 
@@ -4491,8 +4492,14 @@ Contoh soalan:
             ->json();
 
         $content = (string) data_get($response, 'answer.content');
-        $this->assertStringContainsString('found 2 quotation(s) issued', $content);
+        $this->assertStringContainsString('I found 2 quotations issued', $content);
+        $this->assertStringContainsString('1 Jan 2026 to 31 Dec 2026', $content);
+        $this->assertStringContainsString('Total quoted value: 3,500.00', $content);
         $this->assertStringContainsString('Scope: your own records.', $content);
+        $this->assertIsArray(data_get($response, 'answer.display_blocks'));
+        $this->assertContains('metric_cards', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertContains('bar_chart', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertSame(data_get($response, 'answer.display_blocks'), data_get($response, 'messages.1.display_blocks'));
         $this->assertStringNotContainsString('Cancelled Own Client', json_encode($response));
         $this->assertStringNotContainsString('Other Client', json_encode($response));
     }
@@ -4581,7 +4588,7 @@ Contoh soalan:
             ->assertJsonPath('answer.sources.0.title', 'My quotation trace')
             ->json();
 
-        $this->assertStringContainsString('I found 1 failed quotation(s)', (string) data_get($response, 'answer.content'));
+        $this->assertStringContainsString('I found 1 failed quotation', (string) data_get($response, 'answer.content'));
         $this->assertStringContainsString('By status: Failed: 1.', (string) data_get($response, 'answer.content'));
         $this->assertStringNotContainsString('"Failed":1', (string) data_get($response, 'answer.content'));
     }
@@ -4631,9 +4638,13 @@ Contoh soalan:
             ->json();
 
         $content = (string) data_get($response, 'answer.content');
-        $this->assertStringContainsString('you have taken 2 approved leave day(s)', $content);
+        $this->assertStringContainsString('You have taken 2 days of approved leave', $content);
+        $this->assertStringContainsString('Date range: 1 Jan 2026 to 31 Dec 2026.', $content);
         $this->assertStringContainsString('Pending applications: 1', $content);
         $this->assertStringContainsString('By leave type: Annual Leave: 2.', $content);
+        $this->assertContains('metric_cards', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertContains('table', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertContains('bar_chart', array_column(data_get($response, 'answer.display_blocks'), 'type'));
         $this->assertStringNotContainsString('"pending_count":1', $content);
         $this->assertStringNotContainsString('Breakdowns: {', $content);
         $this->assertStringNotContainsString('Other private leave', json_encode($response));
@@ -4683,7 +4694,7 @@ Contoh soalan:
             ->assertJsonPath('answer.provider_key', 'user_trace')
             ->json();
 
-        $this->assertStringContainsString('Your latest KPI/appraisal record is Reviewed', (string) data_get($own, 'answer.content'));
+        $this->assertStringContainsString('Your latest KPI/appraisal record is available with status Reviewed', (string) data_get($own, 'answer.content'));
         $this->assertStringContainsString('Improve documentation follow-up.', (string) data_get($own, 'answer.content'));
         $this->assertStringNotContainsString('Other staff private KPI feedback', json_encode($own));
 
@@ -4725,6 +4736,25 @@ Contoh soalan:
         $this->assertStringNotContainsString('Team Client', json_encode($response));
     }
 
+    public function test_user_trace_salary_self_questions_are_not_retrieved(): void
+    {
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', [
+                'question' => 'what is my salary this month',
+                'current_route' => '/my/salary',
+            ])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->assertJsonPath('answer.sources', [])
+            ->assertJsonPath('answer.display_blocks', [])
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('Salary self-trace is not enabled', $content);
+        $this->assertStringNotContainsString('basic_salary', json_encode($response));
+        $this->assertStringNotContainsString('net_pay', json_encode($response));
+    }
+
     public function test_user_trace_employment_tenure_uses_join_date_when_available(): void
     {
         Schema::table('staff_general', function (Blueprint $table): void {
@@ -4745,9 +4775,12 @@ Contoh soalan:
             ->json();
 
         $content = (string) data_get($response, 'answer.content');
-        $this->assertStringContainsString('your tenure is', $content);
+        $this->assertStringContainsString('You have worked here for', $content);
+        $this->assertStringContainsString('based on join date of', $content);
         $this->assertStringContainsString('join_date', json_encode($response));
         $this->assertStringContainsString('Scope: your own records.', $content);
+        $this->assertStringNotContainsString('Date range:', $content);
+        $this->assertContains('metric_cards', array_column(data_get($response, 'answer.display_blocks'), 'type'));
 
         $workedHereResponse = $this->authenticated()
             ->postJson('/knowledge/assistant', ['question' => 'how long have i worked here'])
@@ -4757,7 +4790,7 @@ Contoh soalan:
             ->json();
 
         $workedHereContent = (string) data_get($workedHereResponse, 'answer.content');
-        $this->assertStringContainsString('your tenure is', $workedHereContent);
+        $this->assertStringContainsString('You have worked here for', $workedHereContent);
         $this->assertStringContainsString('Scope: your own records.', $workedHereContent);
         $this->assertStringNotContainsString('AI response unavailable', $workedHereContent);
     }
@@ -4785,6 +4818,334 @@ Contoh soalan:
 
         $this->assertStringContainsString('Untuk rekod anda sendiri', (string) data_get($response, 'answer.content'));
         $this->assertStringContainsString('Skop: rekod anda sendiri.', (string) data_get($response, 'answer.content'));
+    }
+
+    public function test_company_analytics_sales_ranking_returns_named_staff_commercial_only(): void
+    {
+        DB::table('client_company')->insert([
+            ['company_id' => 201, 'company_name' => 'Alpha Client', 'created_at' => now(), 'updated_at' => now()],
+            ['company_id' => 202, 'company_name' => 'Beta Client', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('projects_main')->insert([
+            [
+                'id' => 701,
+                'project_name' => 'Alpha Safety Training',
+                'project_type' => 'Training',
+                'quote_value' => 2500000,
+                'status' => 'Active',
+                'award_date' => now()->subMonth()->toDateString(),
+                'client_id' => 201,
+                'created_by' => 7,
+                'created_at' => now()->subMonth(),
+                'updated_at' => now()->subMonth(),
+            ],
+            [
+                'id' => 702,
+                'project_name' => 'Beta IH',
+                'project_type' => 'IH',
+                'quote_value' => 1074070,
+                'status' => 'Completed',
+                'award_date' => now()->subWeek()->toDateString(),
+                'client_id' => 202,
+                'created_by' => 8,
+                'created_at' => now()->subWeek(),
+                'updated_at' => now()->subWeek(),
+            ],
+            [
+                'id' => 703,
+                'project_name' => 'Draft Opportunity',
+                'project_type' => 'Training',
+                'quote_value' => 999999,
+                'status' => 'Draft',
+                'award_date' => now()->subWeek()->toDateString(),
+                'client_id' => 202,
+                'created_by' => 8,
+                'created_at' => now()->subWeek(),
+                'updated_at' => now()->subWeek(),
+            ],
+        ]);
+        DB::table('hr_salary_applications')->insert([
+            'staff_id' => 7,
+            'salary_month' => now()->format('Y-m'),
+            'status' => 'Approved',
+            'basic_salary' => 99999,
+            'net_pay' => 88888,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'who has the most sales this year'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'company_analytics')
+            ->assertJsonPath('answer.sources.0.source_type', 'company_analytics')
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('Scope: company commercial records.', $content);
+        $this->assertStringContainsString('3,574,070.00', $content);
+        $this->assertStringNotContainsString('4,574,069.00', $content);
+        $this->assertStringContainsString('Test Staff', $content);
+        $this->assertStringContainsString('Other Staff', $content);
+        $this->assertContains('metric_cards', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertContains('table', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertContains('bar_chart', array_column(data_get($response, 'answer.display_blocks'), 'type'));
+        $this->assertStringNotContainsString('basic_salary', json_encode($response));
+        $this->assertStringNotContainsString('99999', json_encode($response));
+    }
+
+    public function test_company_analytics_client_contribution_uses_awarded_value(): void
+    {
+        DB::table('client_company')->insert([
+            ['company_id' => 211, 'company_name' => 'Top Client', 'created_at' => now(), 'updated_at' => now()],
+            ['company_id' => 212, 'company_name' => 'Small Client', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('projects_main')->insert([
+            [
+                'project_name' => 'Top Client Project',
+                'project_type' => 'Training',
+                'quote_value' => 400000,
+                'status' => 'Active',
+                'award_date' => now()->subMonth()->toDateString(),
+                'client_id' => 211,
+                'created_by' => 7,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'project_name' => 'Small Client Project',
+                'project_type' => 'IH',
+                'quote_value' => 100000,
+                'status' => 'Completed',
+                'award_date' => now()->subMonth()->toDateString(),
+                'client_id' => 212,
+                'created_by' => 8,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'which client contributes most sales'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'company_analytics')
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('Top Client', $content);
+        $this->assertStringContainsString('400,000.00', $content);
+        $this->assertStringContainsString('Client contribution is ranked by awarded sales value', $content);
+        $this->assertStringNotContainsString('2026-', $content);
+    }
+
+    public function test_company_analytics_received_payment_and_receivables(): void
+    {
+        DB::table('client_company')->insert([
+            ['company_id' => 221, 'company_name' => 'Paid Client', 'created_at' => now(), 'updated_at' => now()],
+            ['company_id' => 222, 'company_name' => 'Unpaid Client', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('invoices')->insert([
+            [
+                'client_id' => 221,
+                'invoice_ref_no' => 'INV-PAID-1',
+                'service_type' => 'Training',
+                'invoice_date' => now()->subMonth()->toDateString(),
+                'grand_total' => 150000,
+                'status' => 'Paid',
+                'paid_amount' => 150000,
+                'paid_date' => now()->subWeek()->toDateString(),
+                'due_date' => now()->subDays(20)->toDateString(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'client_id' => 222,
+                'invoice_ref_no' => 'INV-UNPAID-1',
+                'service_type' => 'IH',
+                'invoice_date' => now()->subMonth()->toDateString(),
+                'grand_total' => 90000,
+                'status' => 'Unpaid',
+                'paid_amount' => 0,
+                'paid_date' => null,
+                'due_date' => now()->subDays(70)->toDateString(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'client_id' => 222,
+                'invoice_ref_no' => 'INV-CANCEL-1',
+                'service_type' => 'IH',
+                'invoice_date' => now()->subMonth()->toDateString(),
+                'grand_total' => 30000,
+                'status' => 'Cancelled',
+                'paid_amount' => 0,
+                'paid_date' => null,
+                'due_date' => now()->subDays(70)->toDateString(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+        DB::table('manual_debtors')->insert([
+            'invoice_ref_no' => 'MDB-1',
+            'client_id' => 222,
+            'client_name' => 'Unpaid Client',
+            'service_type' => 'Special',
+            'invoice_date' => now()->subMonth()->toDateString(),
+            'due_date' => now()->subDays(95)->toDateString(),
+            'grand_total' => 40000,
+            'status' => 'Unpaid',
+            'paid_amount' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $paid = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'top clients by received payment'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'company_analytics')
+            ->json();
+
+        $this->assertStringContainsString('Paid Client', (string) data_get($paid, 'answer.content'));
+        $this->assertStringContainsString('150,000.00', (string) data_get($paid, 'answer.content'));
+
+        $unpaid = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'show unpaid invoices by client'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'company_analytics')
+            ->json();
+
+        $content = (string) data_get($unpaid, 'answer.content');
+        $this->assertStringContainsString('Unpaid Client', $content);
+        $this->assertStringContainsString('130,000.00', $content);
+        $this->assertStringNotContainsString('160,000.00', $content);
+        $this->assertStringContainsString('Aging buckets', $content);
+    }
+
+    public function test_company_analytics_quote_conversion_by_service(): void
+    {
+        DB::table('quotes_training')->insert([
+            [
+                'quote_ref_no' => 'Q-AWARD-1',
+                'service_group' => 'Training',
+                'client_name' => 'Conversion Client',
+                'grand_total' => 100000,
+                'created_by_id' => 7,
+                'status' => 'Awarded',
+                'created_at' => now()->subMonth(),
+                'updated_at' => now()->subMonth(),
+            ],
+            [
+                'quote_ref_no' => 'Q-FAIL-1',
+                'service_group' => 'Training',
+                'client_name' => 'Lost Client',
+                'grand_total' => 50000,
+                'created_by_id' => 8,
+                'status' => 'Failed',
+                'created_at' => now()->subWeek(),
+                'updated_at' => now()->subWeek(),
+            ],
+            [
+                'quote_ref_no' => 'Q-CANCEL-1',
+                'service_group' => 'Training',
+                'client_name' => 'Cancelled Client',
+                'grand_total' => 70000,
+                'created_by_id' => 8,
+                'status' => 'Cancelled',
+                'created_at' => now()->subWeek(),
+                'updated_at' => now()->subWeek(),
+            ],
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'quote conversion by service this year'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'company_analytics')
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('Win rate: 50.00%', $content);
+        $this->assertStringContainsString('Training: 150,000.00', $content);
+        $this->assertStringNotContainsString('220,000.00', $content);
+        $this->assertStringNotContainsString('{"by_status"', $content);
+    }
+
+    public function test_company_analytics_commercial_summary_has_multiple_blocks(): void
+    {
+        DB::table('client_company')->insert([
+            ['company_id' => 231, 'company_name' => 'Summary Client', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('projects_main')->insert([
+            'project_name' => 'Summary Project',
+            'project_type' => 'Training',
+            'quote_value' => 120000,
+            'status' => 'Active',
+            'award_date' => now()->subMonth()->toDateString(),
+            'client_id' => 231,
+            'created_by' => 7,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('invoices')->insert([
+            'client_id' => 231,
+            'invoice_ref_no' => 'INV-SUM-1',
+            'service_type' => 'Training',
+            'invoice_date' => now()->subMonth()->toDateString(),
+            'grand_total' => 60000,
+            'status' => 'Unpaid',
+            'paid_amount' => 0,
+            'due_date' => now()->subDays(40)->toDateString(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'commercial summary this year'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'company_analytics')
+            ->json();
+
+        $content = (string) data_get($response, 'answer.content');
+        $this->assertStringContainsString('company commercial summary', $content);
+        $this->assertStringContainsString('Company sales analytics', json_encode(data_get($response, 'answer.sources')));
+        $this->assertGreaterThanOrEqual(3, count(data_get($response, 'answer.display_blocks')));
+    }
+
+    public function test_company_analytics_restricted_people_prompts_do_not_leak(): void
+    {
+        DB::table('hr_appraisal')->insert([
+            'staff_id' => 8,
+            'section' => 'Performance',
+            'feedback' => 'Private KPI comparison content',
+            'status' => 'Reviewed',
+            'created_by' => 8,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('hr_salary_applications')->insert([
+            'staff_id' => 8,
+            'salary_month' => now()->format('Y-m'),
+            'status' => 'Approved',
+            'basic_salary' => 123456,
+            'net_pay' => 654321,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach (['compare my KPI to Person A', 'who took most leave', 'highest salary'] as $question) {
+            $response = $this->authenticated()
+                ->postJson('/knowledge/assistant', ['question' => $question])
+                ->assertOk()
+                ->assertJsonPath('answer.provider_key', 'company_analytics')
+                ->assertJsonPath('answer.sources', [])
+                ->assertJsonPath('answer.display_blocks', [])
+                ->json();
+
+            $payload = json_encode($response);
+            $this->assertStringContainsString('HR/personnel analytics', (string) data_get($response, 'answer.content'));
+            $this->assertStringNotContainsString('Private KPI comparison content', $payload);
+            $this->assertStringNotContainsString('123456', $payload);
+            $this->assertStringNotContainsString('654321', $payload);
+        }
     }
 
     private function authenticated(int $userId = 1, int $staffId = 7, array $roles = ['Staff'])

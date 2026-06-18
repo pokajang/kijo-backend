@@ -38,6 +38,8 @@ class AssistantTraceDateRangeResolverTest extends TestCase
             'end' => '2026-04-30',
             'is_all_time' => false,
         ], $resolver->resolve('my quotations from 2026-04-30 to 2026-02-01'));
+        $this->assertSame('2026-01-01', $resolver->resolve('my quotations from 1 Jan 2026 to 31 Mar 2026')['start']);
+        $this->assertSame('2026-03-31', $resolver->resolve('my quotations from Jan 1 2026 to Mar 31 2026')['end']);
     }
 
     public function test_contains_checks_dates_against_trace_range(): void

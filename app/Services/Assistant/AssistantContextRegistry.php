@@ -7,6 +7,7 @@ use App\Services\Assistant\Sources\AssistantHelpContextProvider;
 use App\Services\Assistant\Sources\CatalogPurchaseOrderContextProvider;
 use App\Services\Assistant\Sources\ClientContextProvider;
 use App\Services\Assistant\Sources\ClientVendorRegistrationContextProvider;
+use App\Services\Assistant\Sources\CompanyAnalyticsContextProvider;
 use App\Services\Assistant\Sources\DashboardContextProvider;
 use App\Services\Assistant\Sources\DebtorContextProvider;
 use App\Services\Assistant\Sources\DetailRecordContextProvider;
@@ -49,6 +50,7 @@ class AssistantContextRegistry
         return [
             app(AssistantHelpContextProvider::class),
             app(UserTraceContextProvider::class),
+            app(CompanyAnalyticsContextProvider::class),
             app(KnowledgeArticleContextProvider::class),
             app(HandbookContextProvider::class),
             app(DashboardContextProvider::class),
@@ -189,6 +191,7 @@ class AssistantContextRegistry
             'appraisal' => true,
             'whats_new' => true,
             'user_trace' => true,
+            'company_analytics' => true,
         ];
         $hasLive = count(array_filter(
             $sources,
