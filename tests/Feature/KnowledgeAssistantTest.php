@@ -4536,7 +4536,8 @@ Contoh soalan:
             ->assertJsonPath('answer.provider_key', 'user_trace')
             ->json();
 
-        $this->assertStringContainsString('by_month', (string) data_get($response, 'answer.content'));
+        $this->assertStringContainsString('By month:', (string) data_get($response, 'answer.content'));
+        $this->assertStringNotContainsString('by_month', (string) data_get($response, 'answer.content'));
         $this->assertSame('user_trace', data_get($response, 'answer.sources.0.source_type'));
     }
 
@@ -4581,7 +4582,8 @@ Contoh soalan:
             ->json();
 
         $this->assertStringContainsString('I found 1 failed quotation(s)', (string) data_get($response, 'answer.content'));
-        $this->assertStringContainsString('"Failed":1', (string) data_get($response, 'answer.content'));
+        $this->assertStringContainsString('By status: Failed: 1.', (string) data_get($response, 'answer.content'));
+        $this->assertStringNotContainsString('"Failed":1', (string) data_get($response, 'answer.content'));
     }
 
     public function test_user_trace_leave_counts_approved_days_and_reports_pending_separately(): void
@@ -4630,8 +4632,24 @@ Contoh soalan:
 
         $content = (string) data_get($response, 'answer.content');
         $this->assertStringContainsString('you have taken 2 approved leave day(s)', $content);
-        $this->assertStringContainsString('"pending_count":1', $content);
+        $this->assertStringContainsString('Pending applications: 1', $content);
+        $this->assertStringContainsString('By leave type: Annual Leave: 2.', $content);
+        $this->assertStringNotContainsString('"pending_count":1', $content);
+        $this->assertStringNotContainsString('Breakdowns: {', $content);
         $this->assertStringNotContainsString('Other private leave', json_encode($response));
+
+        $statusResponse = $this->authenticated()
+            ->postJson('/knowledge/assistant', ['question' => 'whats my leave status'])
+            ->assertOk()
+            ->assertJsonPath('answer.provider_key', 'user_trace')
+            ->json();
+
+        $statusContent = (string) data_get($statusResponse, 'answer.content');
+        $this->assertStringContainsString('Pending applications: 1', $statusContent);
+        $this->assertStringContainsString('By status:', $statusContent);
+        $this->assertStringContainsString('Pending: 1', $statusContent);
+        $this->assertStringContainsString('Approved: 1', $statusContent);
+        $this->assertStringNotContainsString('{"by_month"', $statusContent);
     }
 
     public function test_user_trace_kpi_is_self_scoped_and_denies_other_staff(): void

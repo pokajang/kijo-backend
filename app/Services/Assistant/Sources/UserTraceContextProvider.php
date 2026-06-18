@@ -161,10 +161,10 @@ class UserTraceContextProvider extends ModuleContextProvider
             ($isBm ? 'Definisi: ' : 'Definition: ').$result->definition,
         ];
         if ($result->totals !== []) {
-            $lines[] = ($isBm ? 'Jumlah: ' : 'Totals: ').$this->inlineJson($result->totals).'.';
+            $lines[] = ($isBm ? 'Jumlah:' : 'Totals:').$this->summaryBullets($result->totals, $isBm);
         }
         if ($result->breakdowns !== []) {
-            $lines[] = ($isBm ? 'Pecahan: ' : 'Breakdowns: ').$this->inlineJson($this->compactBreakdowns($result->breakdowns)).'.';
+            $lines[] = ($isBm ? 'Pecahan:' : 'Breakdowns:').$this->breakdownBullets($result->breakdowns, $isBm);
         }
         if ($result->missingFields !== []) {
             $lines[] = ($isBm ? 'Field yang tiada: ' : 'Missing fields: ').implode(', ', $result->missingFields).'.';
@@ -259,7 +259,7 @@ class UserTraceContextProvider extends ModuleContextProvider
         if ($domain === 'quote' && preg_match('/\b(issued|created|won|awarded|failed|lost|menang|gagal)\b/i', $question)) {
             return true;
         }
-        if ($domain === 'leave' && preg_match('/\b(taken|ambil|sudah\s+ambil|pending|remaining|entitlement|balance|baki)\b/i', $question)) {
+        if ($domain === 'leave' && preg_match('/\b(status|taken|ambil|sudah\s+ambil|pending|remaining|entitlement|balance|baki)\b/i', $question)) {
             return true;
         }
         if ($domain === 'kpi' && preg_match('/\b(kpi\s+status|appraisal\s+status|performance\s+status|how\s+can\s+i\s+improve|improve\s+further|perbaiki|tingkat)\b/i', $question)) {
@@ -337,8 +337,165 @@ class UserTraceContextProvider extends ModuleContextProvider
         }, $breakdowns);
     }
 
-    private function inlineJson(array $payload): string
+    private function summaryBullets(array $payload, bool $isBm): string
     {
-        return trim((string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        $lines = [];
+        foreach ($payload as $key => $value) {
+            if (is_array($value)) {
+                continue;
+            }
+            $lines[] = '- '.$this->humanLabel((string) $key, $isBm).': '.$this->humanValue($value);
+        }
+
+        return $lines === [] ? ' none.' : "\n".implode("\n", $lines);
+    }
+
+    private function breakdownBullets(array $breakdowns, bool $isBm): string
+    {
+        $lines = [];
+        foreach ($this->compactBreakdowns($breakdowns) as $key => $value) {
+            if ($value === [] || $value === null || $value === '') {
+                continue;
+            }
+
+            if (is_array($value) && array_is_list($value)) {
+                $lines[] = '- '.$this->humanLabel((string) $key, $isBm).': '.$this->listSummary($value, $isBm);
+                continue;
+            }
+
+            if (is_array($value)) {
+                $parts = [];
+                foreach ($value as $label => $amount) {
+                    if (is_array($amount)) {
+                        continue;
+                    }
+                    $parts[] = trim((string) $label).': '.$this->humanValue($amount);
+                    if (count($parts) >= 6) {
+                        break;
+                    }
+                }
+                if ($parts !== []) {
+                    $lines[] = '- '.$this->humanLabel((string) $key, $isBm).': '.implode(', ', $parts).'.';
+                }
+                continue;
+            }
+
+            $lines[] = '- '.$this->humanLabel((string) $key, $isBm).': '.$this->humanValue($value);
+        }
+
+        return $lines === [] ? ' none.' : "\n".implode("\n", $lines);
+    }
+
+    private function listSummary(array $items, bool $isBm): string
+    {
+        $parts = [];
+        foreach (array_slice($items, 0, 4) as $item) {
+            if (! is_array($item)) {
+                $parts[] = $this->humanValue($item);
+                continue;
+            }
+
+            $label = (string) ($item['leave_type'] ?? $item['type'] ?? $item['status'] ?? $item['name'] ?? 'item');
+            $details = [];
+            foreach (['year', 'total_days', 'used_days', 'remaining'] as $key) {
+                if (array_key_exists($key, $item)) {
+                    $details[] = $this->humanLabel($key, $isBm).': '.$this->humanValue($item[$key]);
+                }
+            }
+            $parts[] = $label.($details === [] ? '' : ' ('.implode(', ', $details).')');
+        }
+
+        $suffix = count($items) > 4 ? ' and '.(count($items) - 4).' more' : '';
+
+        return implode('; ', $parts).$suffix.'.';
+    }
+
+    private function humanLabel(string $key, bool $isBm): string
+    {
+        $labels = $isBm ? [
+            'taken_days' => 'Hari cuti diambil',
+            'taken_count' => 'Permohonan approved',
+            'pending_count' => 'Permohonan pending',
+            'count' => 'Jumlah',
+            'total_value' => 'Jumlah nilai',
+            'open_count' => 'Masih open',
+            'record_count' => 'Jumlah rekod',
+            'latest_status' => 'Status terkini',
+            'latest_score' => 'Skor terkini',
+            'latest_period' => 'Tempoh terkini',
+            'has_feedback' => 'Ada feedback',
+            'latest_feedback_excerpt' => 'Feedback terkini',
+            'join_date' => 'Tarikh mula',
+            'join_date_source' => 'Sumber tarikh mula',
+            'tenure_years' => 'Tempoh tahun',
+            'tenure_label' => 'Tempoh',
+            'all_matching_count_before_status_filter' => 'Jumlah sebelum filter status',
+            'by_month' => 'Mengikut bulan',
+            'by_type' => 'Mengikut jenis',
+            'by_status' => 'Mengikut status',
+            'by_service_type' => 'Mengikut service',
+            'by_client' => 'Mengikut client',
+            'by_category' => 'Mengikut kategori',
+            'by_period' => 'Mengikut tempoh',
+            'entitlements' => 'Entitlement',
+            'total_days' => 'Jumlah hari',
+            'used_days' => 'Hari digunakan',
+            'remaining' => 'Baki',
+            'year' => 'Tahun',
+        ] : [
+            'taken_days' => 'Approved leave days taken',
+            'taken_count' => 'Approved applications',
+            'pending_count' => 'Pending applications',
+            'count' => 'Total',
+            'total_value' => 'Total value',
+            'open_count' => 'Open',
+            'record_count' => 'Records',
+            'latest_status' => 'Latest status',
+            'latest_score' => 'Latest score',
+            'latest_period' => 'Latest period',
+            'has_feedback' => 'Feedback available',
+            'latest_feedback_excerpt' => 'Latest feedback',
+            'join_date' => 'Join date',
+            'join_date_source' => 'Join date source',
+            'tenure_years' => 'Tenure in years',
+            'tenure_label' => 'Tenure',
+            'all_matching_count_before_status_filter' => 'Records before status filter',
+            'by_month' => 'By month',
+            'by_type' => 'By leave type',
+            'by_status' => 'By status',
+            'by_service_type' => 'By service type',
+            'by_client' => 'By client',
+            'by_category' => 'By category',
+            'by_period' => 'By period',
+            'entitlements' => 'Entitlements',
+            'total_days' => 'Total days',
+            'used_days' => 'Used days',
+            'remaining' => 'Remaining',
+            'year' => 'Year',
+        ];
+
+        return $labels[$key] ?? ucfirst(str_replace('_', ' ', $key));
+    }
+
+    private function humanValue(mixed $value): string
+    {
+        if ($value === null || $value === '') {
+            return 'not recorded';
+        }
+        if (is_bool($value)) {
+            return $value ? 'yes' : 'no';
+        }
+        if (is_float($value)) {
+            return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+        }
+        if (is_int($value) || is_numeric($value)) {
+            $numeric = (float) $value;
+
+            return fmod($numeric, 1.0) === 0.0
+                ? (string) (int) $numeric
+                : rtrim(rtrim(number_format($numeric, 2, '.', ''), '0'), '.');
+        }
+
+        return trim((string) $value);
     }
 }

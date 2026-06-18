@@ -280,7 +280,7 @@ class AssistantConversationContextResolver
         }
 
         if (preg_match('/\b(leave|cuti|entitlement)\b/i', $question)) {
-            return (bool) preg_match('/\b(how\s+many|berapa|taken|ambil|sudah\s+ambil|pending|remaining|entitlement|balance|baki)\b/i', $question);
+            return (bool) preg_match('/\b(status|how\s+many|berapa|taken|ambil|sudah\s+ambil|pending|remaining|entitlement|balance|baki)\b/i', $question);
         }
 
         if (preg_match('/\b(kpi|appraisal|performance|feedback|improve|improvement|perbaiki|tingkat)\b/i', $question)) {
