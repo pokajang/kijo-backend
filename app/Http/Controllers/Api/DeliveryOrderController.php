@@ -163,6 +163,8 @@ class DeliveryOrderController extends Controller
                 return response()->json(['status' => 'error', 'message' => 'You are not allowed to edit this Delivery Order.'], 403);
             }
 
+            $projectId = array_key_exists('project_id', $details) ? $details['project_id'] : $order->project_id;
+
             $updates = [
                 'client_name'             => $details['client_name'],
                 'client_address'          => $details['client_address'],
@@ -173,7 +175,7 @@ class DeliveryOrderController extends Controller
                 'company_contact_name'    => $details['company_contact_name'],
                 'company_contact_email'   => $details['company_contact_email'] ?? null,
                 'company_contact_phone'   => $details['company_contact_phone'] ?? null,
-                'project_id'              => $details['project_id'] ?? null,
+                'project_id'              => $projectId,
                 'project_name'            => $details['project_name'],
                 'project_code'            => $details['project_code'],
                 'project_award_date'      => $details['project_award_date'],
@@ -183,7 +185,7 @@ class DeliveryOrderController extends Controller
                 'updated_at'              => now(),
             ];
             if (Schema::hasColumn('do_details', 'document_language')) {
-                $updates['document_language'] = $order->document_language ?? $this->documentLanguageForProject($details['project_id'] ?? null);
+                $updates['document_language'] = $order->document_language ?? $this->documentLanguageForProject($projectId);
             }
 
             DB::table('do_details')->where('id', $id)->update($updates);

@@ -21,6 +21,7 @@ class UpdateDeliveryOrderRequest extends FormRequest
             'details.company_contact_name'     => ['required', 'string', 'max:255'],
             'details.company_contact_email'    => ['nullable', 'email', 'max:255'],
             'details.company_contact_phone'    => ['nullable', 'string', 'max:50'],
+            'details.project_id'               => ['nullable', 'integer', 'min:1'],
             'details.project_name'             => ['required', 'string', 'max:255'],
             'details.project_code'             => ['required', 'string', 'max:100'],
             'details.project_award_date'       => ['required', 'date'],
