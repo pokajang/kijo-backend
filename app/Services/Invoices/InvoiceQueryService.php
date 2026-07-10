@@ -78,8 +78,6 @@ class InvoiceQueryService extends InvoiceBaseService
                     SELECT id, invoice_id, item_description, description, unit, quantity, unit_price, subtotal, sort_order
                     FROM invoice_breakdown
                     WHERE invoice_id IN ({$placeholders})
-                      AND LOWER(item_description) NOT LIKE '%sst%'
-                      AND LOWER(item_description) NOT LIKE '%hrd%'
                     ORDER BY sort_order ASC
                 ", $invoiceIds);
                 foreach ($rows as $row) {

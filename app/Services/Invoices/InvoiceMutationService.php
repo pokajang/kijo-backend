@@ -38,14 +38,30 @@ class InvoiceMutationService extends InvoiceBaseService
 
         $projectId = (int) $request->input('project_id');
         $serviceType = trim((string) $request->input('service_type'));
+        $serviceTypeLower = strtolower($serviceType);
+        $isTrainingInvoice = $serviceTypeLower === 'training';
         $quoteIdRaw = $request->input('quote_id');
         $quoteId = ($quoteIdRaw !== null && $quoteIdRaw !== '') ? (int) $quoteIdRaw : null;
         $invoicePurpose = trim((string) $request->input('invoice_purpose', ''));
-        $grantNo = trim((string) $request->input('grant_approval_no', ''));
+        $paymentMethod = trim((string) $request->input('payment_method', ''));
+        $isHrdPayment = strcasecmp($paymentMethod, 'hrd grant') === 0;
+        $grantNoInput = trim((string) $request->input('grant_approval_no', ''));
+        $grantNo = $isTrainingInvoice && $isHrdPayment && $grantNoInput !== '' ? $grantNoInput : null;
+        $breakdownInput = (array) $request->input('breakdown', []);
         $closeProject = filter_var($request->input('close_project', false), FILTER_VALIDATE_BOOLEAN);
 
+        $isHrdLine = static fn(array $line): bool => (bool) preg_match(
+            '/^\s*(\d+(?:\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
+            (string) ($line['item_description'] ?? '')
+        );
+        if ($isTrainingInvoice && ! $isHrdPayment) {
+            $breakdownInput = array_values(
+                array_filter($breakdownInput, fn($line) => ! $isHrdLine((array) $line))
+            );
+        }
+
         // Duplicate grant_no check
-        if ($grantNo !== '') {
+        if ($grantNo) {
             $existing = DB::table('invoices')->where('grant_approval_no', $grantNo)->first(['id']);
             if ($existing) {
                 return response()->json([
@@ -58,10 +74,17 @@ class InvoiceMutationService extends InvoiceBaseService
 
         // Duplicate invoice check (NULL-safe for quote_id)
         if (strtolower($serviceType) !== 'manpower supply') {
-            $existing = DB::selectOne(
-                'SELECT id, grant_approval_no FROM invoices WHERE project_id = ? AND service_type = ? AND quote_id <=> ? LIMIT 1',
-                [$projectId, $serviceType, $quoteId]
-            );
+            $existing = DB::table('invoices')
+                ->where('project_id', $projectId)
+                ->where('service_type', $serviceType)
+                ->where(function ($query) use ($quoteId): void {
+                    if ($quoteId === null) {
+                        $query->whereNull('quote_id');
+                    } else {
+                        $query->where('quote_id', $quoteId);
+                    }
+                })
+                ->first(['id', 'grant_approval_no']);
         } else {
             $existing = DB::table('invoices')
                 ->where('project_id', $projectId)
@@ -89,7 +112,7 @@ class InvoiceMutationService extends InvoiceBaseService
 
         $totalError = $this->invoiceTotalValidationMessage(
             $serviceType,
-            (array) $request->input('breakdown', []),
+            $breakdownInput,
             (float) $request->input('amount', 0),
             (float) $request->input('sst_amount', 0),
             (float) $request->input('grand_total', 0)
@@ -157,7 +180,7 @@ class InvoiceMutationService extends InvoiceBaseService
                 'amount' => $request->input('amount', 0),
                 'sst_amount' => $request->input('sst_amount', 0),
                 'grand_total' => $request->input('grand_total', 0),
-                'payment_method' => $request->input('payment_method', ''),
+                'payment_method' => $paymentMethod,
                 'grant_approval_no' => $grantNo,
                 'remarks' => $request->input('remarks', ''),
                 'status' => 'Pending',
@@ -171,7 +194,7 @@ class InvoiceMutationService extends InvoiceBaseService
             $invoiceId = DB::table('invoices')->insertGetId($insert);
             $this->markClientOldIfEligible($clientId);
 
-            foreach ((array) $request->input('breakdown') as $i => $line) {
+            foreach ($breakdownInput as $i => $line) {
                 $qty = (float) ($line['quantity'] ?? 1);
                 $uprice = (float) ($line['unit_price'] ?? 0);
                 DB::table('invoice_breakdown')->insert([
@@ -217,6 +240,15 @@ class InvoiceMutationService extends InvoiceBaseService
         $invoiceRef = trim((string) $request->input('invoice_ref_no', ''));
         $dateIssued = $request->input('invoice_date');
         $status = trim((string) $request->input('status', ''));
+        $paymentMethod = trim((string) $request->input('payment_method', ''));
+        $isHrdPayment = strcasecmp($paymentMethod, 'hrd grant') === 0;
+        $grantNoInput = trim((string) $request->input('grant_approval_no', ''));
+        $isHrdLine = static fn(array $line): bool => (bool) preg_match(
+            '/^\s*(\d+(?:\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
+            (string) ($line['item_description'] ?? '')
+        );
+        $breakdownInput = (array) $request->input('breakdown', []);
+        $grantNo = null;
 
         $request->validate([
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
@@ -232,9 +264,40 @@ class InvoiceMutationService extends InvoiceBaseService
             return response()->json(['status' => 'error', 'message' => 'Invoice not found.'], 404);
         }
 
+        $isTrainingInvoice = strcasecmp($existingInvoice->service_type ?? '', 'training') === 0;
+        if ($isTrainingInvoice && $isHrdPayment) {
+            if ($grantNoInput === '') {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'HRD Grant Approval No. is required for HRD payment.',
+                ], 422);
+            }
+            $grantNo = $grantNoInput !== '' ? $grantNoInput : null;
+        }
+
+        if ($isTrainingInvoice && $grantNo !== null) {
+            $existingGrant = DB::table('invoices')
+                ->where('id', '!=', $existingInvoice->id)
+                ->where('grant_approval_no', $grantNo)
+                ->first(['id']);
+            if ($existingGrant) {
+                return response()->json([
+                    'status' => 'exists',
+                    'invoice_id' => $existingGrant->id,
+                    'message' => 'This HRD Grant Approval No. is already used.',
+                ]);
+            }
+        }
+
+        if ($isTrainingInvoice && ! $isHrdPayment) {
+            $breakdownInput = array_values(
+                array_filter($breakdownInput, fn($line) => ! $isHrdLine((array) $line))
+            );
+        }
+
         $totalError = $this->invoiceTotalValidationMessage(
             (string) $existingInvoice->service_type,
-            (array) $request->input('breakdown', []),
+            $breakdownInput,
             (float) $request->input('amount', 0),
             (float) $request->input('sst_amount', 0),
             (float) $request->input('grand_total', 0)
@@ -270,7 +333,7 @@ class InvoiceMutationService extends InvoiceBaseService
                 'sst_amount' => $request->input('sst_amount', 0),
                 'grand_total' => $request->input('grand_total', 0),
                 'payment_method' => $request->input('payment_method', ''),
-                'grant_approval_no' => $request->input('grant_approval_no'),
+                'grant_approval_no' => $grantNo,
                 'paid_date' => $request->input('paid_date'),
                 'paid_amount' => $request->input('paid_amount'),
                 'paid_remarks' => $request->input('paid_remarks', ''),
@@ -282,7 +345,7 @@ class InvoiceMutationService extends InvoiceBaseService
             if ($invId) {
                 DB::table('invoice_breakdown')->where('invoice_id', $invId)->delete();
 
-                foreach ((array) $request->input('breakdown', []) as $i => $line) {
+                foreach ($breakdownInput as $i => $line) {
                     if (! is_array($line)) {
                         continue;
                     }

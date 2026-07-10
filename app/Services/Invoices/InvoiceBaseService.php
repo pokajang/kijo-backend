@@ -54,6 +54,7 @@ abstract class InvoiceBaseService
         $tolerance = 0.05;
         $subtotalBeforeDiscount = 0.0;
         $discountTotal = 0.0;
+        $hrdAmount = 0.0;
 
         foreach ($breakdown as $index => $line) {
             if (!is_array($line)) {
@@ -74,6 +75,9 @@ abstract class InvoiceBaseService
             }
 
             if ($this->isInvoiceTaxLine($label)) {
+                if ($this->isInvoiceHrdLine($label)) {
+                    $hrdAmount += $calculated;
+                }
                 continue;
             }
 
@@ -85,7 +89,7 @@ abstract class InvoiceBaseService
             $subtotalBeforeDiscount += $calculated;
         }
 
-        $expectedGrandTotal = round($subtotalBeforeDiscount - $discountTotal + $sstAmount, 2);
+        $expectedGrandTotal = round($subtotalBeforeDiscount - $discountTotal + $sstAmount + $hrdAmount, 2);
         if (abs($expectedGrandTotal - $grandTotal) > $tolerance) {
             return 'Invoice breakdown does not reconcile with the submitted grand total.';
         }
@@ -104,7 +108,15 @@ abstract class InvoiceBaseService
 
     protected function isInvoiceTaxLine(string $label): bool
     {
-        return str_contains($label, 'sst') || str_contains($label, 'hrd');
+        return str_contains($label, 'sst') || $this->isInvoiceHrdLine($label);
+    }
+
+    protected function isInvoiceHrdLine(string $label): bool
+    {
+        return (bool) preg_match(
+            '/^\s*(\d+(?:\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
+            trim($label)
+        );
     }
 
     protected function isIndustrialHygieneService(string $serviceType): bool
