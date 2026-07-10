@@ -8,6 +8,26 @@ use Illuminate\Support\Facades\DB;
 
 trait ValidatesManpowerRateFloor
 {
+    protected function prepareForValidation(): void
+    {
+        $rateType = (string) $this->input('manpower_rate_type', '');
+        $allowedRateTypes = $this->allowedManpowerRateTypes();
+
+        if ($rateType !== '' || !$allowedRateTypes) {
+            return;
+        }
+
+        $fallbackRateType = in_array('other_manpower', $allowedRateTypes, true)
+            ? 'other_manpower'
+            : ($allowedRateTypes[0] ?? '');
+
+        if ($fallbackRateType === '') {
+            return;
+        }
+
+        $this->merge(['manpower_rate_type' => $fallbackRateType]);
+    }
+
     protected function manpowerRateTypeRules(): array
     {
         return [
