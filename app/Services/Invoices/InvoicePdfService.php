@@ -34,13 +34,19 @@ class InvoicePdfService extends PdfRenderer
 
             $preTax = [];
             $taxItems = [];
+            $isTrainingInvoice = strcasecmp((string) ($inv->service_type ?? ''), 'Training') === 0;
+            $isHrdLine = static fn(object $itm): bool => (bool) preg_match(
+                '/^\s*(\d+(\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
+                (string) ($itm->item_description ?? '')
+            );
+
             foreach ($allItems as $itm) {
                 $sub = (float) $itm->subtotal;
                 $desc = strtolower((string) ($itm->item_description ?? ''));
                 if ($sub === 0.0) {
                     continue;
                 }
-                if (str_contains($desc, 'sst') || str_contains($desc, 'hrd')) {
+                if (str_contains($desc, 'sst') || (! $isTrainingInvoice && $isHrdLine($itm))) {
                     $taxItems[] = $itm;
                 } else {
                     $preTax[] = $itm;
