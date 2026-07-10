@@ -4,7 +4,8 @@
     "HSE_EXECUTIVE": "hse_executive",
     "SHO": "sho_green_book",
     "AESP": "aesp_hourly",
-    "SPECIAL": "special_manpower"
+    "SPECIAL": "special_manpower",
+    "OTHER": "other_manpower"
   },
   "rates": {
     "three_s_yellow_book": {
@@ -64,6 +65,14 @@
       "rateLabel": "Management approval required",
       "tierLabel": "Prepare paperwork and get approval before quotation",
       "requiresManagementApproval": true
+    },
+    "other_manpower": {
+      "label": "Other Manpower Supply",
+      "billingUnit": "month",
+      "unitCost": 0,
+      "rateLabel": "Custom quotation",
+      "tierLabel": "Manual pricing",
+      "allowsManualPricing": true
     }
   }
 }
