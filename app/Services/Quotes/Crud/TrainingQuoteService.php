@@ -16,6 +16,8 @@ class TrainingQuoteService
 {
     use SharedQuoteCrudHelpers;
 
+    private const DEFAULT_HRD_CHARGE_RATE = 4.0;
+
     public function __construct(private AuditLogService $auditLog) {}
 
     public function showTraining(Request $request, int $id): JsonResponse
@@ -105,7 +107,7 @@ class TrainingQuoteService
                 'discount_type' => $priceException ? 'Negotiated' : ($data['discount_type'] ?? null),
                 'discount_value' => $priceException ? $trainingTotals['discount_amount'] : $this->nd($data['discount_value'] ?? null),
                 'sst_rate' => $this->nd($data['sst_rate'] ?? null),
-                'hrd_charge' => $this->nd($data['hrd_charge'] ?? null),
+                'hrd_charge' => $this->nd($this->trainingHrdCharge($data)),
                 'training_total' => $trainingTotals['training_total'],
                 'meal_total' => $trainingTotals['meal_total'],
                 'mobilization_cost' => $trainingTotals['mobilization_cost'],
@@ -220,7 +222,7 @@ class TrainingQuoteService
                 'discount_type' => $priceException ? 'Negotiated' : ($data['discount_type'] ?? null),
                 'discount_value' => $priceException ? $trainingTotals['discount_amount'] : $this->nd($data['discount_value'] ?? null),
                 'sst_rate' => $this->nd($data['sst_rate'] ?? null),
-                'hrd_charge' => $this->nd($data['hrd_charge'] ?? null),
+                'hrd_charge' => $this->nd($this->trainingHrdCharge($data)),
                 'training_total' => $trainingTotals['training_total'],
                 'meal_total' => $trainingTotals['meal_total'],
                 'mobilization_cost' => $trainingTotals['mobilization_cost'],
@@ -297,7 +299,7 @@ class TrainingQuoteService
         $discountAmount = $priceException ? (float) $priceException->approved_discount_amount : (float) ($data['discount_amount'] ?? 0);
         $subtotal = max(0, $trainingTotal + $mealTotal + $mobilizationCost - $discountAmount);
         $sstAmount = round($subtotal * (float) ($data['sst_rate'] ?? 0) / 100, 2);
-        $hrdAmount = round(max(0, $trainingTotal - $discountAmount) * (float) ($data['hrd_charge'] ?? 0) / 100, 2);
+        $hrdAmount = round(max(0, $trainingTotal - $discountAmount) * $this->trainingHrdCharge($data) / 100, 2);
 
         return [
             'training_total' => round($trainingTotal, 2),
@@ -309,6 +311,18 @@ class TrainingQuoteService
             'hrd_amount' => $hrdAmount,
             'grand_total' => round($subtotal + $sstAmount + $hrdAmount, 2),
         ];
+    }
+
+    private function trainingHrdCharge(array $data): float
+    {
+        $isHrdGrant = strtolower(trim((string) ($data['payment_method'] ?? ''))) === 'hrd grant';
+        if (! $isHrdGrant) {
+            return 0.0;
+        }
+
+        $rate = (float) ($data['hrd_charge'] ?? 0);
+
+        return $rate > 0 ? $rate : self::DEFAULT_HRD_CHARGE_RATE;
     }
 
     private function databaseErrorResponse(\Throwable $e, array $context = []): JsonResponse
