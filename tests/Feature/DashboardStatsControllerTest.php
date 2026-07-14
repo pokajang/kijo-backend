@@ -1038,9 +1038,9 @@ class DashboardStatsControllerTest extends TestCase
         $response->assertOk()->assertJsonPath('status', 'success');
 
         $meeting = collect($response->json('rows'))->firstWhere('label', 'MEETING/ PITCHING');
-        $items = collect($meeting['details']['weekly']['W3']['items']);
+        $items = collect($meeting['details']['weekly']['W4']['items']);
 
-        $this->assertSame(2, (int) $meeting['weekly']['W3']);
+        $this->assertSame(2, (int) $meeting['weekly']['W4']);
         $this->assertSame(2, (int) $meeting['total']);
         $this->assertSame(['AZA', 'BOB'], $items->pluck('ownerStaffCode')->sort()->values()->all());
         $this->assertSame(['legal_compliance'], $items->pluck('sourceType')->unique()->values()->all());
@@ -1096,8 +1096,8 @@ class DashboardStatsControllerTest extends TestCase
         $meeting = collect($pipelineResponse->json('rows'))->firstWhere('label', 'MEETING/ PITCHING');
         $record = collect($recordsResponse->json('entries'))->firstWhere('recordSource', 'legal_compliance');
 
-        $this->assertSame(1, (int) $meeting['weekly']['W3']);
-        $this->assertSame(['BOB'], collect($meeting['details']['weekly']['W3']['items'])->pluck('ownerStaffCode')->values()->all());
+        $this->assertSame(1, (int) $meeting['weekly']['W4']);
+        $this->assertSame(['BOB'], collect($meeting['details']['weekly']['W4']['items'])->pluck('ownerStaffCode')->values()->all());
         $this->assertNotNull($record);
         $this->assertSame('meeting_pitching', $record['entryType']);
         $this->assertSame('Free Legal Compliance Assessment', $record['source']);
@@ -1493,9 +1493,51 @@ class DashboardStatsControllerTest extends TestCase
 
         $columns = collect($response->json('periodColumns'));
 
-        $this->assertSame(['W1', 'W2', 'W3', 'W4', 'W5'], $columns->pluck('key')->all());
+        $this->assertSame(['W1', 'W2', 'W3', 'W4', 'W5', 'W6'], $columns->pluck('key')->all());
         $this->assertSame(['week'], $columns->pluck('type')->unique()->values()->all());
         $this->assertSame(['May 2026'], $columns->pluck('groupLabel')->unique()->values()->all());
+        $this->assertSame(
+            ['2026-05-01', '2026-05-02', '2026-05-09', '2026-05-16', '2026-05-23', '2026-05-30'],
+            $columns->pluck('start')->all()
+        );
+        $this->assertSame(
+            ['2026-05-01', '2026-05-08', '2026-05-15', '2026-05-22', '2026-05-29', '2026-05-31'],
+            $columns->pluck('end')->all()
+        );
+    }
+
+    public function test_monitoring_business_weeks_end_on_friday_and_clip_the_active_week(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-07-01',
+            'end_date' => '2026-07-14',
+        ]);
+
+        $response->assertOk()->assertJsonPath('status', 'success');
+
+        $columns = collect($response->json('periodColumns'));
+
+        $this->assertSame(['W1', 'W2', 'W3'], $columns->pluck('key')->all());
+        $this->assertSame(
+            ['2026-07-01', '2026-07-04', '2026-07-11'],
+            $columns->pluck('start')->all()
+        );
+        $this->assertSame(
+            ['2026-07-03', '2026-07-10', '2026-07-14'],
+            $columns->pluck('end')->all()
+        );
+        $this->assertSame(['1 Jul - 3 Jul', '4 Jul - 10 Jul', '11 Jul - 14 Jul'], $columns->pluck('rangeLabel')->all());
+
+        $partialResponse = $this->authenticatedPost('/stats/monitoring-pipeline-tools', [
+            'start_date' => '2026-07-08',
+            'end_date' => '2026-07-14',
+        ]);
+        $partialResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $partialColumns = collect($partialResponse->json('periodColumns'));
+        $this->assertSame(['W2', 'W3'], $partialColumns->pluck('key')->all());
+        $this->assertSame(['2026-07-08', '2026-07-11'], $partialColumns->pluck('start')->all());
+        $this->assertSame(['2026-07-10', '2026-07-14'], $partialColumns->pluck('end')->all());
     }
 
     public function test_monitoring_two_month_range_returns_weekly_columns_for_both_months(): void
@@ -1509,14 +1551,14 @@ class DashboardStatsControllerTest extends TestCase
 
         $columns = collect($response->json('periodColumns'));
 
-        $this->assertCount(10, $columns);
+        $this->assertCount(11, $columns);
         $this->assertSame(['week'], $columns->pluck('type')->unique()->values()->all());
         $this->assertSame(
             ['Apr 2026', 'May 2026'],
             $columns->pluck('groupLabel')->unique()->values()->all()
         );
         $this->assertTrue($columns->pluck('key')->contains('2026-04-W1'));
-        $this->assertTrue($columns->pluck('key')->contains('2026-05-W5'));
+        $this->assertTrue($columns->pluck('key')->contains('2026-05-W6'));
     }
 
     public function test_monitoring_long_range_compacts_previous_months_and_keeps_anchor_month_weekly(): void
@@ -1532,7 +1574,7 @@ class DashboardStatsControllerTest extends TestCase
         $columns = collect($response->json('periodColumns'));
 
         $this->assertSame(
-            ['month-2026-01', 'month-2026-02', 'month-2026-03', 'month-2026-04', '2026-05-W1', '2026-05-W2'],
+            ['month-2026-01', 'month-2026-02', 'month-2026-03', 'month-2026-04', '2026-05-W1', '2026-05-W2', '2026-05-W3'],
             $columns->pluck('key')->all()
         );
         $this->assertSame('Current Year', $response->json('rangeLabel'));
@@ -1557,8 +1599,73 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertSame('month-2026-03', $columns->first()['key']);
         $this->assertSame('2026-03-10', $columns->first()['start']);
         $this->assertSame('2026-03-31', $columns->first()['end']);
-        $this->assertSame('2026-05-W2', $columns->last()['key']);
+        $this->assertSame('2026-05-W3', $columns->last()['key']);
         $this->assertSame('2026-05-11', $columns->last()['end']);
+    }
+
+    public function test_monitoring_friday_and_saturday_events_use_adjacent_business_weeks(): void
+    {
+        DB::table('monitoring_manual_pipeline_entries')->insert([
+            [
+                'entry_type' => 'closed',
+                'prospect_name' => 'Friday Business Week Close',
+                'entry_date' => '2026-05-08',
+                'source' => 'Referral',
+                'segment_type' => 'individual',
+                'service_category' => 'man_power',
+                'estimated_rm' => 80,
+                'owner_staff_id' => 1,
+                'owner_staff_code' => 'AZA',
+                'owner_staff_name' => 'Azam Bin Husain',
+                'created_by' => 1,
+                'created_by_code' => 'AZA',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'entry_type' => 'closed',
+                'prospect_name' => 'Saturday Business Week Close',
+                'entry_date' => '2026-05-09',
+                'source' => 'Referral',
+                'segment_type' => 'individual',
+                'service_category' => 'man_power',
+                'estimated_rm' => 90,
+                'owner_staff_id' => 1,
+                'owner_staff_code' => 'AZA',
+                'owner_staff_name' => 'Azam Bin Husain',
+                'created_by' => 1,
+                'created_by_code' => 'AZA',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $request = [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ];
+        $toolsResponse = $this->authenticatedPost('/stats/monitoring-pipeline-tools', $request);
+        $statusResponse = $this->authenticatedPost('/stats/monitoring-pipeline-status', $request);
+
+        $toolsResponse->assertOk()->assertJsonPath('status', 'success');
+        $statusResponse->assertOk()->assertJsonPath('status', 'success');
+
+        $closed = collect($toolsResponse->json('rows'))->firstWhere('label', 'CLOSED');
+        $manPower = collect($statusResponse->json('rows'))->firstWhere('label', 'MAN POWER');
+
+        $closedW2Clients = collect($closed['details']['weekly']['W2']['items'])->pluck('clientName');
+        $closedW3Clients = collect($closed['details']['weekly']['W3']['items'])->pluck('clientName');
+        $statusW2Clients = collect($manPower['details']['weekly']['W2']['qty']['items'])->pluck('clientName');
+        $statusW3Clients = collect($manPower['details']['weekly']['W3']['qty']['items'])->pluck('clientName');
+
+        $this->assertContains('Friday Business Week Close', $closedW2Clients);
+        $this->assertNotContains('Saturday Business Week Close', $closedW2Clients);
+        $this->assertContains('Saturday Business Week Close', $closedW3Clients);
+        $this->assertNotContains('Friday Business Week Close', $closedW3Clients);
+        $this->assertContains('Friday Business Week Close', $statusW2Clients);
+        $this->assertNotContains('Saturday Business Week Close', $statusW2Clients);
+        $this->assertContains('Saturday Business Week Close', $statusW3Clients);
+        $this->assertNotContains('Friday Business Week Close', $statusW3Clients);
     }
 
     public function test_monitoring_all_time_derives_available_range_without_cap(): void

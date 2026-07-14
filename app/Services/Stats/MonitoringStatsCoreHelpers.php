@@ -259,13 +259,13 @@ trait MonitoringStatsCoreHelpers
     ): array {
         $columns = [];
         $cursor = $monthStart->copy();
+        $index = 1;
 
-        for ($index = 1; $index <= 5; $index++) {
+        while ($cursor->lte($monthEnd)) {
             $weekStart = $cursor->copy();
-            $weekEnd = $index < 5 ? $weekStart->copy()->addDays(6) : $monthEnd->copy();
-            if ($weekEnd->gt($monthEnd)) {
-                $weekEnd = $monthEnd->copy();
-            }
+            // Friday closes the business week, including a one-day W1 when the month starts Friday.
+            $daysUntilFriday = (Carbon::FRIDAY - $weekStart->dayOfWeek + 7) % 7;
+            $weekEnd = $weekStart->copy()->addDays($daysUntilFriday)->min($monthEnd);
 
             $columnStart = $weekStart->copy()->max($rangeStart);
             $columnEnd = $weekEnd->copy()->min($rangeEnd);
@@ -285,6 +285,7 @@ trait MonitoringStatsCoreHelpers
             }
 
             $cursor = $weekEnd->copy()->addDay();
+            $index++;
         }
 
         return $columns;
