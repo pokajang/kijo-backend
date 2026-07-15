@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Http\Controllers\Api\HandbookController;
+use Database\Seeders\PublishHandbookRev02Seeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -113,6 +114,31 @@ class HandbookControllerTest extends TestCase
         $this->assertSame('V2 - 2024-01-05', $body['data']['version_label']);
         $this->assertSame('AMIOSH Employee Handbook', $body['data']['content']['title']);
         $this->assertFalse($body['current_signature']['signed']);
+    }
+
+    public function test_rev02_seeder_publishes_the_exact_snapshot_and_preserves_the_old_version(): void
+    {
+        $oldVersionId = DB::table('hr_handbook_versions')->where('is_current', true)->value('id');
+        $oldContent = DB::table('hr_handbook_versions')->where('id', $oldVersionId)->value('content_json');
+        $snapshot = file_get_contents(database_path('seeders/data/handbook_rev02_2026_07.json'));
+
+        app(PublishHandbookRev02Seeder::class)->run();
+
+        $current = DB::table('hr_handbook_versions')->where('is_current', true)->first();
+        $this->assertSame(2, DB::table('hr_handbook_versions')->count());
+        $this->assertSame('REV02 - 2026-07', $current->version_label);
+        $this->assertSame($snapshot, $current->content_json);
+        $this->assertFalse((bool) DB::table('hr_handbook_versions')->where('id', $oldVersionId)->value('is_current'));
+        $this->assertSame($oldContent, DB::table('hr_handbook_versions')->where('id', $oldVersionId)->value('content_json'));
+        $this->assertSame(1, DB::table('hr_handbook_change_logs')
+            ->where('handbook_version_id', $current->id)
+            ->where('action', 'publish')
+            ->count());
+
+        app(PublishHandbookRev02Seeder::class)->run();
+
+        $this->assertSame(2, DB::table('hr_handbook_versions')->count());
+        $this->assertSame($current->id, DB::table('hr_handbook_versions')->where('is_current', true)->value('id'));
     }
 
     public function test_current_returns_current_staff_signature_status(): void
