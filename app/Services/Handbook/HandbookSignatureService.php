@@ -18,16 +18,29 @@ class HandbookSignatureService extends HandbookBaseService
             return response()->json(['success' => false, 'message' => 'Not authenticated.'], 401);
         }
 
-        $version = $this->currentVersion();
-        $signature = $this->currentSignature($request, (int) $version->id);
+        $version = DB::table('hr_handbook_versions')
+            ->where('is_current', 1)
+            ->orderByDesc('published_at')
+            ->orderByDesc('id')
+            ->first(['id', 'version_label']);
+        if (!$version) {
+            $version = $this->currentVersion();
+        }
+
+        $signature = DB::table('hr_handbook_sign')
+            ->where('staff_id', $staffId)
+            ->where('handbook_version_id', $version->id)
+            ->orderByDesc('signed_at')
+            ->orderByDesc('id')
+            ->first(['signed_at']);
 
         return response()->json([
             'success' => true,
             'data' => [
                 'version_id' => (int) $version->id,
                 'version_label' => (string) $version->version_label,
-                'acknowledged' => $signature['signed'],
-                'signed_at' => $signature['signed_at'],
+                'acknowledged' => $signature !== null,
+                'signed_at' => $signature?->signed_at,
             ],
         ]);
     }
