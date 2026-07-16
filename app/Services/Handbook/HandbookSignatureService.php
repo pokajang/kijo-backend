@@ -11,6 +11,27 @@ use Illuminate\Support\Facades\Validator;
 class HandbookSignatureService extends HandbookBaseService
 {
 
+    public function acknowledgementStatus(Request $request)
+    {
+        $staffId = (int) $request->session()->get('staff_id', 0);
+        if ($staffId <= 0) {
+            return response()->json(['success' => false, 'message' => 'Not authenticated.'], 401);
+        }
+
+        $version = $this->currentVersion();
+        $signature = $this->currentSignature($request, (int) $version->id);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'version_id' => (int) $version->id,
+                'version_label' => (string) $version->version_label,
+                'acknowledged' => $signature['signed'],
+                'signed_at' => $signature['signed_at'],
+            ],
+        ]);
+    }
+
     public function sign(Request $request)
     {
         $staffId = (int) $request->session()->get('staff_id', 0);

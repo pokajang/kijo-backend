@@ -71,13 +71,18 @@ class HandbookController extends Controller
     }
 
 
-        public function sign(Request $request)
+    public function sign(Request $request)
     {
         return $this->handbookService()->sign($request);
     }
 
+    public function acknowledgementStatus(Request $request)
+    {
+        return $this->handbookService()->acknowledgementStatus($request);
+    }
 
-        public function signatures(Request $request)
+
+    public function signatures(Request $request)
     {
         return $this->handbookService()->signatures($request);
     }

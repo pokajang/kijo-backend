@@ -164,6 +164,49 @@ class HandbookControllerTest extends TestCase
         $this->assertNotEmpty($body['current_signature']['signed_at']);
     }
 
+    public function test_acknowledgement_status_tracks_the_current_handbook_version(): void
+    {
+        $controller = app(HandbookController::class);
+        $unauthenticated = $controller->acknowledgementStatus($this->makeRequest('GET'));
+        $this->assertSame(401, $unauthenticated->getStatusCode());
+        $this->assertFalse($unauthenticated->getData(true)['success']);
+
+        $staffSession = ['staff_id' => 7, 'name_code' => 'ST7'];
+        $currentId = (int) DB::table('hr_handbook_versions')->where('is_current', true)->value('id');
+
+        $unsigned = $controller->acknowledgementStatus($this->makeRequest('GET', $staffSession))
+            ->getData(true);
+        $this->assertTrue($unsigned['success']);
+        $this->assertSame($currentId, $unsigned['data']['version_id']);
+        $this->assertSame('V2 - 2024-01-05', $unsigned['data']['version_label']);
+        $this->assertFalse($unsigned['data']['acknowledged']);
+        $this->assertNull($unsigned['data']['signed_at']);
+
+        $signed = $controller->sign($this->makeRequest('POST', $staffSession, [
+            'full_name' => 'Jane Doe',
+            'ic_number' => '900101-01-1234',
+            'handbook_version_id' => $currentId,
+        ]))->getData(true);
+        $this->assertTrue($signed['success']);
+
+        $acknowledged = $controller->acknowledgementStatus($this->makeRequest('GET', $staffSession))
+            ->getData(true);
+        $this->assertTrue($acknowledged['data']['acknowledged']);
+        $this->assertNotEmpty($acknowledged['data']['signed_at']);
+
+        $published = $controller->publish($this->makeRequest(
+            'POST',
+            [...$staffSession, 'roles' => ['HR']],
+            $this->publishPayload('Published a new handbook version.'),
+        ))->getData(true);
+        $this->assertTrue($published['success']);
+
+        $newVersionStatus = $controller->acknowledgementStatus($this->makeRequest('GET', $staffSession))
+            ->getData(true);
+        $this->assertFalse($newVersionStatus['data']['acknowledged']);
+        $this->assertNotSame($currentId, $newVersionStatus['data']['version_id']);
+    }
+
     public function test_publish_requires_manager_role(): void
     {
         $response = app(HandbookController::class)->publish(

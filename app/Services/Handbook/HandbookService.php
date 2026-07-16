@@ -75,6 +75,11 @@ class HandbookService
         return $this->handbookSignatureService()->sign($request);
     }
 
+    public function acknowledgementStatus(Request $request)
+    {
+        return $this->handbookSignatureService()->acknowledgementStatus($request);
+    }
+
     public function signatures(Request $request)
     {
         return $this->handbookSignatureService()->signatures($request);

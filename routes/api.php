@@ -470,6 +470,7 @@ Route::middleware('auth.session')->group(function () {
     Route::get('hr/staff/{id}', [HrMiscController::class, 'viewStaffDetail'])->middleware('role:HR,Manager,System Admin');
     Route::post('hr/staff/{id}/terminate', [HrMiscController::class, 'handleTerminate']);
     Route::get('hr/handbook/current', [HandbookController::class, 'current']);
+    Route::get('hr/handbook/acknowledgement-status', [HandbookController::class, 'acknowledgementStatus']);
     Route::post('hr/handbook/publish', [HandbookController::class, 'publish']);
     Route::post('hr/handbook/draft-section', [HandbookController::class, 'saveDraftSection']);
     Route::post('hr/handbook/publish-draft', [HandbookController::class, 'publishDraft']);
