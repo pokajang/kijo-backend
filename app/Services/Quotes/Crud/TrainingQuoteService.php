@@ -5,9 +5,10 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreTrainingQuoteRequest;
 use App\Http\Requests\Quote\UpdateTrainingQuoteRequest;
 use App\Services\AuditLogService;
+use Illuminate\Database\QueryException;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -24,7 +25,7 @@ class TrainingQuoteService
     {
         $quote = DB::table('quotes_training')->where('id', $id)->first();
 
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
 
@@ -44,8 +45,8 @@ class TrainingQuoteService
         $clientSnapshot = $data['client_snapshot'];
         $picSnapshot = $data['pic_snapshot'];
         $table = 'quotes_training';
-        $lockName = 'quotes_training_' . date('Y');
-        $prefix = 'QTR' . date('y') . '-%';
+        $lockName = 'quotes_training_'.date('Y');
+        $prefix = 'QTR'.date('y').'-%';
 
         $quoteId = null;
         $refNo = null;
@@ -56,8 +57,9 @@ class TrainingQuoteService
             $trainingTotals = $this->trainingTotals($data, $priceException);
 
             $lockResult = DB::selectOne('SELECT GET_LOCK(?, 10) AS acquired', [$lockName]);
-            if (!$lockResult || !$lockResult->acquired) {
+            if (! $lockResult || ! $lockResult->acquired) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Could not acquire lock. Please retry.'], 503);
             }
 
@@ -66,7 +68,7 @@ class TrainingQuoteService
                 [$nameCode, $prefix]
             );
             $next = (($row->max_run ?? 0) ?: 0) + 1;
-            $refNo = 'QTR' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
+            $refNo = 'QTR'.date('y').'-'.str_pad((string) $next, 4, '0', STR_PAD_LEFT).$nameCode;
 
             $insert = [
                 'client_id' => $data['client_id'],
@@ -116,6 +118,12 @@ class TrainingQuoteService
                 'sst_amount' => $trainingTotals['sst_amount'],
                 'hrd_amount' => $trainingTotals['hrd_amount'],
                 'grand_total' => $trainingTotals['grand_total'],
+                ...(Schema::hasColumn($table, 'estimated_total_cost')
+                    ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
+                    : []),
+                ...(Schema::hasColumn($table, 'traffic_light_rule_version')
+                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? 'v1']
+                    : []),
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'proposal_id' => $data['proposal_id'] ?? null,
                 'status' => 'Open',
@@ -136,11 +144,12 @@ class TrainingQuoteService
             $this->markPriceExceptionUsed($priceException, $quoteId);
 
             DB::commit();
-        } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+        } catch (HttpResponseException $e) {
             DB::rollBack();
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+
             return $this->databaseErrorResponse($e, $this->trainingQuoteFailureContext($data));
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
@@ -170,7 +179,7 @@ class TrainingQuoteService
         }
 
         $quote = DB::table('quotes_training')->where('id', $id)->first();
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
 
@@ -231,6 +240,12 @@ class TrainingQuoteService
                 'sst_amount' => $trainingTotals['sst_amount'],
                 'hrd_amount' => $trainingTotals['hrd_amount'],
                 'grand_total' => $trainingTotals['grand_total'],
+                ...(Schema::hasColumn('quotes_training', 'estimated_total_cost')
+                    ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
+                    : []),
+                ...(Schema::hasColumn('quotes_training', 'traffic_light_rule_version')
+                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? $quote->traffic_light_rule_version ?? 'v1']
+                    : []),
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'proposal_id' => $data['proposal_id'] ?? null,
                 'updated_at' => now(),
@@ -254,15 +269,16 @@ class TrainingQuoteService
             $this->markPriceExceptionUsed($priceException, $id);
 
             DB::commit();
-        } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+        } catch (HttpResponseException $e) {
             DB::rollBack();
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+
             return $this->databaseErrorResponse($e, $this->trainingQuoteFailureContext($data, $id));
         }
 
-        $this->auditLog->log($request, "Updated training quote ID #{$id} by {$nameCode}" . ($isRevision ? ' (revision)' : ''));
+        $this->auditLog->log($request, "Updated training quote ID #{$id} by {$nameCode}".($isRevision ? ' (revision)' : ''));
 
         return response()->json([
             'status' => 'success',
@@ -279,6 +295,7 @@ class TrainingQuoteService
             return $value ? 'Yes' : 'No';
         }
         $v = strtolower(trim((string) $value));
+
         return in_array($v, ['1', 'true', 'yes'], true) ? 'Yes' : 'No';
     }
 
@@ -344,7 +361,7 @@ class TrainingQuoteService
 
     private function friendlyDatabaseError(\Throwable $e): array
     {
-        if (!$e instanceof QueryException) {
+        if (! $e instanceof QueryException) {
             return ['Database error.', 500];
         }
 

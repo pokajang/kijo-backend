@@ -14,44 +14,46 @@ class StoreEquipmentQuoteRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'client_id'              => ['required', 'integer'],
-            'client_name'            => ['required', 'string', 'max:255'],
-            'client_ssm'             => ['nullable', 'string', 'max:255'],
-            'client_address'         => ['required', 'string', 'max:255'],
-            'client_city'            => ['nullable', 'string', 'max:255'],
-            'client_state'           => ['nullable', 'string', 'max:255'],
-            'client_zip'             => ['nullable', 'string', 'max:255'],
-            'pic_name'               => ['required', 'string', 'max:2000'],
-            'pic_email'              => ['required', 'string', 'max:2000'],
-            'pic_phone'              => ['required', 'string', 'max:2000'],
-            'pic_position'           => ['required', 'string', 'max:2000'],
-            'items'                  => ['required', 'array', 'min:1'],
-            'items.*.catalog_item_id'=> ['required', 'integer'],
-            'items.*.item_id'        => ['nullable', 'integer'],
-            'items.*.item_name'      => ['nullable', 'string', 'max:255'],
-            'items.*.item_code'      => ['nullable', 'string', 'max:100'],
-            'items.*.unit_price'     => ['required', 'numeric', 'min:0'],
-            'items.*.quantity'       => ['required', 'numeric', 'min:0.01'],
-            'items.*.marked_up_price'=> ['nullable', 'numeric', 'min:0'],
-            'items.*.line_total'     => ['nullable', 'numeric', 'min:0'],
-            'items.*.total_price'    => ['required', 'numeric', 'min:0'],
-            'delivery_charge'        => ['nullable', 'numeric', 'min:0'],
-            'misc_charge'            => ['nullable', 'numeric', 'min:0'],
-            'discount'               => ['nullable', 'numeric', 'min:0'],
-            'sst_percent'            => ['nullable', 'numeric', 'min:0', 'max:100'],
-            'attach_proposal'         => ['nullable', 'boolean'],
+            'client_id' => ['required', 'integer'],
+            'client_name' => ['required', 'string', 'max:255'],
+            'client_ssm' => ['nullable', 'string', 'max:255'],
+            'client_address' => ['required', 'string', 'max:255'],
+            'client_city' => ['nullable', 'string', 'max:255'],
+            'client_state' => ['nullable', 'string', 'max:255'],
+            'client_zip' => ['nullable', 'string', 'max:255'],
+            'pic_name' => ['required', 'string', 'max:2000'],
+            'pic_email' => ['required', 'string', 'max:2000'],
+            'pic_phone' => ['required', 'string', 'max:2000'],
+            'pic_position' => ['required', 'string', 'max:2000'],
+            'items' => ['required', 'array', 'min:1'],
+            'items.*.catalog_item_id' => ['required', 'integer'],
+            'items.*.item_id' => ['nullable', 'integer'],
+            'items.*.item_name' => ['nullable', 'string', 'max:255'],
+            'items.*.item_code' => ['nullable', 'string', 'max:100'],
+            'items.*.unit_price' => ['required', 'numeric', 'min:0'],
+            'items.*.quantity' => ['required', 'numeric', 'min:0.01'],
+            'items.*.marked_up_price' => ['nullable', 'numeric', 'min:0'],
+            'items.*.line_total' => ['nullable', 'numeric', 'min:0'],
+            'items.*.total_price' => ['required', 'numeric', 'min:0'],
+            'delivery_charge' => ['nullable', 'numeric', 'min:0'],
+            'misc_charge' => ['nullable', 'numeric', 'min:0'],
+            'discount' => ['nullable', 'numeric', 'min:0'],
+            'sst_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'attach_proposal' => ['nullable', 'boolean'],
+            'estimated_total_cost' => ['nullable', 'numeric', 'min:0'],
+            'traffic_light_rule_version' => ['nullable', 'string', 'max:50'],
         ];
     }
 
     protected function prepareForValidation(): void
     {
         $items = $this->input('items', []);
-        if (!is_array($items)) {
+        if (! is_array($items)) {
             return;
         }
 
         $normalized = array_map(function ($item) {
-            if (!is_array($item)) {
+            if (! is_array($item)) {
                 return $item;
             }
 
