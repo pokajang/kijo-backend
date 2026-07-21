@@ -50,7 +50,7 @@ class StoreIhQuoteRequest extends FormRequest
             'inquiry_remarks' => ['nullable', 'string', 'max:2000'],
             'attach_proposal' => ['nullable', 'boolean'],
             'proposal_language' => ['nullable', 'in:en,ms-MY'],
-            'estimated_total_cost' => ['nullable', 'numeric', 'min:0'],
+            'estimated_total_cost' => ['nullable', 'numeric', 'min:0.01'],
             'traffic_light_rule_version' => ['nullable', 'string', 'max:50'],
         ];
     }

@@ -78,7 +78,7 @@ class UpdateTrainingQuoteRequest extends FormRequest
             'sst_amount' => ['nullable', 'numeric', 'min:0'],
             'hrd_amount' => ['nullable', 'numeric', 'min:0'],
             'grand_total' => ['nullable', 'numeric', 'min:0'],
-            'estimated_total_cost' => ['nullable', 'numeric', 'min:0'],
+            'estimated_total_cost' => ['nullable', 'numeric', 'min:0.01'],
             'traffic_light_rule_version' => ['nullable', 'string', 'max:50'],
             'attach_proposal' => ['nullable', 'boolean'],
             'proposal_id' => ['nullable', 'integer'],

@@ -1,12 +1,22 @@
 @php
     $pdfLanguage = \App\Support\PdfLabels::normalize($pdfLanguage ?? (isset($proposal) ? ($proposal->proposal_language ?? 'en') : 'en'));
     $L = static fn(string $key, ?string $fallback = null): string => \App\Support\PdfLabels::get($pdfLanguage, $key, $fallback);
+    $proposalTitle = \App\Support\ProposalTitleFormatter::formatProposalTitle(
+        (string) ($proposal->service_title ?? ''),
+        'Manpower Supply Service Proposal',
+        'Manpower Supply Service Proposal',
+        'view.pdf.manpower-proposal.title',
+    );
+    $proposalTitleBase = \App\Support\ProposalTitleFormatter::removeSuffix($proposalTitle, 'Manpower Supply Service Proposal');
+    if ($proposalTitleBase === '') {
+        $proposalTitleBase = 'Service';
+    }
 @endphp
 <!doctype html>
 <html lang="{{ $pdfLanguage === 'ms-MY' ? 'ms' : 'en' }}">
 <head>
     <meta charset="utf-8">
-    <title>{{ $L('SERVICE PROPOSAL', 'Manpower Service Proposal') }} - {{ $proposal->service_title ?? '' }}</title>
+    <title>{{ $L('SERVICE PROPOSAL', 'Manpower Service Proposal') }} - {{ $proposalTitleBase }}</title>
     <style>
         @page { margin: 36mm 20mm 16mm 20mm; }
         body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.35; text-align: justify; }
@@ -72,7 +82,7 @@
 
     <main>
         @include('pdf.partials.manpower-proposal-content', [
-            'proposalTitle' => $proposal->service_title ?? '',
+            'proposalTitle' => $proposalTitle,
             'sections' => $sections ?? [],
         ])
     </main>

@@ -3,6 +3,7 @@
 namespace App\Services\Quotes\Pdf;
 
 use App\Services\AuditLogService;
+use App\Support\ProposalTitleFormatter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -110,7 +111,12 @@ class TrainingQuotePdfService
                 ->where('is_deleted', 0)
                 ->first();
             if ($proposal) {
-                $proposalTitle = (string) ($proposal->training_title ?? '');
+                $proposalTitle = ProposalTitleFormatter::formatProposalTitle(
+                    (string) ($proposal->training_title ?? ''),
+                    null,
+                    '',
+                    'training-quote.proposal-title',
+                );
                 $proposalSections = [
                     ['title' => 'HRDC Training Programme No.', 'content' => $proposal->hrd_no ?? ''],
                     ['title' => 'Introduction', 'content' => $proposal->introduction ?? ''],

@@ -6,8 +6,14 @@
         'Supplied Manpower Deliverables' => 'Serahan Tenaga Kerja Dibekalkan',
         'Additional Information' => 'Maklumat Tambahan',
     ];
+    $proposalDisplayTitle = trim((string) ($proposalTitle ?? ''));
+    if ($proposalDisplayTitle === '') {
+        $proposalDisplayTitle = $partialLanguage === 'ms-MY'
+            ? 'Cadangan Perkhidmatan Pembekalan Tenaga Kerja'
+            : 'Manpower Supply Service Proposal';
+    }
 @endphp
-<div class="title-box">{{ $proposalTitle ?? '' }}{{ $partialLanguage === 'ms-MY' ? ' Cadangan Perkhidmatan Pembekalan Tenaga Kerja' : ' Manpower Supply Service Proposal' }}</div>
+<div class="title-box">{{ $proposalDisplayTitle }}</div>
 
 @foreach(($sections ?? []) as $section)
     @php($sectionContentHtml = (string) ($section['contentHtml'] ?? $section['content'] ?? ''))

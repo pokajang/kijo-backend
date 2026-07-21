@@ -41,7 +41,7 @@ class UpdateEquipmentQuoteRequest extends FormRequest
             'price_exception_request_id' => ['nullable', 'integer', 'min:1'],
             'sst_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'attach_proposal' => ['nullable', 'boolean'],
-            'estimated_total_cost' => ['nullable', 'numeric', 'min:0'],
+            'estimated_total_cost' => ['nullable', 'numeric', 'min:0.01'],
             'traffic_light_rule_version' => ['nullable', 'string', 'max:50'],
             'isRevision' => ['nullable', 'boolean'],
         ];

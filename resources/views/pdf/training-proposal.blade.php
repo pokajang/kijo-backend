@@ -1,12 +1,18 @@
 @php
     $pdfLanguage = \App\Support\PdfLabels::normalize($pdfLanguage ?? (isset($proposal) ? ($proposal->proposal_language ?? 'en') : 'en'));
     $L = static fn(string $key, ?string $fallback = null): string => \App\Support\PdfLabels::get($pdfLanguage, $key, $fallback);
+    $proposalTitle = \App\Support\ProposalTitleFormatter::formatProposalTitle(
+        (string) ($proposal->training_title ?? ''),
+        'Training',
+        '',
+        'view.pdf.training-proposal.title',
+    );
 @endphp
 <!doctype html>
 <html lang="{{ $pdfLanguage === 'ms-MY' ? 'ms' : 'en' }}">
 <head>
     <meta charset="utf-8">
-    <title>{{ $L('BROCHURE', 'Training Brochure') }} - {{ $proposal->training_title ?? '' }}</title>
+    <title>{{ $L('BROCHURE', 'Training Brochure') }} - {{ $proposalTitle }}</title>
     <style>
         @page { margin: 36mm 20mm 16mm 20mm; }
         body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.35; text-align: justify; }
@@ -94,7 +100,7 @@
 
     <main>
         @include('pdf.partials.training-proposal-content', [
-            'proposalTitle' => $proposal->training_title ?? '',
+            'proposalTitle' => $proposalTitle,
             'sections' => $sections ?? [],
             'agendaByDay' => $agendaByDay ?? [],
         ])

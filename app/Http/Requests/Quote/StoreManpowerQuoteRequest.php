@@ -45,7 +45,7 @@ class StoreManpowerQuoteRequest extends FormRequest
             'sst_amount' => ['nullable', 'numeric', 'min:0'],
             'sub_total' => ['nullable', 'numeric', 'min:0'],
             'grand_total' => ['nullable', 'numeric', 'min:0'],
-            'estimated_total_cost' => ['nullable', 'numeric', 'min:0'],
+            'estimated_total_cost' => ['nullable', 'numeric', 'min:0.01'],
             'traffic_light_rule_version' => ['nullable', 'string', 'max:80'],
             'inquiry_remarks' => ['nullable', 'string', 'max:2000'],
             'attach_proposal' => ['nullable', 'boolean'],

@@ -4,6 +4,7 @@ namespace App\Services\Quotes\Pdf;
 
 use App\Services\AuditLogService;
 use App\Support\AppFilePaths;
+use App\Support\ProposalTitleFormatter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -81,7 +82,12 @@ class SpecialQuotePdfService
 
             if ($snapshot) {
                 $proposalServiceTitle = trim((string) ($snapshot->service_title ?? ''));
-                $proposalTitle = $this->specialProposalTitle($proposalServiceTitle);
+                $proposalTitle = ProposalTitleFormatter::formatProposalTitle(
+                    $proposalServiceTitle,
+                    'Service Proposal',
+                    'Service Proposal',
+                    'special-quote.proposal-title.snapshot',
+                );
                 $proposalMode = in_array($snapshot->proposal_mode ?? null, ['upload', 'write'], true)
                     ? $snapshot->proposal_mode
                     : 'upload';
@@ -105,7 +111,12 @@ class SpecialQuotePdfService
 
                 if ($specialProposal) {
                     $proposalServiceTitle = trim((string) ($specialProposal->service_title ?? ''));
-                    $proposalTitle = $this->specialProposalTitle($proposalServiceTitle);
+                    $proposalTitle = ProposalTitleFormatter::formatProposalTitle(
+                        $proposalServiceTitle,
+                        'Service Proposal',
+                        'Service Proposal',
+                        'special-quote.proposal-title.template',
+                    );
 
                     $attachmentFk = $this->specialAttachmentForeignKey();
                     $attachments = DB::table('proposal_special_attachments')
@@ -191,7 +202,15 @@ class SpecialQuotePdfService
         if ($appendProposalContent) {
             $proposalHtml = view($this->renderer->pdfView('pdf.special-proposal', $quote->proposal_language ?? 'en'), [
                 'proposal' => (object) [
-                    'service_title' => $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                    'service_title' => ProposalTitleFormatter::formatProposalTitle(
+                        ProposalTitleFormatter::removeSuffix(
+                            $proposalServiceTitle !== '' ? $proposalServiceTitle : $proposalTitle,
+                            'Service Proposal',
+                        ),
+                        'Service',
+                        '',
+                        'special-quote.proposal-service-title',
+                    ),
                     'proposal_language' => $quote->proposal_language ?? 'en',
                 ],
                 'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Service Proposal',
@@ -233,24 +252,6 @@ class SpecialQuotePdfService
     private function specialAttachmentForeignKey(): string
     {
         return $this->hasColumn('proposal_special_attachments', 'template_id') ? 'template_id' : 'proposal_id';
-    }
-
-    private function specialProposalTitle(string $serviceTitle): string
-    {
-        $serviceTitle = trim($serviceTitle);
-        if ($serviceTitle === '') {
-            return 'Service Proposal';
-        }
-
-        if (preg_match('/\bproposal$/i', $serviceTitle)) {
-            return $serviceTitle;
-        }
-
-        if (preg_match('/\bservice$/i', $serviceTitle)) {
-            return $serviceTitle . ' Proposal';
-        }
-
-        return $serviceTitle . ' Service Proposal';
     }
 
     private function specialAttachmentPathColumn(): string

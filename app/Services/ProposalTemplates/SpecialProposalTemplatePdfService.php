@@ -5,6 +5,7 @@ namespace App\Services\ProposalTemplates;
 use App\Services\AuditLogService;
 use App\Services\Pdf\PdfRenderer;
 use App\Support\AppFilePaths;
+use App\Support\ProposalTitleFormatter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -113,7 +114,12 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
     {
         $logoDataUri = $this->companyLogoDataUri();
 
-        $proposalTitle = $this->specialProposalTitle((string) ($proposal->service_title ?? ''));
+        $proposalTitle = ProposalTitleFormatter::formatProposalTitle(
+            (string) ($proposal->service_title ?? ''),
+            'Service Proposal',
+            'Service Proposal',
+            'special-template.proposal-title',
+        );
         $content = $this->proposalMode($proposal) === 'write'
             ? (string) ($proposal->proposal_content ?? $proposal->content ?? '')
             : '';
@@ -130,24 +136,6 @@ class SpecialProposalTemplatePdfService extends PdfRenderer
     private function specialAttachmentForeignKey(): string
     {
         return $this->hasColumn('proposal_special_attachments', 'template_id') ? 'template_id' : 'proposal_id';
-    }
-
-    private function specialProposalTitle(string $serviceTitle): string
-    {
-        $serviceTitle = trim($serviceTitle);
-        if ($serviceTitle === '') {
-            return 'Service Proposal';
-        }
-
-        if (preg_match('/\bproposal$/i', $serviceTitle)) {
-            return $serviceTitle;
-        }
-
-        if (preg_match('/\bservice$/i', $serviceTitle)) {
-            return $serviceTitle . ' Proposal';
-        }
-
-        return $serviceTitle . ' Service Proposal';
     }
 
     private function specialAttachmentNameColumn(): string

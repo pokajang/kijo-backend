@@ -103,6 +103,8 @@
         <p>{{ $pdfLanguage === 'ms-MY' ? 'Kepada' : 'Dear' }} <strong>{{ $L('dear_valued_customer', 'Valued Customer') }}</strong>,</p>
         <p>{{ $L('manpower_intro', 'Thank you for your interest in our Manpower Supply services. We are pleased to provide you with the following quotation.') }}</p>
 
+        @include('pdf.partials.quote-cross-sell-banner')
+
         <table class="quote-table">
             <tr>
                 <td class="label">{{ $L('service_details', 'Service Details') }}</td>

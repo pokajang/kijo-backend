@@ -5,6 +5,7 @@ namespace App\Services\QuoteRecords;
 use App\Services\AuditLogService;
 use App\Services\Pdf\PdfRenderer;
 use App\Services\Quotes\Pdf\PdfMergeService;
+use App\Support\ProposalTitleFormatter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -83,7 +84,16 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
         if ($appendProposal) {
             $proposal = DB::table('proposal_template_manpower')->where('id', (int) $quote->mp_id)->first();
             if ($proposal) {
-                $proposalTitle = trim((string) ($proposal->service_title ?? '')) . ' Manpower Supply Service Proposal';
+                $proposalRawTitle = ProposalTitleFormatter::removeSuffix(
+                    ProposalTitleFormatter::removeSuffix((string) ($proposal->service_title ?? ''), 'Service Proposal'),
+                    'Manpower Supply Service Proposal'
+                );
+                $proposalTitle = ProposalTitleFormatter::formatProposalTitle(
+                    $proposalRawTitle,
+                    'Manpower Supply Service Proposal',
+                    'Manpower Supply Service Proposal',
+                    'manpower-record.proposal-title',
+                );
                 foreach ([
                     'Introduction'                  => (string) ($proposal->introduction ?? ''),
                     'Service Deliverables'          => (string) ($proposal->service_deliverables ?? ''),
@@ -149,7 +159,7 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
             'preparedByName'     => (string) ($quote->created_by_name ?? ''),
             'signOffTitle'       => $signOffTitle,
             'appendProposal'     => false,
-            'proposalTitle'      => $proposalTitle ?: 'Service Proposal',
+            'proposalTitle'      => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Manpower Supply Service Proposal',
             'proposalSections'   => $proposalSections,
             'logoDataUri'        => $logoDataUri,
         ])->render();
@@ -159,13 +169,18 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
         $pdfBytes = $dompdf->output();
 
         if ($appendProposal && !empty($proposalSections)) {
-            $proposalServiceTitle = trim(preg_replace('/\s+Manpower Supply Service Proposal$/i', '', $proposalTitle) ?? '');
+            $proposalServiceTitle = ProposalTitleFormatter::removeSuffix($proposalTitle, 'Manpower Supply Service Proposal');
             $proposalHtml = view($this->pdfView('pdf.manpower-proposal', $quote->proposal_language ?? 'en'), [
                 'proposal' => (object) [
-                    'service_title' => $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                    'service_title' => ProposalTitleFormatter::formatProposalTitle(
+                        $proposalServiceTitle !== '' ? $proposalServiceTitle : $proposalTitle,
+                        'Service',
+                        '',
+                        'manpower-record.proposal-service-title',
+                    ),
                     'proposal_language' => $quote->proposal_language ?? 'en',
                 ],
-                'proposalTitle' => $proposalTitle ?: 'Service Proposal',
+                'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Manpower Supply Service Proposal',
                 'sections' => $proposalSections,
                 'logoDataUri' => $logoDataUri,
             ])->render();

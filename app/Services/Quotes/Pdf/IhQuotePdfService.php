@@ -3,6 +3,7 @@
 namespace App\Services\Quotes\Pdf;
 
 use App\Services\AuditLogService;
+use App\Support\ProposalTitleFormatter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -77,7 +78,12 @@ class IhQuotePdfService
                 ->first();
 
             if ($proposal) {
-                $proposalTitle = trim((string) ($proposal->service_title ?? '')) . ' Service Proposal';
+                $proposalTitle = ProposalTitleFormatter::formatProposalTitle(
+                    (string) ($proposal->service_title ?? ''),
+                    'Service Proposal',
+                    'Service Proposal',
+                    'ih-quote.appended-proposal-title',
+                );
 
                 $sections = [
                     'Introduction' => (string) ($proposal->introduction ?? ''),
@@ -177,10 +183,15 @@ class IhQuotePdfService
         $pdfBytes = $dompdf->output();
 
         if ($appendProposal && (!empty($proposalSections) || $additionalInfoHtml !== '')) {
-            $proposalServiceTitle = trim(preg_replace('/\s+Service Proposal$/i', '', $proposalTitle) ?? '');
+            $proposalServiceTitle = ProposalTitleFormatter::removeSuffix($proposalTitle, 'Service Proposal');
             $proposalHtml = view($this->renderer->pdfView('pdf.ih-proposal', $quote->proposal_language ?? 'en'), [
                 'proposal' => (object) [
-                    'service_title' => $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                    'service_title' => ProposalTitleFormatter::formatProposalTitle(
+                        $proposalServiceTitle !== '' ? $proposalServiceTitle : 'Service',
+                        null,
+                        '',
+                        'ih-quote.proposal-service-title',
+                    ),
                     'proposal_language' => $quote->proposal_language ?? 'en',
                 ],
                 'proposalTitle' => trim($proposalTitle) !== '' ? trim($proposalTitle) : 'Service Proposal',
