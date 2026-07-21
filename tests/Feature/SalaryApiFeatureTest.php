@@ -6,6 +6,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
@@ -17,8 +18,17 @@ class SalaryApiFeatureTest extends TestCase
         parent::setUp();
 
         Storage::fake('private');
+        Queue::fake();
         $this->createSystemUsersTable();
         $this->createStaffGeneralTable();
+        $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_05_21_000000_create_in_app_notifications_table.php',
+            '--realpath' => false,
+        ])->run();
+        $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_07_21_020000_add_dedupe_key_to_in_app_notifications.php',
+            '--realpath' => false,
+        ])->run();
         $this->artisan('migrate', [
             '--path' => 'database/migrations/2026_05_30_110000_create_hr_salary_tables.php',
             '--realpath' => false,
@@ -33,6 +43,10 @@ class SalaryApiFeatureTest extends TestCase
         ])->run();
         $this->artisan('migrate', [
             '--path' => 'database/migrations/2026_05_31_220000_create_hr_other_claim_tables.php',
+            '--realpath' => false,
+        ])->run();
+        $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_07_21_010000_add_travel_fields_to_other_claim_items.php',
             '--realpath' => false,
         ])->run();
         $this->artisan('migrate', [
@@ -225,7 +239,6 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('record.claims.1.description', 'Payroll correction')
             ->assertJsonPath('record.claims.1.attachment', null);
         $recordId = $response->json('record.id');
-
         $this->submitSalary([
             [
                 'id' => 'claim-adjustment-replaced',
@@ -369,6 +382,14 @@ class SalaryApiFeatureTest extends TestCase
             'status' => 'Cancelled',
             'current_step_id' => null,
         ]);
+        foreach ([30, 40] as $recipientStaffId) {
+            $this->assertDatabaseHas('in_app_notifications', [
+                'recipient_staff_id' => $recipientStaffId,
+                'entity_type' => 'salary_application',
+                'entity_id' => $checkedId,
+                'type' => 'salary.cancelled',
+            ]);
+        }
 
         $this->actingSession()
             ->getJson("/hr/salary/records/{$checkedId}")
@@ -1023,6 +1044,261 @@ class SalaryApiFeatureTest extends TestCase
         $this->assertDatabaseMissing('hr_other_claim_applications', ['id' => $recordId]);
     }
 
+    public function test_other_claim_supports_one_way_travel_with_linked_expense_and_allocation(): void
+    {
+        $this->updateSalaryProfile(defaultMileageRate: '0.60', yearlyMedicalClaim: '1200');
+
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'travel-mileage',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'Site inspection',
+                'km' => 12,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'tripMode' => 'one_way',
+                'travelGroupId' => 'travel-group-1',
+                'source' => 'manual-allocation',
+                'sourceLabel' => 'Project Alpha',
+            ],
+            [
+                'id' => 'travel-parking',
+                'type' => 'Expense',
+                'date' => '2026-05-12',
+                'description' => 'Parking: Site inspection',
+                'amount' => 5.50,
+                'travelGroupId' => 'travel-group-1',
+                'expenseCategory' => 'parking',
+                'source' => 'manual-allocation',
+                'sourceLabel' => 'Project Alpha',
+            ],
+        ], [
+            'travel-parking' => UploadedFile::fake()->create('parking.pdf', 100, 'application/pdf'),
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('record.claimsTotal', 12.7)
+            ->assertJsonPath('record.claims.0.amount', 7.2)
+            ->assertJsonPath('record.claims.0.meta', '12 KM one-way')
+            ->assertJsonPath('record.claims.0.tripMode', 'one_way')
+            ->assertJsonPath('record.claims.0.travelGroupId', 'travel-group-1')
+            ->assertJsonPath('record.claims.1.expenseCategory', 'parking')
+            ->assertJsonPath('record.claims.1.attachment.name', 'parking.pdf');
+    }
+
+    public function test_other_claim_supports_expense_only_travel_rows_from_the_workbook(): void
+    {
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'travel-anchor',
+                'type' => 'Mileage',
+                'date' => '2026-05-14',
+                'description' => 'Client airport transfer',
+                'km' => 0,
+                'startLocation' => 'Office',
+                'endLocation' => 'Airport',
+                'tripMode' => 'one_way',
+                'travelGroupId' => 'travel-expense-only',
+                'source' => 'manual-allocation',
+                'sourceLabel' => 'Project Alpha',
+            ],
+            [
+                'id' => 'travel-combined-expense',
+                'type' => 'Expense',
+                'date' => '2026-05-14',
+                'description' => 'Parking / taxi / toll / others: Client airport transfer',
+                'amount' => 18,
+                'travelGroupId' => 'travel-expense-only',
+                'expenseCategory' => 'combined',
+                'source' => 'manual-allocation',
+                'sourceLabel' => 'Project Alpha',
+            ],
+        ], [
+            'travel-combined-expense' => UploadedFile::fake()->create('travel-receipt.pdf', 100, 'application/pdf'),
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('record.claimsTotal', 18)
+            ->assertJsonPath('record.claims.0.amount', 0)
+            ->assertJsonPath('record.claims.0.meta', 'Travel expense only')
+            ->assertJsonPath('record.claims.1.expenseCategory', 'combined')
+            ->assertJsonPath('record.claims.1.attachment.name', 'travel-receipt.pdf');
+        $recordId = (int) $response->json('record.id');
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'entity_type' => 'other_claim_application',
+            'entity_id' => $recordId,
+            'type' => 'other_claim.submitted',
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 30,
+            'entity_type' => 'other_claim_application',
+            'entity_id' => $recordId,
+            'type' => 'other_claim.needs_check',
+        ]);
+    }
+
+    public function test_other_claim_draft_preserves_expense_only_travel_rows(): void
+    {
+        $claims = [
+            [
+                'id' => 'draft-travel-anchor',
+                'type' => 'Mileage',
+                'date' => '2026-05-14',
+                'description' => 'Client airport transfer',
+                'km' => 0,
+                'startLocation' => 'Office',
+                'endLocation' => 'Airport',
+                'travelGroupId' => 'draft-travel-group',
+            ],
+            [
+                'id' => 'draft-travel-expense',
+                'type' => 'Expense',
+                'date' => '2026-05-14',
+                'description' => 'Taxi: Client airport transfer',
+                'amount' => 18,
+                'travelGroupId' => 'draft-travel-group',
+                'expenseCategory' => 'taxi',
+            ],
+        ];
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->put('/hr/salary/other-claims/draft', [
+                'claim_month' => '2026-05',
+                'claims' => json_encode($claims),
+                'draft_payload' => json_encode(['formData' => ['claimMonth' => '2026-05']]),
+            ])
+            ->assertOk()
+            ->assertJsonCount(2, 'record.claims')
+            ->assertJsonPath('record.claimsTotal', 18)
+            ->assertJsonPath('record.claims.0.meta', 'Travel expense only');
+    }
+
+    public function test_other_claim_pdf_template_covers_workbook_identity_and_travel_fields(): void
+    {
+        $html = view('pdf.other-claims-report', [
+            'record' => [
+                'staffName' => 'Staff Example',
+                'staffCode' => 'STA',
+                'staffPosition' => 'Planning Executive',
+                'staffDepartment' => 'Operations / R&C',
+                'claimMonth' => 'May 2026',
+                'claimMonthValue' => '2026-05',
+                'claimsTotal' => 18,
+                'status' => 'Submitted',
+                'submittedAt' => '2026-05-20 09:00:00',
+            ],
+            'claims' => [
+                [
+                    'type' => 'Mileage',
+                    'date' => '2026-05-14',
+                    'description' => 'Client airport transfer',
+                    'amount' => 0,
+                    'km' => 0,
+                    'startLocation' => 'Office',
+                    'endLocation' => 'Airport',
+                    'travelGroupId' => 'travel-expense-only',
+                    'source' => 'manual-allocation',
+                    'sourceLabel' => 'Project Alpha',
+                ],
+                [
+                    'type' => 'Expense',
+                    'date' => '2026-05-14',
+                    'description' => 'Combined travel expense',
+                    'amount' => 18,
+                    'travelGroupId' => 'travel-expense-only',
+                    'expenseCategory' => 'combined',
+                    'source' => 'manual-allocation',
+                    'sourceLabel' => 'Project Alpha',
+                ],
+            ],
+            'generatedAt' => Carbon::parse('2026-05-20 09:00:00'),
+            'claimDate' => '2026-05-20 09:00:00',
+            'applicantSignature' => [],
+            'checkerSignature' => [],
+            'approverSignature' => [],
+            'mileageRate' => 0.6,
+            'vehicle' => '',
+            'medicalBalance' => [],
+            'logoDataUri' => null,
+        ])->render();
+
+        $this->assertStringContainsString('Designation:', $html);
+        $this->assertStringContainsString('Planning Executive', $html);
+        $this->assertStringContainsString('Department / Division:', $html);
+        $this->assertStringContainsString('Operations / R&amp;C', $html);
+        $this->assertStringContainsString('Travel &amp; Mileage', $html);
+        $this->assertStringContainsString('Parking / taxi / toll / others', $html);
+    }
+
+    public function test_other_claim_rejects_linked_travel_expense_without_category(): void
+    {
+        $missingCategory = $this->submitOtherClaim([
+            [
+                'id' => 'travel-mileage',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'Site inspection',
+                'km' => 12,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'travelGroupId' => 'travel-group-1',
+            ],
+            [
+                'id' => 'travel-expense',
+                'type' => 'Expense',
+                'date' => '2026-05-12',
+                'description' => 'Travel expense: Site inspection',
+                'amount' => 5.50,
+                'travelGroupId' => 'travel-group-1',
+            ],
+        ], [
+            'travel-expense' => UploadedFile::fake()->create('receipt.pdf', 100, 'application/pdf'),
+        ]);
+
+        $missingCategory->assertUnprocessable();
+        $this->assertSame(
+            'Linked travel expenses require an expense category.',
+            $missingCategory->json('errors')['claims.1.expenseCategory'][0] ?? null,
+        );
+    }
+
+    public function test_other_claim_rejects_duplicate_mileage_rows_in_a_travel_group(): void
+    {
+        $duplicateMileageGroup = $this->submitOtherClaim([
+            [
+                'id' => 'travel-mileage-1',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'First visit',
+                'km' => 12,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'travelGroupId' => 'duplicate-group',
+            ],
+            [
+                'id' => 'travel-mileage-2',
+                'type' => 'Mileage',
+                'date' => '2026-05-13',
+                'description' => 'Second visit',
+                'km' => 8,
+                'startLocation' => 'Office',
+                'endLocation' => 'Warehouse',
+                'travelGroupId' => 'duplicate-group',
+            ],
+        ]);
+
+        $duplicateMileageGroup->assertUnprocessable();
+        $this->assertSame(
+            'Each travel group must contain exactly one mileage row.',
+            $duplicateMileageGroup->json('errors')['claims.0.travelGroupId'][0] ?? null,
+        );
+    }
+
     public function test_approved_other_claim_edit_with_reason_resets_workflow_and_audits(): void
     {
         $response = $this->submitOtherClaim([
@@ -1152,6 +1428,18 @@ class SalaryApiFeatureTest extends TestCase
             ],
         ])->assertOk();
         $recordId = $response->json('record.id');
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'entity_type' => 'other_claim_application',
+            'entity_id' => $recordId,
+            'type' => 'other_claim.submitted',
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 30,
+            'entity_type' => 'other_claim_application',
+            'entity_id' => $recordId,
+            'type' => 'other_claim.needs_check',
+        ]);
 
         $this->actingSession(3, 30, ['Manager'])
             ->getJson('/hr/salary/other-claims/financial-records')
@@ -1184,6 +1472,16 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('record.status', 'Checked')
             ->assertJsonPath('record.checkedBy', 30)
             ->assertJsonPath('record.checkedStatus', 'Checked');
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'entity_id' => $recordId,
+            'type' => 'other_claim.checked',
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 40,
+            'entity_id' => $recordId,
+            'type' => 'other_claim.needs_approval',
+        ]);
 
         $this->actingSession(4, 40, ['System Admin'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -1195,6 +1493,20 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('record.status', 'Approved')
             ->assertJsonPath('record.approvedBy', 40)
             ->assertJsonPath('record.approvedStatus', 'Approved');
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'entity_id' => $recordId,
+            'type' => 'other_claim.approved',
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 50,
+            'module_key' => 'financial.payment-queue',
+            'entity_id' => $recordId,
+            'type' => 'other_claim.payment_ready',
+        ]);
+        $this->artisan('salary:send-workflow-digest --dry-run')
+            ->expectsOutputToContain('pending salary/claim workflow item')
+            ->assertSuccessful();
 
         $financialPdf = $this->actingSession(4, 40, ['System Admin'])
             ->get("/hr/salary/other-claims/financial-records/{$recordId}/claims-pdf")
@@ -1505,6 +1817,20 @@ class SalaryApiFeatureTest extends TestCase
             'idempotency_key' => 'pay-2026-05-staff-10',
         ]);
         $this->assertDatabaseCount('hr_salary_payment_run_items', 2);
+        $paymentRunId = (int) DB::table('hr_salary_payment_runs')->value('id');
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'module_key' => 'my.payment-queue',
+            'entity_type' => 'salary_payment_run',
+            'entity_id' => $paymentRunId,
+            'type' => 'salary_payment.paid',
+        ]);
+        $this->artisan('salary:reconcile-workflow-notifications')->assertSuccessful();
+        $this->assertSame(0, DB::table('in_app_notifications')
+            ->where('module_key', 'financial.payment-queue')
+            ->whereIn('entity_id', [$salaryId, $otherClaimId])
+            ->whereNull('resolved_at')
+            ->count());
 
         $this->actingSession(5, 50, ['Bank'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -1537,6 +1863,18 @@ class SalaryApiFeatureTest extends TestCase
             'staff_id' => 10,
             'payment_period' => '2026-05',
             'voided_at' => null,
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 10,
+            'module_key' => 'my.payment-queue',
+            'entity_type' => 'salary_payment_run',
+            'entity_id' => $paymentRunId,
+            'type' => 'salary_payment.payment_reversed',
+        ]);
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 30,
+            'module_key' => 'financial.payment-queue',
+            'type' => 'other_claim.payment_ready',
         ]);
 
         $this->actingSession(5, 50, ['Bank'])
@@ -1897,6 +2235,50 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('record.checkedBy', 30);
     }
 
+    public function test_salary_notification_reconciliation_restores_missing_other_claim_action_alerts_idempotently(): void
+    {
+        $this->updateSalaryProfile();
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'reconcile-travel',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'Reconciliation travel claim',
+                'km' => 8,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'tripMode' => 'one_way',
+                'travelGroupId' => 'reconcile-travel-group',
+            ],
+        ])->assertOk();
+        $recordId = (int) $response->json('record.id');
+
+        DB::table('in_app_notifications')
+            ->where('entity_type', 'other_claim_application')
+            ->where('entity_id', $recordId)
+            ->where('type', 'other_claim.needs_check')
+            ->delete();
+
+        $this->artisan('salary:reconcile-workflow-notifications --dry-run')
+            ->expectsOutputToContain('Mode=dry-run')
+            ->assertSuccessful();
+        $this->assertDatabaseMissing('in_app_notifications', [
+            'entity_type' => 'other_claim_application',
+            'entity_id' => $recordId,
+            'type' => 'other_claim.needs_check',
+        ]);
+
+        $this->artisan('salary:reconcile-workflow-notifications')->assertSuccessful();
+        $this->artisan('salary:reconcile-workflow-notifications')->assertSuccessful();
+
+        $this->assertSame(1, DB::table('in_app_notifications')
+            ->where('recipient_staff_id', 30)
+            ->where('entity_type', 'other_claim_application')
+            ->where('entity_id', $recordId)
+            ->where('type', 'other_claim.needs_check')
+            ->count());
+    }
+
     public function test_financial_salary_records_can_be_checked_and_approved(): void
     {
         $response = $this->submitSalary([])->assertOk();
@@ -2029,6 +2411,12 @@ class SalaryApiFeatureTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('record.status', 'Rejected');
+        $this->assertDatabaseHas('in_app_notifications', [
+            'recipient_staff_id' => 20,
+            'entity_type' => 'salary_application',
+            'entity_id' => $second->json('record.id'),
+            'type' => 'salary.rejected',
+        ]);
 
         $this->actingSession(3, 30, ['Manager'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
@@ -2162,6 +2550,7 @@ class SalaryApiFeatureTest extends TestCase
     {
         return $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->withHeader('Accept', 'application/json')
             ->post('/hr/salary/other-claims', [
                 ...$overrides,
                 'claim_month' => $overrides['claim_month'] ?? '2026-05',
@@ -2308,6 +2697,8 @@ class SalaryApiFeatureTest extends TestCase
             $table->string('name_code')->nullable();
             $table->string('status')->default('Active');
             $table->string('email')->nullable();
+            $table->string('position')->nullable();
+            $table->string('department')->nullable();
             $table->timestamp('deleted_at')->nullable();
         });
 

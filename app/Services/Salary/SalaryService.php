@@ -23,9 +23,13 @@ class SalaryService extends PdfRenderer
     private const FINANCIAL_ACTIONS = ['check', 'approve', 'reject'];
 
     private const STAFF_MUTABLE_STATUSES = ['Draft', 'Submitted', 'Prepared', 'Rejected'];
+
     private const REVIEWED_MUTABLE_STATUSES = ['Checked', 'Approved'];
+
     private const PAID_STATUSES = ['Paid'];
+
     private const CANCELLED_STATUS = 'Cancelled';
+
     private const SUBJECT_TYPE = 'salary_application';
 
     public function __construct(
@@ -581,7 +585,11 @@ class SalaryService extends PdfRenderer
                     ]);
             });
 
-            $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
+            try {
+                $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
+            } catch (\Throwable $e) {
+                report($e);
+            }
 
             return response()->json([
                 'status' => 'success',
@@ -973,16 +981,20 @@ class SalaryService extends PdfRenderer
 
         $mailSent = false;
         if ($savedRecord && isset($savedRecord['id'])) {
-            if ($amendmentNotification) {
-                $this->workflowNotifications->notifyRecordAmended(
-                    $request,
-                    $amendmentNotification['subjectType'],
-                    $amendmentNotification['applicationId'],
-                    $amendmentNotification['recipientIds'],
-                    $amendmentNotification['reason'],
-                );
+            try {
+                if ($amendmentNotification) {
+                    $this->workflowNotifications->notifyRecordAmended(
+                        $request,
+                        $amendmentNotification['subjectType'],
+                        $amendmentNotification['applicationId'],
+                        $amendmentNotification['recipientIds'],
+                        $amendmentNotification['reason'],
+                    );
+                }
+                $mailSent = $this->workflowNotifications->notifySubmittedSalary($request, (int) $savedRecord['id']);
+            } catch (\Throwable $e) {
+                report($e);
             }
-            $mailSent = $this->workflowNotifications->notifySubmittedSalary($request, (int) $savedRecord['id']);
         }
 
         return response()->json([
@@ -1343,6 +1355,7 @@ class SalaryService extends PdfRenderer
 
             if ($type !== 'Allowance') {
                 $errors["claims.{$index}.type"][] = 'Salary applications only accept payroll allowance or adjustment rows. Use Other Claim for expense, mileage, and medical claims.';
+
                 continue;
             }
 
@@ -1383,9 +1396,7 @@ class SalaryService extends PdfRenderer
         string $salaryMonth,
         array $claims,
         float $yearlyMedicalClaim,
-    ): void {
-        return;
-    }
+    ): void {}
 
     private function usedMedicalClaimsForYear(int $staffId, string $year, ?string $excludeSalaryMonth = null): float
     {
@@ -1843,6 +1854,15 @@ class SalaryService extends PdfRenderer
                     ->all(),
             ];
         }
+
+        $ids = [
+            ...$ids,
+            ...app(SalaryWorkflowRecipientResolver::class)->currentStepRecipientIds(
+                $subjectType,
+                (int) $record->id,
+                $excludeStaffIds,
+            ),
+        ];
 
         $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
 

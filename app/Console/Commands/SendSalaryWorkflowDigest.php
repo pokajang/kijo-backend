@@ -20,7 +20,9 @@ class SendSalaryWorkflowDigest extends Command
     protected $description = 'Send one pending Salary/Other Claim workflow digest per responsible recipient';
 
     private const SALARY_SUBJECT_TYPE = 'salary_application';
+
     private const OTHER_CLAIM_SUBJECT_TYPE = 'other_claim_application';
+
     private const FINANCIAL_ROUTES = [
         self::SALARY_SUBJECT_TYPE => '/financial/salary-records',
         self::OTHER_CLAIM_SUBJECT_TYPE => '/financial/other-claim-records',
@@ -33,18 +35,21 @@ class SendSalaryWorkflowDigest extends Command
 
         if (! $dryRun && ! $this->mailSenderIsConfigured()) {
             $this->error('System email sender is not configured. Check MAIL_MAILER and MAIL_FROM_ADDRESS.');
+
             return self::FAILURE;
         }
 
         $rows = $this->candidateRows($limit);
         if ($rows->isEmpty()) {
             $this->info('Salary/claim workflow digest: no pending workflow actions found.');
+
             return self::SUCCESS;
         }
 
         [$deliveries, $skipped] = $this->buildDeliveries($rows);
         if (empty($deliveries)) {
             $this->info("Salary/claim workflow digest: no deliverable recipients found. Skipped={$skipped}");
+
             return self::SUCCESS;
         }
 
@@ -55,7 +60,8 @@ class SendSalaryWorkflowDigest extends Command
                 $items += $count;
                 $this->line("[dry-run] {$delivery['email']} would receive {$count} pending salary/claim workflow item(s).");
             }
-            $this->info("Salary/claim workflow digest finished. Mode=dry-run, Deliveries=".count($deliveries).", Items={$items}, Skipped={$skipped}");
+            $this->info('Salary/claim workflow digest finished. Mode=dry-run, Deliveries='.count($deliveries).", Items={$items}, Skipped={$skipped}");
+
             return self::SUCCESS;
         }
 
@@ -73,6 +79,7 @@ class SendSalaryWorkflowDigest extends Command
         }
 
         $this->info("Salary/claim workflow digest finished. Mode=sent, Sent={$sent}, Failed={$failed}, Skipped={$skipped}");
+
         return $failed > 0 ? self::FAILURE : self::SUCCESS;
     }
 
@@ -89,6 +96,7 @@ class SendSalaryWorkflowDigest extends Command
         ] as $table) {
             if (! Schema::hasTable($table)) {
                 $this->warn("Salary/claim workflow digest skipped: {$table} table is missing.");
+
                 return collect();
             }
         }
@@ -170,7 +178,75 @@ class SendSalaryWorkflowDigest extends Command
             $query->limit($limit);
         }
 
-        return $query->get();
+        $workflowRows = $query->get()->each(fn (object $row) => $row->is_payment_row = 0);
+        if (! Schema::hasTable('in_app_notifications')) {
+            return $workflowRows;
+        }
+
+        $paymentRows = DB::table('in_app_notifications as notification')
+            ->leftJoin('hr_salary_applications as salary', function ($join): void {
+                $join->on('salary.id', '=', 'notification.entity_id')
+                    ->where('notification.entity_type', self::SALARY_SUBJECT_TYPE);
+            })
+            ->leftJoin('hr_other_claim_applications as other_claim', function ($join): void {
+                $join->on('other_claim.id', '=', 'notification.entity_id')
+                    ->where('notification.entity_type', self::OTHER_CLAIM_SUBJECT_TYPE);
+            })
+            ->leftJoin('staff_general as salary_staff', 'salary_staff.staff_id', '=', 'salary.staff_id')
+            ->leftJoin('staff_general as other_staff', 'other_staff.staff_id', '=', 'other_claim.staff_id')
+            ->where('notification.module_key', 'financial.payment-queue')
+            ->whereIn('notification.entity_type', [self::SALARY_SUBJECT_TYPE, self::OTHER_CLAIM_SUBJECT_TYPE])
+            ->where('notification.type', 'like', '%.payment_ready')
+            ->whereNull('notification.resolved_at')
+            ->where(function ($query): void {
+                $query
+                    ->where(function ($salaryQuery): void {
+                        $salaryQuery
+                            ->where('notification.entity_type', self::SALARY_SUBJECT_TYPE)
+                            ->where('salary.status', 'Approved');
+                    })
+                    ->orWhere(function ($otherClaimQuery): void {
+                        $otherClaimQuery
+                            ->where('notification.entity_type', self::OTHER_CLAIM_SUBJECT_TYPE)
+                            ->where('other_claim.status', 'Approved');
+                    });
+            })
+            ->select([
+                'notification.id as instance_id',
+                'notification.entity_type as subject_type',
+                'notification.entity_id as subject_id',
+                'notification.recipient_staff_id',
+                'notification.actor_staff_id',
+                'notification.created_at as submitted_at',
+                'salary.staff_id as salary_staff_id',
+                'salary.salary_month_label',
+                'salary.salary_month',
+                'salary.payable_salary',
+                'salary.claims_total as salary_claims_total',
+                'salary.checked_by as salary_checked_by',
+                'salary_staff.full_name as salary_staff_name',
+                'salary_staff.name_code as salary_staff_code',
+                'other_claim.staff_id as other_staff_id',
+                'other_claim.claim_month_label',
+                'other_claim.claim_month',
+                'other_claim.claims_total as other_claims_total',
+                'other_claim.checked_by as other_checked_by',
+                'other_staff.full_name as other_staff_name',
+                'other_staff.name_code as other_staff_code',
+            ])
+            ->get()
+            ->each(function (object $row): void {
+                $row->is_payment_row = 1;
+                $row->status = 'Approved';
+                $row->step_id = null;
+                $row->step_key = 'payment';
+                $row->fallback_roles = '[]';
+                $row->maker_staff_id = $this->applicantId($row);
+            });
+
+        return $workflowRows->concat($paymentRows)
+            ->when($limit !== null, fn (Collection $rows): Collection => $rows->take($limit))
+            ->values();
     }
 
     private function buildDeliveries(Collection $rows): array
@@ -183,12 +259,14 @@ class SendSalaryWorkflowDigest extends Command
             $recipientIds = $this->recipientIdsForRow($row);
             if (empty($recipientIds)) {
                 $skipped++;
+
                 continue;
             }
 
             $recipientMap = $this->recipientMap($recipientIds, $recipientCache);
             if (empty($recipientMap)) {
                 $skipped++;
+
                 continue;
             }
 
@@ -218,6 +296,10 @@ class SendSalaryWorkflowDigest extends Command
 
     private function recipientIdsForRow(object $row): array
     {
+        if ((int) ($row->is_payment_row ?? 0) === 1) {
+            return [(int) $row->recipient_staff_id];
+        }
+
         $recipientIds = DB::table('workflow_step_recipients')
             ->where('step_id', $row->step_id)
             ->where('active', 1)
@@ -275,23 +357,24 @@ class SendSalaryWorkflowDigest extends Command
         $subjectType = (string) $row->subject_type;
         $isOtherClaim = $subjectType === self::OTHER_CLAIM_SUBJECT_TYPE;
         $stepKey = (string) $row->step_key;
+        $isPayment = $stepKey === 'payment';
 
         return [
             'dedupe_key' => $subjectType.'-'.$row->subject_id.'-'.$stepKey,
             'section' => $this->sectionKey($subjectType, $stepKey),
             'module' => $isOtherClaim ? 'Other Claim' : 'Salary',
-            'action' => $stepKey === 'approve' ? 'Approve' : 'Check',
+            'action' => $isPayment ? 'Pay' : ($stepKey === 'approve' ? 'Approve' : 'Check'),
             'applicant' => $isOtherClaim
                 ? $this->staffLabel((string) ($row->other_staff_name ?? ''), (string) ($row->other_staff_code ?? ''), (int) ($row->other_staff_id ?? 0))
                 : $this->staffLabel((string) ($row->salary_staff_name ?? ''), (string) ($row->salary_staff_code ?? ''), (int) ($row->salary_staff_id ?? 0)),
             'period' => $isOtherClaim
-                ? $this->formatDateTime($row->submitted_at)
+                ? (string) ($row->claim_month_label ?: $row->claim_month ?: '-')
                 : (string) ($row->salary_month_label ?: $row->salary_month ?: '-'),
             'amount' => 'RM '.number_format((float) ($isOtherClaim ? $row->other_claims_total : $row->payable_salary), 2),
             'status' => $this->displayStatus((string) $row->status),
-            'status_action' => $this->displayStatus((string) $row->status).' / '.($stepKey === 'approve' ? 'Approve' : 'Check'),
+            'status_action' => $this->displayStatus((string) $row->status).' / '.($isPayment ? 'Pay' : ($stepKey === 'approve' ? 'Approve' : 'Check')),
             'submitted_at' => $this->formatDateTime($row->submitted_at),
-            'route' => self::FINANCIAL_ROUTES[$subjectType],
+            'route' => $isPayment ? '/financial/payment-queue' : self::FINANCIAL_ROUTES[$subjectType],
         ];
     }
 
@@ -326,6 +409,8 @@ class SendSalaryWorkflowDigest extends Command
             'salary-approve' => 'Salary pending approval',
             'other-check' => 'Other Claim pending check',
             'other-approve' => 'Other Claim pending approval',
+            'salary-payment' => 'Salary pending payment',
+            'other-payment' => 'Other Claim pending payment',
         ];
 
         $html = '<p style="margin:0 0 14px;">Hi '.e($this->displayName($delivery['name'], 'there')).',</p>';
@@ -360,7 +445,11 @@ class SendSalaryWorkflowDigest extends Command
             ->pluck('route')
             ->unique()
             ->values()
-            ->map(fn (string $route): string => '<a href="'.e(app(SystemEmailUrlBuilder::class)->frontendUrl($route)).'" style="display:inline-block;margin:0 8px 8px 0;padding:10px 14px;background:#4f46e5;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;">'.e($route === '/financial/other-claim-records' ? 'Open Other Claim Records' : 'Open Salary Records').'</a>')
+            ->map(fn (string $route): string => '<a href="'.e(app(SystemEmailUrlBuilder::class)->frontendUrl($route)).'" style="display:inline-block;margin:0 8px 8px 0;padding:10px 14px;background:#4f46e5;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;">'.e(match ($route) {
+                '/financial/other-claim-records' => 'Open Other Claim Records',
+                '/financial/payment-queue' => 'Open Payment Queue',
+                default => 'Open Salary Records',
+            }).'</a>')
             ->implode('');
 
         $html .= '<div style="margin:18px 0 8px;">'.$routeLabels.'</div>';
@@ -372,7 +461,8 @@ class SendSalaryWorkflowDigest extends Command
     private function sectionKey(string $subjectType, string $stepKey): string
     {
         $prefix = $subjectType === self::OTHER_CLAIM_SUBJECT_TYPE ? 'other' : 'salary';
-        return $prefix.'-'.($stepKey === 'approve' ? 'approve' : 'check');
+
+        return $prefix.'-'.($stepKey === 'payment' ? 'payment' : ($stepKey === 'approve' ? 'approve' : 'check'));
     }
 
     private function applicantId(object $row): int
@@ -433,6 +523,7 @@ class SendSalaryWorkflowDigest extends Command
         }
 
         $limit = (int) $raw;
+
         return $limit > 0 ? $limit : null;
     }
 
@@ -472,6 +563,7 @@ class SendSalaryWorkflowDigest extends Command
     private function displayName(string $name, string $fallback): string
     {
         $name = trim($name);
+
         return $name !== '' ? $name : $fallback;
     }
 }

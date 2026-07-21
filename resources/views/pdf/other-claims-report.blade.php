@@ -153,7 +153,7 @@
             font-size: 9pt;
             padding: 2.4mm 1.2mm 2mm 1.2mm;
             vertical-align: bottom;
-            width: 50%;
+            width: 33.333%;
         }
         .signature-image {
             display: block;
@@ -205,8 +205,12 @@
         $claimDate = $dateTimeLabel($claimDate ?? $record['submittedAt'] ?? $generatedAt ?? now());
         $profileMileageRate = (float) ($mileageRate ?? 0);
         $applicantSignature = $applicantSignature ?? [];
+        $checkerSignature = $checkerSignature ?? [];
         $approverSignature = $approverSignature ?? [];
         $applicantSignatureDate = $dateTimeLabel($applicantSignature['signedAt'] ?? $claimDate);
+        $checkerSignatureDate = !empty($checkerSignature['signedAt'])
+            ? $dateTimeLabel($checkerSignature['signedAt'])
+            : '';
         $approverSignatureDate = !empty($approverSignature['signedAt'])
             ? $dateTimeLabel($approverSignature['signedAt'])
             : '';
@@ -214,18 +218,38 @@
             $approverSignature['name'] ?? '',
             !empty($approverSignature['code'] ?? '') ? '('.$approverSignature['code'].')' : '',
         ])));
+        $checkerSignatureName = trim(implode(' ', array_filter([
+            $checkerSignature['name'] ?? '',
+            !empty($checkerSignature['code'] ?? '') ? '('.$checkerSignature['code'].')' : '',
+        ])));
         $staffLabel = trim(implode(' ', array_filter([
             $record['staffName'] ?? '',
             !empty($record['staffCode']) ? '('.$record['staffCode'].')' : '',
         ]))) ?: '-';
+        $staffPosition = trim((string) ($record['staffPosition'] ?? ''));
+        $staffDepartment = trim((string) ($record['staffDepartment'] ?? ''));
         $claimRows = collect($claims ?? []);
         $mileageClaims = $claimRows->where('type', 'Mileage')->values();
         $allowanceClaims = $claimRows->where('type', 'Allowance')->values();
         $expenseClaims = $claimRows->where('type', 'Expense')->values();
+        $mileageTravelGroupIds = $mileageClaims
+            ->pluck('travelGroupId')
+            ->map(fn ($value) => trim((string) $value))
+            ->filter()
+            ->unique()
+            ->values();
+        $travelExpenseClaims = $expenseClaims
+            ->filter(fn ($claim) => $mileageTravelGroupIds->contains(trim((string) ($claim['travelGroupId'] ?? ''))))
+            ->groupBy(fn ($claim) => (string) $claim['travelGroupId']);
+        $standaloneExpenseClaims = $expenseClaims
+            ->reject(fn ($claim) => $mileageTravelGroupIds->contains(trim((string) ($claim['travelGroupId'] ?? ''))))
+            ->values();
         $medicalClaims = $claimRows->where('type', 'Medical')->values();
         $mileageTotal = $mileageClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $allowanceTotal = $allowanceClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $expenseTotal = $expenseClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
+        $travelExpenseTotal = $travelExpenseClaims->flatten(1)->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
+        $standaloneExpenseTotal = $standaloneExpenseClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $medicalTotal = $medicalClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $claimTotal = (float) ($record['claimsTotal'] ?? ($mileageTotal + $allowanceTotal + $expenseTotal + $medicalTotal));
         $projectLabel = static function (array $claim): string {
@@ -236,6 +260,10 @@
             $value = trim((string) ($claim['meta'] ?? ''));
             return $value !== '' ? $value : '-';
         };
+        $chargeAllocations = $claimRows
+            ->filter(fn ($claim) => ($claim['source'] ?? '') === 'manual-allocation' && trim((string) ($claim['sourceLabel'] ?? '')) !== '')
+            ->groupBy(fn ($claim) => trim((string) $claim['sourceLabel']))
+            ->map(fn ($rows) => $rows->sum(fn ($claim) => (float) ($claim['amount'] ?? 0)));
     @endphp
 
     @include('pdf.partials.company-header', [
@@ -256,52 +284,98 @@
                     <span class="meta-value">{{ $claimDate }}</span>
                 </td>
             </tr>
-            <tr>
-                <td>
-                    <span class="meta-label">Status:</span>
-                    <span class="meta-value">{{ $record['status'] ?? '-' }}</span>
-                </td>
-                <td></td>
-            </tr>
-        </table>
+             <tr>
+                 <td>
+                     <span class="meta-label">Status:</span>
+                     <span class="meta-value">{{ $record['status'] ?? '-' }}</span>
+                 </td>
+                 <td>
+                     <span class="meta-label">Claim Month:</span>
+                     <span class="meta-value">{{ $record['claimMonth'] ?? '-' }}</span>
+                     @if(!empty($vehicle ?? ''))
+                         <span class="meta-label" style="padding-left: 4mm;">Vehicle:</span>
+                         <span class="meta-value">{{ $vehicle }}</span>
+                     @endif
+                  </td>
+             </tr>
+             <tr>
+                 <td>
+                     <span class="meta-label">Designation:</span>
+                     <span class="meta-value">{{ $staffPosition ?: '-' }}</span>
+                 </td>
+                 <td>
+                     <span class="meta-label">Department / Division:</span>
+                     <span class="meta-value">{{ $staffDepartment ?: '-' }}</span>
+                 </td>
+             </tr>
+         </table>
 
         <table class="section-table claim-master-table">
             <tbody>
-                @if($mileageTotal > 0)
-                    <tr class="claim-section-row"><td colspan="9">Vehicle Mileage</td></tr>
+                 @if(($mileageTotal + $travelExpenseTotal) > 0)
+                     <tr class="claim-section-row"><td colspan="9">Travel &amp; Mileage</td></tr>
                     <tr class="claim-subheader-row">
                         <th style="width: 10%;">Date</th>
                         <th style="width: 15%;">From</th>
                         <th style="width: 15%;">To</th>
-                        <th colspan="3" style="width: 35%;">Purpose</th>
-                        <th style="width: 8%;">KM</th>
-                        <th colspan="2" style="width: 17%;" class="text-right amount-header">Amount (RM)</th>
+                        <th colspan="2" style="width: 25%;">Purpose / Charge To</th>
+                        <th style="width: 10%;">KM</th>
+                        <th style="width: 10%;" class="text-right amount-header">Travel Expense</th>
+                        <th style="width: 10%;" class="text-right amount-header">Mileage</th>
+                        <th style="width: 10%;" class="text-right amount-header">Total (RM)</th>
                     </tr>
                     @foreach($mileageClaims as $claim)
                         @php
                             $oneWayKm = (float) ($claim['km'] ?? 0);
-                            $returnKm = $oneWayKm * 2;
+                            $tripMode = ($claim['tripMode'] ?? null) === 'one_way' ? 'one_way' : 'return';
+                            $claimableKm = $oneWayKm * ($tripMode === 'one_way' ? 1 : 2);
                             $claimAmount = (float) ($claim['amount'] ?? 0);
+                            $linkedExpenses = $travelExpenseClaims->get((string) ($claim['travelGroupId'] ?? ''), collect());
+                            $linkedExpenseAmount = $linkedExpenses->sum(fn ($expense) => (float) ($expense['amount'] ?? 0));
+                             $linkedExpenseLabel = $linkedExpenses->map(function ($expense) {
+                                 return match ($expense['expenseCategory'] ?? '') {
+                                     'combined' => 'Parking / taxi / toll / others',
+                                     'parking' => 'Parking',
+                                    'toll' => 'Toll',
+                                    'taxi' => 'Taxi',
+                                    default => 'Other',
+                                };
+                            })->unique()->implode(', ');
                             $rowMileageRate = $profileMileageRate > 0
                                 ? $profileMileageRate
-                                : ($returnKm > 0 ? $claimAmount / $returnKm : 0);
+                                : ($claimableKm > 0 ? $claimAmount / $claimableKm : 0);
                         @endphp
                         <tr>
                             <td>{{ $dateLabel($claim['date'] ?? '') }}</td>
                             <td>{{ $claim['startLocation'] ?? '-' }}</td>
                             <td>{{ $claim['endLocation'] ?? '-' }}</td>
-                            <td colspan="3">{{ $claim['description'] ?? '-' }}</td>
-                            <td>
-                                {{ $trimDecimal($oneWayKm) }} KM one-way
-                                <span class="mileage-km-note">{{ $trimDecimal($returnKm) }} KM return</span>
-                                <span class="mileage-km-note">{{ $trimDecimal($returnKm) }} KM x RM {{ $trimDecimal($rowMileageRate) }}</span>
+                            <td colspan="2">
+                                {{ $claim['description'] ?? '-' }}
+                                @if(!empty($claim['sourceLabel']))
+                                    <span class="mileage-km-note">Charge to: {{ $claim['sourceLabel'] }}</span>
+                                @endif
+                             </td>
+                             <td>
+                                 @if($claimableKm > 0)
+                                     {{ $trimDecimal($claimableKm) }} KM {{ $tripMode === 'one_way' ? 'one-way' : 'return' }}
+                                     <span class="mileage-km-note">{{ $trimDecimal($claimableKm) }} KM x RM {{ $trimDecimal($rowMileageRate) }}</span>
+                                 @else
+                                     -
+                                 @endif
+                             </td>
+                            <td class="text-right">
+                                {{ $plainMoney($linkedExpenseAmount) }}
+                                @if($linkedExpenseLabel !== '')<span class="mileage-km-note">{{ $linkedExpenseLabel }}</span>@endif
                             </td>
-                            <td colspan="2" class="text-right">{{ $plainMoney($claim['amount'] ?? 0) }}</td>
+                            <td class="text-right">{{ $plainMoney($claimAmount) }}</td>
+                            <td class="text-right">{{ $plainMoney($claimAmount + $linkedExpenseAmount) }}</td>
                         </tr>
                     @endforeach
                     <tr class="total-row">
-                        <td colspan="7" class="text-right">MILEAGE TOTAL (RM)</td>
-                        <td colspan="2" class="text-right">{{ $plainMoney($mileageTotal) }}</td>
+                        <td colspan="6" class="text-right">TRAVEL &amp; MILEAGE TOTAL (RM)</td>
+                        <td class="text-right">{{ $plainMoney($travelExpenseTotal) }}</td>
+                        <td class="text-right">{{ $plainMoney($mileageTotal) }}</td>
+                        <td class="text-right">{{ $plainMoney($mileageTotal + $travelExpenseTotal) }}</td>
                     </tr>
                 @endif
 
@@ -327,7 +401,7 @@
                     </tr>
                 @endif
 
-                @if($expenseTotal > 0)
+                @if($standaloneExpenseTotal > 0)
                     <tr class="claim-section-row"><td colspan="9">Expenses Claim</td></tr>
                     <tr class="claim-subheader-row">
                         <th>Date</th>
@@ -335,7 +409,7 @@
                         <th colspan="4">Description</th>
                         <th colspan="2" class="text-right amount-header">Amount (RM)</th>
                     </tr>
-                    @foreach($expenseClaims as $claim)
+                    @foreach($standaloneExpenseClaims as $claim)
                         <tr>
                             <td>{{ $dateLabel($claim['date'] ?? '') }}</td>
                             <td colspan="2">{{ $projectLabel($claim) }}</td>
@@ -345,7 +419,7 @@
                     @endforeach
                     <tr class="total-row">
                         <td colspan="7" class="text-right">EXPENSE TOTAL (RM)</td>
-                        <td colspan="2" class="text-right">{{ $plainMoney($expenseTotal) }}</td>
+                        <td colspan="2" class="text-right">{{ $plainMoney($standaloneExpenseTotal) }}</td>
                     </tr>
                 @endif
 
@@ -375,6 +449,12 @@
                     <td colspan="7" class="pay-summary-heading">Claim Summary</td>
                     <td colspan="2" class="text-right pay-summary-heading">Amount (RM)</td>
                 </tr>
+                @foreach($chargeAllocations as $allocationLabel => $allocationAmount)
+                    <tr class="claim-summary-row">
+                        <td colspan="7" class="pay-summary-label">Charge to: {{ $allocationLabel }}</td>
+                        <td colspan="2" class="text-right pay-summary-value">{{ $plainMoney($allocationAmount) }}</td>
+                    </tr>
+                @endforeach
                 <tr class="claim-summary-row">
                     <td colspan="7" class="pay-summary-label">Claims total</td>
                     <td colspan="2" class="text-right pay-summary-value">{{ $plainMoney($claimTotal) }}</td>
@@ -389,12 +469,20 @@
         <table class="signature-table">
             <tr>
                 <td>
-                    <div>Applicant Signature: <span class="signature-line"></span></div>
+                    <div>Applicant: {{ $staffLabel }} <span class="signature-line"></span></div>
                     @if(!empty($applicantSignature['dataUri']))
                         <img src="{{ $applicantSignature['dataUri'] }}" alt="Applicant signature" class="signature-image">
                         <div class="digital-sign-note">Digitally signed via KIJO</div>
                     @endif
                     <div>Date: {{ $applicantSignatureDate }}</div>
+                </td>
+                <td>
+                    <div>Checked By: {{ $checkerSignatureName ?: '' }} <span class="signature-line"></span></div>
+                    @if(!empty($checkerSignature['dataUri']))
+                        <img src="{{ $checkerSignature['dataUri'] }}" alt="Checker signature" class="signature-image">
+                        <div class="digital-sign-note">Digitally signed via KIJO</div>
+                    @endif
+                    <div>Date: {{ $checkerSignatureDate }}</div>
                 </td>
                 <td>
                     <div>Approved By: {{ $approverSignatureName ?: '' }} <span class="signature-line"></span></div>

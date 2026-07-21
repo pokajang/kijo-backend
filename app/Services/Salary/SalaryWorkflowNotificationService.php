@@ -13,7 +13,10 @@ use Illuminate\Support\Facades\Log;
 class SalaryWorkflowNotificationService
 {
     private const SALARY_SUBJECT_TYPE = 'salary_application';
+
     private const OTHER_CLAIM_SUBJECT_TYPE = 'other_claim_application';
+
+    public function __construct(private SalaryWorkflowRecipientResolver $recipientResolver) {}
 
     public function notifySubmittedSalary(Request $request, int $applicationId): bool
     {
@@ -33,6 +36,70 @@ class SalaryWorkflowNotificationService
     public function notifyOtherClaimSubmitted(Request $request, int $applicationId): bool
     {
         return $this->notifySubmittedOtherClaim($request, $applicationId);
+    }
+
+    public function reconcilePending(string $subjectType, int $applicationId): int
+    {
+        $context = $this->context($subjectType, $applicationId);
+        if (! $context || ! $context['instance']) {
+            return 0;
+        }
+
+        $instance = $context['instance'];
+        $status = (string) $instance->status;
+        $isApproval = $status === 'Checked';
+        if (! $isApproval && ! in_array($status, ['Submitted', 'Prepared'], true)) {
+            return 0;
+        }
+
+        $record = $context['record'];
+        $applicantId = (int) ($record->staff_id ?? 0);
+        $exclude = [$applicantId];
+        if ($isApproval) {
+            $exclude[] = (int) ($record->checked_by ?? 0);
+        }
+        $stepKey = $isApproval ? 'approve' : 'check';
+        $event = $isApproval ? SalaryNotificationType::NEEDS_APPROVAL : SalaryNotificationType::NEEDS_CHECK;
+        $recipientIds = $this->recipientResolver->stepRecipientIds($instance, $stepKey, $exclude);
+        $applicantName = $this->staffLabel(
+            (string) ($record->staff_name ?? ''),
+            (string) ($record->staff_code ?? ''),
+            $applicantId,
+        );
+
+        $this->notifications()->createForStaffOnce($recipientIds, [
+            'actor_staff_id' => null,
+            'module_key' => $context['financialModule'],
+            'entity_type' => $context['entityType'],
+            'entity_id' => $applicationId,
+            'type' => $context['typePrefix'].'.'.$event,
+            'title' => $context['title'].($isApproval ? ' needs approval' : ' needs check'),
+            'message' => $isApproval
+                ? "{$applicantName}'s {$context['lowerTitle']} has been checked."
+                : "{$applicantName} submitted {$context['lowerTitle']} for {$context['period']}.",
+            'route' => $context['financialRoute'],
+            'severity' => 'warning',
+        ], $this->dedupeKey($context, $event));
+
+        return count($recipientIds);
+    }
+
+    public function resolvePending(string $subjectType, int $applicationId): int
+    {
+        $context = $this->context($subjectType, $applicationId);
+        if (! $context) {
+            return 0;
+        }
+
+        return count($this->notifications()->resolveOutstanding(
+            $context['financialModule'],
+            $context['entityType'],
+            $applicationId,
+            [
+                $context['typePrefix'].'.'.SalaryNotificationType::NEEDS_CHECK,
+                $context['typePrefix'].'.'.SalaryNotificationType::NEEDS_APPROVAL,
+            ],
+        ));
     }
 
     public function notifyWorkflowAction(Request $request, string $subjectType, int $applicationId, string $action): bool
@@ -57,15 +124,15 @@ class SalaryWorkflowNotificationService
         );
 
         if ($action === 'check') {
-            $this->notifications()->resolveActive(
+            $this->notifications()->resolveOutstanding(
                 $context['financialModule'],
                 $context['entityType'],
                 $applicationId,
                 [$context['typePrefix'].'.needs_check'],
             );
 
-            $recipientIds = $this->stepRecipientIds($context['instance'], 'approve', [$applicantId, $actorId]);
-            $this->notifications()->createForStaff($recipientIds, [
+            $recipientIds = $this->recipientResolver->stepRecipientIds($context['instance'], 'approve', [$applicantId, $actorId]);
+            $this->notifications()->createForStaffOnce($recipientIds, [
                 'actor_staff_id' => $actorId,
                 'module_key' => $context['financialModule'],
                 'entity_type' => $context['entityType'],
@@ -75,61 +142,76 @@ class SalaryWorkflowNotificationService
                 'message' => "{$applicantName}'s {$context['lowerTitle']} has been checked.",
                 'route' => $context['financialRoute'],
                 'severity' => 'warning',
-            ]);
+            ], $this->dedupeKey($context, SalaryNotificationType::NEEDS_APPROVAL));
 
-            $this->sendApplicantMail($record, "Your {$context['title']} Has Been Checked", $this->actionBody($context, $record, 'checked', $actorName));
+            $this->createApplicantNotification(
+                $context,
+                $applicantId,
+                $actorId,
+                SalaryNotificationType::CHECKED,
+                $context['title'].' checked',
+                "Your {$context['lowerTitle']} has been checked and is pending approval.",
+                'info',
+            );
+
+            $this->queueApplicantMail($record, "Your {$context['title']} Has Been Checked", $this->actionBody($context, $record, 'checked', $actorName));
 
             return true;
         }
 
         if ($action === 'approve') {
-            $this->notifications()->resolveActive(
+            $this->notifications()->resolveOutstanding(
                 $context['financialModule'],
                 $context['entityType'],
                 $applicationId,
                 [$context['typePrefix'].'.needs_approval'],
             );
 
-            $this->notifications()->createForStaff([$applicantId], [
-                'actor_staff_id' => $actorId,
-                'module_key' => $context['applicantModule'],
-                'entity_type' => $context['entityType'],
-                'entity_id' => $applicationId,
-                'type' => $context['typePrefix'].'.approved',
-                'title' => $context['title'].' approved',
-                'message' => "Your {$context['lowerTitle']} has been approved.",
-                'route' => $context['applicantRoute'],
-                'severity' => 'success',
-            ]);
+            $this->createApplicantNotification(
+                $context,
+                $applicantId,
+                $actorId,
+                SalaryNotificationType::APPROVED,
+                $context['title'].' approved',
+                "Your {$context['lowerTitle']} has been approved.",
+                'success',
+            );
 
-            return $this->sendApplicantMail(
+            $mailQueued = $this->queueApplicantMail(
                 $record,
                 "Your {$context['title']} Has Been Approved",
                 $this->actionBody($context, $record, 'approved', $actorName),
             );
+            app(SalaryPaymentNotificationService::class)->notifyReady(
+                $subjectType,
+                $applicationId,
+                $actorId,
+                $this->dedupeVersion($context),
+            );
+
+            return $mailQueued;
         }
 
         if ($action === 'reject') {
-            $this->notifications()->resolveActive(
+            $this->notifications()->resolveOutstanding(
                 $context['financialModule'],
                 $context['entityType'],
                 $applicationId,
                 [$context['typePrefix'].'.needs_check', $context['typePrefix'].'.needs_approval'],
             );
 
-            $this->notifications()->createForStaff([$applicantId], [
-                'actor_staff_id' => $actorId,
-                'module_key' => $context['applicantModule'],
-                'entity_type' => $context['entityType'],
-                'entity_id' => $applicationId,
-                'type' => $context['typePrefix'].'.rejected',
-                'title' => $context['title'].' rejected',
-                'message' => "Your {$context['lowerTitle']} has been rejected.",
-                'route' => $context['applicantRoute'],
-                'severity' => 'danger',
-            ]);
+            app(SalaryPaymentNotificationService::class)->resolveReady($subjectType, $applicationId);
+            $this->createApplicantNotification(
+                $context,
+                $applicantId,
+                $actorId,
+                SalaryNotificationType::REJECTED,
+                $context['title'].' rejected',
+                "Your {$context['lowerTitle']} has been rejected.",
+                'danger',
+            );
 
-            return $this->sendApplicantMail(
+            return $this->queueApplicantMail(
                 $record,
                 "Your {$context['title']} Has Been Rejected",
                 $this->actionBody($context, $record, 'rejected', $actorName),
@@ -166,15 +248,16 @@ class SalaryWorkflowNotificationService
         array $recipientIds,
         string $reason,
     ): bool {
+        app(SalaryPaymentNotificationService::class)->resolveReady($subjectType, $applicationId);
         $context = $this->context($subjectType, $applicationId);
         if ($context) {
-            $this->notifications()->resolveActive(
+            $this->notifications()->resolveOutstanding(
                 $context['financialModule'],
                 $context['entityType'],
                 $applicationId,
                 null,
             );
-            $this->notifications()->resolveActive(
+            $this->notifications()->resolveOutstanding(
                 $context['applicantModule'],
                 $context['entityType'],
                 $applicationId,
@@ -200,15 +283,15 @@ class SalaryWorkflowNotificationService
             (string) ($record->staff_code ?? ''),
             $applicantId,
         );
-        $recipientIds = $this->stepRecipientIds($context['instance'], 'check', [$applicantId]);
+        $recipientIds = $this->recipientResolver->stepRecipientIds($context['instance'], 'check', [$applicantId]);
 
-        $this->notifications()->resolveActive(
+        $this->notifications()->resolveOutstanding(
             $context['financialModule'],
             $context['entityType'],
             $applicationId,
             null,
         );
-        $this->notifications()->createForStaff($recipientIds, [
+        $this->notifications()->createForStaffOnce($recipientIds, [
             'actor_staff_id' => $actorId,
             'module_key' => $context['financialModule'],
             'entity_type' => $context['entityType'],
@@ -218,7 +301,28 @@ class SalaryWorkflowNotificationService
             'message' => "{$applicantName} submitted {$context['lowerTitle']} for {$context['period']}.",
             'route' => $context['financialRoute'],
             'severity' => 'warning',
-        ]);
+        ], $this->dedupeKey($context, SalaryNotificationType::NEEDS_CHECK));
+
+        $this->createApplicantNotification(
+            $context,
+            $applicantId,
+            $actorId,
+            SalaryNotificationType::SUBMITTED,
+            $context['title'].' submitted',
+            "Your {$context['lowerTitle']} was submitted for review.",
+            'info',
+        );
+        $this->queueApplicantMail(
+            $record,
+            "Your {$context['title']} Has Been Submitted",
+            $this->bodyShell(
+                "Your {$context['lowerTitle']} has been submitted for review.",
+                $context,
+                $record,
+                ['Status' => 'Submitted'],
+                $context['applicantRoute'],
+            ),
+        );
 
         return ! empty($recipientIds);
     }
@@ -244,6 +348,10 @@ class SalaryWorkflowNotificationService
             (string) ($record->staff_code ?? ''),
             $applicantId,
         );
+        if ($changeLabel === SalaryNotificationType::AMENDED) {
+            app(SalaryPaymentNotificationService::class)->resolveReady($subjectType, $applicationId);
+        }
+
         $recipients = array_values(array_diff(
             array_unique(array_filter(array_map('intval', $recipientIds))),
             [$actorId, $applicantId],
@@ -254,7 +362,7 @@ class SalaryWorkflowNotificationService
         }
 
         $title = $context['title'].' '.$changeLabel;
-        $this->notifications()->createForStaff($recipients, [
+        $this->notifications()->createForStaffOnce($recipients, [
             'actor_staff_id' => $actorId,
             'module_key' => $context['financialModule'],
             'entity_type' => $context['entityType'],
@@ -265,7 +373,7 @@ class SalaryWorkflowNotificationService
             'route' => $context['financialRoute'],
             'severity' => $changeLabel === 'cancelled' ? 'danger' : 'warning',
             'metadata' => ['reason' => $reason],
-        ]);
+        ], $this->dedupeKey($context, $changeLabel));
 
         return true;
     }
@@ -340,14 +448,21 @@ class SalaryWorkflowNotificationService
         string $applicantRoute,
         array $amounts,
     ): array {
+        $instance = DB::table('workflow_instances')
+            ->where('subject_type', $subjectType)
+            ->where('subject_id', $applicationId)
+            ->orderByDesc('id')
+            ->first();
+        $actionId = $instance
+            ? (int) DB::table('workflow_actions')->where('instance_id', $instance->id)->max('id')
+            : 0;
+
         return [
             'subjectType' => $subjectType,
             'entityType' => $subjectType,
             'record' => $record,
-            'instance' => DB::table('workflow_instances')
-                ->where('subject_type', $subjectType)
-                ->where('subject_id', $applicationId)
-                ->first(),
+            'instance' => $instance,
+            'notificationVersion' => $actionId > 0 ? (string) $actionId : (string) ($record->updated_at ?? '0'),
             'financialModule' => $financialModule,
             'applicantModule' => $applicantModule,
             'typePrefix' => $typePrefix,
@@ -360,42 +475,15 @@ class SalaryWorkflowNotificationService
         ];
     }
 
-    private function stepRecipientIds(?object $instance, string $stepKey, array $excludeStaffIds = []): array
-    {
-        if (! $instance) {
-            return [];
-        }
-
-        $step = DB::table('workflow_template_steps')
-            ->where('template_id', $instance->template_id)
-            ->where('step_key', $stepKey)
-            ->where('active', 1)
-            ->orderBy('sort_order')
-            ->first();
-        if (! $step) {
-            return [];
-        }
-
-        $recipientIds = DB::table('workflow_step_recipients')
-            ->where('step_id', $step->id)
-            ->where('active', 1)
-            ->pluck('staff_id')
-            ->map(fn ($id): int => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
-
-        if (empty($recipientIds)) {
-            $recipientIds = $this->notifications()->staffIdsForRoles($this->decodeJsonArray($step->fallback_roles));
-        }
-
-        $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
-
-        return array_values(array_diff(array_unique(array_filter($recipientIds)), $exclude));
-    }
-
     private function actionBody(array $context, object $record, string $actionLabel, string $actorName): string
     {
+        $remarks = match ($actionLabel) {
+            'checked' => trim((string) ($record->checked_remarks ?? '')),
+            'approved' => trim((string) ($record->approved_remarks ?? '')),
+            'rejected' => trim((string) (($record->approved_remarks ?? '') ?: ($record->checked_remarks ?? ''))),
+            default => '',
+        };
+
         return $this->bodyShell(
             "Your {$context['lowerTitle']} has been {$actionLabel}.",
             $context,
@@ -403,6 +491,7 @@ class SalaryWorkflowNotificationService
             [
                 'Status' => ucfirst($actionLabel),
                 'Action by' => $actorName,
+                ...($remarks !== '' ? ['Remarks' => $remarks] : []),
             ],
             $context['applicantRoute'],
         );
@@ -440,9 +529,9 @@ class SalaryWorkflowNotificationService
         ]);
     }
 
-    private function sendApplicantMail(object $record, string $subject, string $body): bool
+    private function queueApplicantMail(object $record, string $subject, string $body): bool
     {
-        return $this->sendHtmlMailNow(
+        return $this->queueHtmlMail(
             trim((string) ($record->staff_email ?? '')),
             $this->staffLabel((string) ($record->staff_name ?? ''), (string) ($record->staff_code ?? ''), (int) ($record->staff_id ?? 0)),
             $subject,
@@ -450,7 +539,7 @@ class SalaryWorkflowNotificationService
         );
     }
 
-    private function sendHtmlMailNow(string $to, string $toName, string $subject, string $body, array $cc = []): bool
+    private function queueHtmlMail(string $to, string $toName, string $subject, string $body, array $cc = []): bool
     {
         if (! $this->isValidEmail($to)) {
             return false;
@@ -462,7 +551,7 @@ class SalaryWorkflowNotificationService
         ));
 
         try {
-            SendHtmlMailJob::dispatchSync(
+            SendHtmlMailJob::dispatch(
                 $to,
                 $toName,
                 $subject,
@@ -471,9 +560,9 @@ class SalaryWorkflowNotificationService
                 null,
                 null,
                 $this->emailBody()->presentation($this->headerLabelFromSubject($subject), $subject, 'Workflow update', $subject),
-            );
+            )->afterCommit();
 
-            Log::info('Salary workflow notification email sent.', [
+            Log::info('Salary workflow notification email queued.', [
                 'subject' => $subject,
                 'recipient_count' => 1 + count($cc),
                 'success' => true,
@@ -482,7 +571,7 @@ class SalaryWorkflowNotificationService
             return true;
         } catch (\Throwable $e) {
             report($e);
-            Log::warning('Salary workflow notification email failed.', [
+            Log::warning('Salary workflow notification email could not be queued.', [
                 'subject' => $subject,
                 'recipient_count' => 1 + count($cc),
                 'success' => false,
@@ -515,20 +604,6 @@ class SalaryWorkflowNotificationService
         return $fallbackId ? "Staff #{$fallbackId}" : 'Staff';
     }
 
-    private function decodeJsonArray(mixed $value): array
-    {
-        if (is_array($value)) {
-            return $value;
-        }
-        if (! is_string($value) || trim($value) === '') {
-            return [];
-        }
-
-        $decoded = json_decode($value, true);
-
-        return is_array($decoded) ? $decoded : [];
-    }
-
     private function isValidEmail(?string $email): bool
     {
         $email = trim((string) $email);
@@ -539,6 +614,47 @@ class SalaryWorkflowNotificationService
     private function notifications(): AppNotificationService
     {
         return app(AppNotificationService::class);
+    }
+
+    private function createApplicantNotification(
+        array $context,
+        int $applicantId,
+        int $actorId,
+        string $event,
+        string $title,
+        string $message,
+        string $severity,
+    ): void {
+        if ($applicantId <= 0) {
+            return;
+        }
+
+        $this->notifications()->createForStaffOnce([$applicantId], [
+            'actor_staff_id' => $actorId > 0 ? $actorId : null,
+            'module_key' => $context['applicantModule'],
+            'entity_type' => $context['entityType'],
+            'entity_id' => (int) $context['record']->id,
+            'type' => $context['typePrefix'].'.'.$event,
+            'title' => $title,
+            'message' => $message,
+            'route' => $context['applicantRoute'],
+            'severity' => $severity,
+        ], $this->dedupeKey($context, $event));
+    }
+
+    private function dedupeKey(array $context, string $event): string
+    {
+        return implode(':', [
+            $context['typePrefix'],
+            (int) $context['record']->id,
+            $event,
+            $this->dedupeVersion($context),
+        ]);
+    }
+
+    private function dedupeVersion(array $context): string
+    {
+        return preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($context['notificationVersion'] ?? '0')) ?: '0';
     }
 
     private function emailBody(): SystemEmailBodyBuilder

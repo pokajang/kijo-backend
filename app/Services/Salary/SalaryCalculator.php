@@ -2,8 +2,12 @@
 
 namespace App\Services\Salary;
 
+use App\Services\Salary\OtherClaims\TravelClaimCalculator;
+
 class SalaryCalculator
 {
+    public function __construct(private TravelClaimCalculator $travelClaimCalculator) {}
+
     private const SOCSO_TABLE = [
         ['lower' => 0, 'upper' => 30, 'employer' => 0.4, 'employee' => 0.1],
         ['lower' => 30.01, 'upper' => 50, 'employer' => 0.7, 'employee' => 0.2],
@@ -125,13 +129,7 @@ class SalaryCalculator
     {
         return array_map(function (array $claim) use ($mileageRate): array {
             if (($claim['type'] ?? '') === 'Mileage') {
-                $km = $this->roundMoney((float) ($claim['km'] ?? 0));
-                $returnKm = $this->roundMoney($km * 2);
-                $claim['km'] = $km;
-                $claim['amount'] = $this->roundMoney($returnKm * $mileageRate);
-                if (trim((string) ($claim['meta'] ?? '')) === '') {
-                    $claim['meta'] = $this->trimDecimal($km).' KM one-way / '.$this->trimDecimal($returnKm).' KM return';
-                }
+                $claim = $this->travelClaimCalculator->prepare($claim, $mileageRate);
             } else {
                 $claim['amount'] = $this->roundMoney((float) ($claim['amount'] ?? 0));
             }

@@ -2,8 +2,8 @@
 
 namespace App\Services\Salary;
 
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -14,10 +14,14 @@ use Throwable;
 class PaymentQueueService
 {
     private const SALARY_SUBJECT_TYPE = 'salary_application';
+
     private const OTHER_CLAIM_SUBJECT_TYPE = 'other_claim_application';
+
     private const APPROVED_STATUS = 'Approved';
+
     private const PAID_STATUS = 'Paid';
-    private const PAYMENT_ROLES = ['HR', 'Manager', 'Finance', 'Account', 'Bank'];
+
+    public function __construct(private SalaryPaymentNotificationService $paymentNotifications) {}
 
     public function queue(Request $request): JsonResponse
     {
@@ -133,7 +137,7 @@ class PaymentQueueService
     private function markPaidWithData(Request $request, array $data): array
     {
         $actorId = $this->staffId($request);
-        if ($actorId <= 0 || $actorId === (int) $data['staff_id'] || ! $this->hasAnyRole($request, self::PAYMENT_ROLES)) {
+        if ($actorId <= 0 || $actorId === (int) $data['staff_id'] || ! $this->hasAnyRole($request, SalaryPaymentAccess::ROLES)) {
             $this->abortOperation('You are not authorized to mark this payment as paid.', 403);
         }
 
@@ -279,6 +283,14 @@ class PaymentQueueService
             }
         });
 
+        if ($paymentRunId) {
+            try {
+                $this->paymentNotifications->notifyPaid($paymentRunId, $actorId);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+
         return [
             'status' => 'success',
             'message' => 'Payment marked as paid.',
@@ -289,7 +301,7 @@ class PaymentQueueService
     private function undoPaidWithData(Request $request, array $data): array
     {
         $actorId = $this->staffId($request);
-        if ($actorId <= 0 || $actorId === (int) $data['staff_id'] || ! $this->hasAnyRole($request, self::PAYMENT_ROLES)) {
+        if ($actorId <= 0 || $actorId === (int) $data['staff_id'] || ! $this->hasAnyRole($request, SalaryPaymentAccess::ROLES)) {
             $this->abortOperation('You are not authorized to undo this payment.', 403);
         }
 
@@ -386,6 +398,16 @@ class PaymentQueueService
                     ->update(['status' => self::APPROVED_STATUS, 'updated_at' => $now]);
             }
         });
+
+        try {
+            $this->paymentNotifications->notifyReversed(
+                $paymentRunIds,
+                $actorId,
+                trim((string) $data['reason']),
+            );
+        } catch (Throwable $e) {
+            report($e);
+        }
 
         return [
             'status' => 'success',
@@ -575,6 +597,7 @@ class PaymentQueueService
 
             if (! $this->canViewPaymentRun($request, $run)) {
                 $rows[$key] ??= $this->redactPaidRow($run);
+
                 continue;
             }
 
@@ -873,7 +896,7 @@ class PaymentQueueService
     {
         return $this->staffId($request) > 0
             && $this->staffId($request) !== $staffId
-            && $this->hasAnyRole($request, self::PAYMENT_ROLES);
+            && $this->hasAnyRole($request, SalaryPaymentAccess::ROLES);
     }
 
     private function canUndoPaymentRun(Request $request, object $run): bool

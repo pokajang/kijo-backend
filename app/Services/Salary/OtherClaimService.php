@@ -4,12 +4,14 @@ namespace App\Services\Salary;
 
 use App\Services\Pdf\PdfRenderer;
 use App\Services\Quotes\Pdf\PdfMergeService;
+use App\Services\Salary\OtherClaims\OtherClaimValidator;
 use App\Services\Workflows\WorkflowService;
 use App\Support\AppFilePaths;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -17,17 +19,24 @@ use Illuminate\Validation\ValidationException;
 class OtherClaimService extends PdfRenderer
 {
     private const CLAIM_TYPES = ['Allowance', 'Expense', 'Mileage', 'Medical'];
+
     private const FINANCIAL_ACTIONS = ['check', 'approve', 'reject'];
+
     private const STAFF_MUTABLE_STATUSES = ['Draft', 'Submitted', 'Prepared', 'Rejected'];
+
     private const REVIEWED_MUTABLE_STATUSES = ['Checked', 'Approved'];
+
     private const PAID_STATUSES = ['Paid'];
+
     private const CANCELLED_STATUS = 'Cancelled';
+
     private const SUBJECT_TYPE = 'other_claim_application';
 
     public function __construct(
         private WorkflowService $workflowService,
         private SalaryCalculator $salaryCalculator,
         private SalaryWorkflowNotificationService $workflowNotifications,
+        private OtherClaimValidator $claimValidator,
     ) {}
 
     public function records(Request $request): JsonResponse
@@ -239,7 +248,11 @@ class OtherClaimService extends PdfRenderer
                     ]);
             });
 
-            $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
+            try {
+                $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
+            } catch (\Throwable $e) {
+                report($e);
+            }
 
             return response()->json(['status' => 'success', 'message' => 'Other claim cancelled.']);
         }
@@ -449,7 +462,7 @@ class OtherClaimService extends PdfRenderer
             $preservedAttachments = $existing
                 ? $this->preservedClaimAttachments((int) $existing->id, $data['claims'], $staffId)
                 : collect();
-            $this->assertClaimRules($data['claims'], $files, $preservedAttachments);
+            $this->claimValidator->assertBusinessRules($data['claims'], $files, $preservedAttachments);
             $claims = $this->salaryCalculator->prepareClaims($data['claims'], $mileageRate);
             $claimsTotal = $this->claimsTotal($claims);
             if ($claimsTotal <= 0) {
@@ -505,16 +518,20 @@ class OtherClaimService extends PdfRenderer
 
         $mailSent = false;
         if ($savedRecord && isset($savedRecord['id'])) {
-            if ($amendmentNotification) {
-                $this->workflowNotifications->notifyRecordAmended(
-                    $request,
-                    $amendmentNotification['subjectType'],
-                    $amendmentNotification['applicationId'],
-                    $amendmentNotification['recipientIds'],
-                    $amendmentNotification['reason'],
-                );
+            try {
+                if ($amendmentNotification) {
+                    $this->workflowNotifications->notifyRecordAmended(
+                        $request,
+                        $amendmentNotification['subjectType'],
+                        $amendmentNotification['applicationId'],
+                        $amendmentNotification['recipientIds'],
+                        $amendmentNotification['reason'],
+                    );
+                }
+                $mailSent = $this->workflowNotifications->notifySubmittedOtherClaim($request, (int) $savedRecord['id']);
+            } catch (\Throwable $e) {
+                report($e);
             }
-            $mailSent = $this->workflowNotifications->notifySubmittedOtherClaim($request, (int) $savedRecord['id']);
         }
 
         return response()->json([
@@ -581,6 +598,9 @@ class OtherClaimService extends PdfRenderer
             'claims.*.endLocation' => ['nullable', 'string', 'max:255'],
             'claims.*.source' => ['nullable', 'string', 'max:64'],
             'claims.*.sourceLabel' => ['nullable', 'string', 'max:255'],
+            'claims.*.tripMode' => ['nullable', 'string', 'in:one_way,return'],
+            'claims.*.travelGroupId' => ['nullable', 'string', 'max:64'],
+            'claims.*.expenseCategory' => ['nullable', 'string', 'in:combined,parking,toll,taxi,other'],
             'claims.*.attachmentId' => ['nullable', 'integer'],
             'draft_payload' => ['array'],
         ]);
@@ -621,6 +641,9 @@ class OtherClaimService extends PdfRenderer
             'claims.*.endLocation' => ['nullable', 'string', 'max:255'],
             'claims.*.source' => ['nullable', 'string', 'max:64'],
             'claims.*.sourceLabel' => ['nullable', 'string', 'max:255'],
+            'claims.*.tripMode' => ['nullable', 'string', 'in:one_way,return'],
+            'claims.*.travelGroupId' => ['nullable', 'string', 'max:64'],
+            'claims.*.expenseCategory' => ['nullable', 'string', 'in:combined,parking,toll,taxi,other'],
             'claims.*.attachmentId' => ['nullable', 'integer', 'min:1'],
             'draft_payload' => ['nullable', 'array'],
         ];
@@ -653,8 +676,16 @@ class OtherClaimService extends PdfRenderer
 
     private function completeDraftClaims(array $claims): array
     {
+        $linkedTravelExpenseGroups = collect($claims)
+            ->filter(fn (array $claim): bool => ($claim['type'] ?? '') === 'Expense' && (float) ($claim['amount'] ?? 0) > 0)
+            ->pluck('travelGroupId')
+            ->map(fn ($value): string => trim((string) $value))
+            ->filter()
+            ->unique()
+            ->all();
+
         return collect($claims)
-            ->filter(function (array $claim): bool {
+            ->filter(function (array $claim) use ($linkedTravelExpenseGroups): bool {
                 $type = (string) ($claim['type'] ?? '');
                 $date = (string) ($claim['date'] ?? '');
                 $amount = (float) ($claim['amount'] ?? 0);
@@ -687,51 +718,18 @@ class OtherClaimService extends PdfRenderer
                     return false;
                 }
                 if ($type === 'Mileage') {
+                    $travelGroupId = trim((string) ($claim['travelGroupId'] ?? ''));
+
                     return ! empty($claim['date'])
                         && trim((string) ($claim['startLocation'] ?? '')) !== ''
                         && trim((string) ($claim['endLocation'] ?? '')) !== ''
-                        && $km > 0;
+                        && ($km > 0 || ($travelGroupId !== '' && in_array($travelGroupId, $linkedTravelExpenseGroups, true)));
                 }
 
                 return $amount > 0;
             })
             ->values()
             ->all();
-    }
-
-    private function assertClaimRules(array $claims, array $files, $preservedAttachments): void
-    {
-        $errors = [];
-        foreach ($claims as $index => $claim) {
-            $type = (string) ($claim['type'] ?? '');
-            $claimId = (string) ($claim['id'] ?? '');
-            $hasNewAttachment = $claimId !== '' && isset($files[$claimId]);
-            $attachmentId = isset($claim['attachmentId']) && is_numeric($claim['attachmentId'])
-                ? (int) $claim['attachmentId']
-                : null;
-            $hasPreservedAttachment = $attachmentId !== null && $preservedAttachments->has($attachmentId);
-
-            if ($type === 'Mileage') {
-                if (empty($claim['date']) || trim((string) ($claim['startLocation'] ?? '')) === '' || trim((string) ($claim['endLocation'] ?? '')) === '' || (float) ($claim['km'] ?? 0) <= 0) {
-                    $errors["claims.{$index}.km"][] = 'Mileage claims require date, from, to, and one-way KM.';
-                }
-                if ($hasNewAttachment || $attachmentId !== null) {
-                    $errors["claims.{$index}.attachment"][] = 'Mileage claims cannot include attachments.';
-                }
-            } elseif ((float) ($claim['amount'] ?? 0) <= 0) {
-                $errors["claims.{$index}.amount"][] = "{$type} claims require a valid amount.";
-            }
-
-            if (in_array($type, ['Expense', 'Medical'], true) && ! $hasNewAttachment && ! $hasPreservedAttachment) {
-                $errors["claims.{$index}.attachment"][] = "{$type} claims require an attachment.";
-            }
-            if ($attachmentId !== null && ! $hasPreservedAttachment) {
-                $errors["claims.{$index}.attachmentId"][] = 'Attachment does not belong to this editable other claim record.';
-            }
-        }
-        if ($errors !== []) {
-            throw ValidationException::withMessages($errors);
-        }
     }
 
     private function storeClaims(array $claims, array $files, $preservedAttachments, int $applicationId, int $staffId, string $claimMonth): void
@@ -748,6 +746,9 @@ class OtherClaimService extends PdfRenderer
                 'km' => isset($claim['km']) ? $this->money($claim['km']) : null,
                 'start_location' => $claim['startLocation'] ?? null,
                 'end_location' => $claim['endLocation'] ?? null,
+                'travel_group_id' => $claim['travelGroupId'] ?? null,
+                'trip_mode' => $claim['type'] === 'Mileage' ? ($claim['tripMode'] ?? 'return') : null,
+                'expense_category' => $claim['type'] === 'Expense' ? ($claim['expenseCategory'] ?? null) : null,
                 'source' => $claim['source'] ?? null,
                 'source_label' => $claim['sourceLabel'] ?? null,
                 'sort_order' => $index,
@@ -798,6 +799,8 @@ class OtherClaimService extends PdfRenderer
         foreach ([
             'staffName' => 'staff_name',
             'staffCode' => 'staff_code',
+            'staffPosition' => 'staff_position',
+            'staffDepartment' => 'staff_department',
             'checkerName' => 'checker_name',
             'checkerCode' => 'checker_code',
             'approverName' => 'approver_name',
@@ -842,6 +845,9 @@ class OtherClaimService extends PdfRenderer
                 'km' => $claim->km !== null ? (float) $claim->km : null,
                 'startLocation' => (string) ($claim->start_location ?? ''),
                 'endLocation' => (string) ($claim->end_location ?? ''),
+                'travelGroupId' => (string) ($claim->travel_group_id ?? ''),
+                'tripMode' => (string) ($claim->trip_mode ?? (($claim->type ?? '') === 'Mileage' ? 'return' : '')),
+                'expenseCategory' => (string) ($claim->expense_category ?? ''),
                 'source' => (string) ($claim->source ?? ''),
                 'sourceLabel' => (string) ($claim->source_label ?? ''),
                 'attachment' => $attachment ? [
@@ -865,6 +871,9 @@ class OtherClaimService extends PdfRenderer
         $profile = DB::table('hr_salary_profiles')->where('staff_id', (int) $record->staff_id)->first();
         $approver = ! empty($record->approved_by)
             ? DB::table('staff_general')->where('staff_id', (int) $record->approved_by)->first()
+            : null;
+        $checker = ! empty($record->checked_by)
+            ? DB::table('staff_general')->where('staff_id', (int) $record->checked_by)->first()
             : null;
         $year = substr((string) $record->claim_month, 0, 4) ?: $generatedAt->format('Y');
         $yearlyMedicalClaim = (float) $this->money($profile->yearly_medical_claim ?? 0);
@@ -897,6 +906,14 @@ class OtherClaimService extends PdfRenderer
                 'name' => (string) ($approver->full_name ?? ''),
                 'code' => (string) ($approver->name_code ?? ''),
                 'signedAt' => $record->approved_at ?? null,
+            ],
+            'checkerSignature' => [
+                'dataUri' => $checker
+                    ? $this->staffSignatureDataUri((int) $checker->staff_id, (string) ($checker->name_code ?? ''))
+                    : null,
+                'name' => (string) ($checker->full_name ?? ''),
+                'code' => (string) ($checker->name_code ?? ''),
+                'signedAt' => $record->checked_at ?? null,
             ],
             'mileageRate' => (float) ($profile->default_mileage_rate ?? 0.6),
             'vehicle' => (string) ($profile->vehicle ?? ''),
@@ -955,6 +972,8 @@ class OtherClaimService extends PdfRenderer
                 'staff.full_name as staff_name',
                 'staff.name_code as staff_code',
                 'staff.email as staff_email',
+                'staff.position as staff_position',
+                'staff.department as staff_department',
             ]);
     }
 
@@ -1012,6 +1031,7 @@ class OtherClaimService extends PdfRenderer
             if ($item['kind'] === 'pdf') {
                 $attachmentIndex++;
                 $sources[] = $item['path'];
+
                 continue;
             }
 
@@ -1233,23 +1253,31 @@ class OtherClaimService extends PdfRenderer
     private function decodeJsonField(Request $request, string $field, mixed $default, array &$errors = []): mixed
     {
         $raw = $request->input($field);
-        if (is_array($raw)) return $raw;
-        if (! is_string($raw) || trim($raw) === '') return $default;
+        if (is_array($raw)) {
+            return $raw;
+        }
+        if (! is_string($raw) || trim($raw) === '') {
+            return $default;
+        }
 
         try {
             return json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
         } catch (\Throwable) {
             $errors[$field] = 'The '.$field.' field must contain valid JSON.';
+
             return $default;
         }
     }
 
     private function decodeJson(?string $raw): array
     {
-        if (! $raw) return [];
+        if (! $raw) {
+            return [];
+        }
 
         try {
             $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+
             return is_array($decoded) ? $decoded : [];
         } catch (\Throwable) {
             return [];
@@ -1309,6 +1337,15 @@ class OtherClaimService extends PdfRenderer
             ];
         }
 
+        $ids = [
+            ...$ids,
+            ...app(SalaryWorkflowRecipientResolver::class)->currentStepRecipientIds(
+                $subjectType,
+                (int) $record->id,
+                $excludeStaffIds,
+            ),
+        ];
+
         $exclude = array_values(array_unique(array_filter(array_map('intval', $excludeStaffIds))));
 
         return array_values(array_diff(array_unique(array_filter($ids)), $exclude));
@@ -1347,7 +1384,7 @@ class OtherClaimService extends PdfRenderer
         string $reason,
         array $previousSnapshot,
     ): void {
-        if (! \Illuminate\Support\Facades\Schema::hasTable('hr_salary_workflow_events')) {
+        if (! Schema::hasTable('hr_salary_workflow_events')) {
             return;
         }
 

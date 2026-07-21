@@ -363,12 +363,16 @@ class WorkflowService
         $subjectType = (string) ($updatedInstance->subject_type ?? '');
         $subjectId = (int) ($updatedInstance->subject_id ?? 0);
         if ($subjectId > 0 && in_array($subjectType, [self::SALARY_SUBJECT_TYPE, self::OTHER_CLAIM_SUBJECT_TYPE], true)) {
-            app(SalaryWorkflowNotificationService::class)->notifyWorkflowAction(
-                $request,
-                $subjectType,
-                $subjectId,
-                (string) $data['action'],
-            );
+            try {
+                app(SalaryWorkflowNotificationService::class)->notifyWorkflowAction(
+                    $request,
+                    $subjectType,
+                    $subjectId,
+                    (string) $data['action'],
+                );
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
 
         return response()->json([
