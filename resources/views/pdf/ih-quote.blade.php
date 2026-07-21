@@ -71,6 +71,30 @@
         .section-body p { margin: 0 0 2mm 0; }
         .section-body ul, .section-body ol { margin: 0 0 2mm 0; padding-left: 5mm; }
         .section-body li { margin-bottom: 0.8mm; }
+
+        .inner-line-items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0;
+            table-layout: fixed;
+        }
+        .inner-line-items-table th,
+        .inner-line-items-table td {
+            border: 0.5px solid #000;
+            padding: 2mm 2.2mm;
+            vertical-align: top;
+            text-align: left;
+        }
+        .inner-line-items-table .inner-col-no {
+            width: 8%;
+            text-align: center;
+        }
+        .inner-line-items-table .inner-col-amount {
+            width: 18%;
+        }
+        .inner-line-items-table .inner-col-item {
+            width: 74%;
+        }
     </style>
 </head>
 <body>
@@ -135,20 +159,30 @@
                 <tr>
                     <td class="label">{{ $L('additional_fees', 'Additional Fees') }}</td>
                     <td class="value">
-                        @foreach($additionalItems as $item)
-                            <div>
-                                {{ $item->item_description ?? '-' }}
-                                @if(!empty($item->description))
-                                    <span class="small-note">- {{ $item->description }}</span>
-                                @endif
-                                <br>
-                                <span class="small-note">
-                                    {{ number_format((float) ($item->quantity ?? 0), 2) }} {{ $item->unit ?? 'Lot' }}
-                                    x RM {{ number_format((float) ($item->unit_price ?? 0), 2) }}
-                                </span>
-                                <strong>RM {{ number_format((float) ($item->line_total ?? 0), 2) }}</strong>
-                            </div>
-                        @endforeach
+                        <table class="inner-line-items-table">
+                            <tr>
+                                <th class="inner-col-no">{{ $L('line_number', 'No') }}</th>
+                                <th class="inner-col-amount">{{ $L('amount_rm', 'Amount (RM)') }}</th>
+                                <th class="inner-col-item">{{ $L('line_item', 'Line Item') }}</th>
+                            </tr>
+                            @foreach($additionalItems as $index => $item)
+                                <tr>
+                                    <td class="inner-col-no">{{ $index + 1 }}</td>
+                                    <td class="inner-col-amount">
+                                        {{ number_format((float) ($item->line_total ?? 0), 2) }}
+                                    </td>
+                                    <td class="inner-col-item">
+                                        <strong>{{ $item->item_description ?? '-' }}</strong>
+                                        <span class="small-note">
+                                            ({{ number_format((float) ($item->quantity ?? 0), 2) }} {{ $item->unit ?? 'Lot' }} x RM {{ number_format((float) ($item->unit_price ?? 0), 2) }})
+                                        </span>
+                                        @if(!empty($item->description))
+                                            <span class="small-note">Notes: {{ $item->description }}</span>
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </table>
                     </td>
                 </tr>
             @endif

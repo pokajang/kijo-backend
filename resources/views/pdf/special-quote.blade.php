@@ -28,11 +28,8 @@
         .quote-table th, .quote-table td { border: 0.5px solid #000; padding: 2mm 2.2mm; vertical-align: top; }
         .quote-table th { background: #f0f0f0; text-align: center; font-weight: 700; }
         .col-no { width: 5%; text-align: center; }
-        .col-item { width: 40%; }
-        .col-unit { width: 15%; text-align: center; }
-        .col-qty { width: 8%; text-align: center; }
-        .col-unit-price { width: 13%; text-align: center; }
-        .col-amount { width: 19%; text-align: center; }
+        .col-amount { width: 20%; }
+        .col-item { width: 72%; }
         .totals-label { text-align: right; font-weight: 400; }
         .totals-value { text-align: center; }
         .muted { font-size: 9pt; color: #6c757d; }
@@ -121,17 +118,14 @@
             <thead>
                 <tr>
                     <th class="col-no">#</th>
-                    <th class="col-item">{{ $L('item_service_details', 'Item / Service Details') }}</th>
-                    <th class="col-unit">{{ $L('unit', 'Unit') }}</th>
-                    <th class="col-qty">{{ $L('qty', 'Qty') }}</th>
-                    <th class="col-unit-price">{{ $L('unit_price_rm', 'Unit Price (RM)') }}</th>
                     <th class="col-amount">{{ $L('amount_rm', 'Amount (RM)') }}</th>
+                    <th class="col-item">{{ $L('line_item', 'Line Item') }}</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td class="col-no"></td>
-                    <td colspan="5">
+                    <td colspan="2">
                         <strong>{{ $L('service', 'Service') }}:</strong> {{ $serviceTitle }} ({{ $serviceCode }})<br>
                         @if(!empty($remarksHtml))
                             {{ $L('remarks', 'Remarks') }}: <span class="muted">{!! $remarksHtml !!}</span>
@@ -142,30 +136,32 @@
                 @foreach($items as $index => $item)
                     <tr>
                         <td class="col-no">{{ $index + 1 }}</td>
-                        <td class="col-item">
-                            <strong>{{ $item->title }}</strong><br>
-                            <span class="muted">{{ $item->description }}</span>
-                        </td>
-                        <td class="col-unit">{{ $item->unit }}</td>
-                        <td class="col-qty">{{ (int) $item->quantity }}</td>
-                        <td class="col-unit-price">{{ number_format((float) $item->unit_price, 2) }}</td>
                         <td class="col-amount">{{ number_format((float) $item->line_total, 2) }}</td>
+                        <td class="col-item">
+                            <strong>{{ $item->title }}</strong>
+                            <span class="small-note">
+                                ({{ number_format((float) $item->quantity, 2) }} {{ $item->unit }} x RM {{ number_format((float) $item->unit_price, 2) }})
+                            </span>
+                            @if(!empty($item->description))
+                                <span class="small-note">Notes: {{ $item->description }}</span>
+                            @endif
+                        </td>
                     </tr>
                 @endforeach
 
                 <tr>
-                    <td colspan="5" class="totals-label">{{ $L('amount_rm', 'Amount (RM)') }}</td>
+                    <td colspan="2" class="totals-label">{{ $L('amount_rm', 'Amount (RM)') }}</td>
                     <td class="totals-value">RM {{ number_format((float) $grossAmount, 2) }}</td>
                 </tr>
 
                 @if($discountAmount > 0)
                     <tr>
-                        <td colspan="5" class="totals-label">{{ $L('discount_rm', 'Discount (RM)') }}</td>
+                        <td colspan="2" class="totals-label">{{ $L('discount_rm', 'Discount (RM)') }}</td>
                         <td class="totals-value">- RM {{ number_format((float) $discountAmount, 2) }}</td>
                     </tr>
                     @if($showSubtotal)
                         <tr>
-                            <td colspan="5" class="totals-label">{{ $L('subtotal_rm', 'Subtotal (RM)') }}</td>
+                            <td colspan="2" class="totals-label">{{ $L('subtotal_rm', 'Subtotal (RM)') }}</td>
                             <td class="totals-value">RM {{ number_format((float) $subTotalNet, 2) }}</td>
                         </tr>
                     @endif
@@ -173,13 +169,13 @@
 
                 @if($sstAmount > 0)
                     <tr>
-                        <td colspan="5" class="totals-label">{{ $sstPercentLabel }}% {{ $L('sst_charge_rm', 'SST Charge (RM)') }}</td>
+                        <td colspan="2" class="totals-label">{{ $sstPercentLabel }}% {{ $L('sst_charge_rm', 'SST Charge (RM)') }}</td>
                         <td class="totals-value">RM {{ number_format((float) $sstAmount, 2) }}</td>
                     </tr>
                 @endif
 
                 <tr>
-                    <td colspan="5" class="totals-label"><strong>{{ $L('grand_total_rm', 'Grand Total (RM)') }}</strong></td>
+                    <td colspan="2" class="totals-label"><strong>{{ $L('grand_total_rm', 'Grand Total (RM)') }}</strong></td>
                     <td class="totals-value"><strong>RM {{ number_format((float) $grandTotal, 2) }}</strong></td>
                 </tr>
             </tbody>
