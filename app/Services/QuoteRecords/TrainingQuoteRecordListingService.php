@@ -14,6 +14,9 @@ class TrainingQuoteRecordListingService
 
     public function listTraining(): JsonResponse
     {
+        $estimatedCostSelect = Schema::hasColumn('quotes_training', 'estimated_total_cost')
+            ? 'estimated_total_cost'
+            : 'NULL AS estimated_total_cost';
         $quotes = DB::select("
             SELECT
                 id,
@@ -74,6 +77,7 @@ class TrainingQuoteRecordListingService
                 sst_amount,
                 hrd_amount,
                 grand_total,
+                {$estimatedCostSelect},
                 (
                     SELECT qis.source
                     FROM quote_inquiry_sources qis

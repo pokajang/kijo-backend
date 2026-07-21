@@ -15,6 +15,9 @@ class SpecialQuoteRecordListingService
 
     public function listSpecial(): JsonResponse
     {
+        $estimatedCostSelect = Schema::hasColumn('quotes_special', 'estimated_total_cost')
+            ? 'estimated_total_cost'
+            : 'NULL AS estimated_total_cost';
         $quotes = DB::select("
             SELECT
                 qs.id,
@@ -50,6 +53,7 @@ class SpecialQuoteRecordListingService
                 qs.sst_amount,
                 qs.sub_total,
                 qs.grand_total,
+                {$estimatedCostSelect},
                 qs.attach_proposal,
                 (
                     SELECT qis.source

@@ -19,8 +19,9 @@ class QuoteApprovalNotificationService
         $recipients = app(QuoteApprovalRecipientService::class)->notificationRecipients($step);
         $staffIds = collect($recipients)->pluck('staff_id')->map(fn ($id): int => (int) $id)->filter()->all();
         $route = $this->route($approval);
+        $dedupeKey = $this->dedupeKey($approval);
 
-        app(AppNotificationService::class)->createForStaff($staffIds, [
+        app(AppNotificationService::class)->createForStaffOnce($staffIds, [
             'actor_staff_id' => $approval->requested_by_id,
             'module_key' => self::MODULE,
             'entity_type' => self::ENTITY,
@@ -31,7 +32,7 @@ class QuoteApprovalNotificationService
             'route' => $route,
             'severity' => $approval->zone === 'red' ? 'danger' : 'warning',
             'metadata' => ['service' => $approval->service, 'quote_id' => (int) $approval->quote_id],
-        ]);
+        ], $dedupeKey);
 
         foreach ($recipients as $recipient) {
             $email = trim((string) ($recipient['email'] ?? ''));
@@ -46,6 +47,17 @@ class QuoteApprovalNotificationService
                 '<p>A quotation is waiting for your approval.</p>'.$this->details($approval).$this->button($route, 'Review quotation'),
             );
         }
+    }
+
+    private function dedupeKey(object $approval): string
+    {
+        return sprintf(
+            'quote_approval:%d:%s:%s:%d',
+            (int) $approval->id,
+            (string) $approval->service,
+            (string) strtolower((string) $approval->required_step),
+            (int) $approval->quote_id,
+        );
     }
 
     public function decided(object $approval): void

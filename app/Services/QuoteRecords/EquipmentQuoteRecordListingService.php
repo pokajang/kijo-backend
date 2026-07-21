@@ -14,6 +14,9 @@ class EquipmentQuoteRecordListingService
 
     public function listEquipment(Request $request): JsonResponse
     {
+        $estimatedCostSelect = Schema::hasColumn('quotes_equipment', 'estimated_total_cost')
+            ? 'estimated_total_cost'
+            : 'NULL AS estimated_total_cost';
         $quotes = DB::select("
             SELECT
                 qe.id,
@@ -48,6 +51,7 @@ class EquipmentQuoteRecordListingService
                 qe.sst_amount,
                 qe.sub_total,
                 qe.grand_total,
+                {$estimatedCostSelect},
                 qe.attach_proposal,
                 (
                     SELECT qis.source

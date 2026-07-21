@@ -14,6 +14,9 @@ class ManpowerQuoteRecordListingService
 
     public function listManpower(Request $request): JsonResponse
     {
+        $estimatedCostSelect = Schema::hasColumn('quotes_manpower', 'estimated_total_cost')
+            ? 'estimated_total_cost'
+            : 'NULL AS estimated_total_cost';
         $quotes = DB::select("
             SELECT
                 id, quote_running_no, quote_ref_no, revision_no, price_exception_request_id, created_at, updated_at, status,
@@ -23,7 +26,7 @@ class ManpowerQuoteRecordListingService
                 pic_name, pic_email, pic_phone, pic_position,
                 mp_id, service_title, service_code, manpower_rate_type, billing_unit,
                 duration_hours, requires_management_approval, nature_of_work, site_location,
-                duration_months, no_of_pax, unit_cost, discount, sst_percent, sst_amount,
+                duration_months, no_of_pax, unit_cost, discount, sst_percent, sst_amount, {$estimatedCostSelect},
                 sub_total, grand_total, inquiry_remarks,
                 (
                     SELECT qis.source FROM quote_inquiry_sources qis

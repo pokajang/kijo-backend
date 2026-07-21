@@ -14,6 +14,9 @@ class IhQuoteRecordListingService
 
     public function listIh(Request $request): JsonResponse
     {
+        $estimatedCostSelect = Schema::hasColumn('quotes_ih', 'estimated_total_cost')
+            ? 'estimated_total_cost'
+            : 'NULL AS estimated_total_cost';
         $quotes = DB::select("
             SELECT
                 id, quote_running_no, quote_ref_no, revision_no, price_exception_request_id, created_at, updated_at, status,
@@ -24,7 +27,7 @@ class IhQuoteRecordListingService
                 service_id, service_title, service_code, site_address,
                 travel_charge, sample_counts, sample_unit, num_work_units,
                 inquiry_remarks,
-                unit_price, discount, sst_percent, sst_amount, sub_total, grand_total,
+                unit_price, discount, sst_percent, sst_amount, sub_total, grand_total, {$estimatedCostSelect},
                 (
                     SELECT qis.source FROM quote_inquiry_sources qis
                     WHERE qis.quote_id = quotes_ih.id
