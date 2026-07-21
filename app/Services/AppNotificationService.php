@@ -91,6 +91,11 @@ class AppNotificationService
             'tab_key' => 'financial.other-claim-records',
             'severity' => 'warning',
         ],
+        'financial.payment-queue' => [
+            'route_group' => '/financial/payment-queue',
+            'tab_key' => 'financial.payment-queue',
+            'severity' => 'warning',
+        ],
         'my.salary' => [
             'route_group' => '/my/salary',
             'tab_key' => 'my.salary.records',
@@ -99,6 +104,11 @@ class AppNotificationService
         'my.other-claims' => [
             'route_group' => '/my/salary',
             'tab_key' => 'my.salary.other-claim-records',
+            'severity' => 'success',
+        ],
+        'my.payment-queue' => [
+            'route_group' => '/my/salary',
+            'tab_key' => 'my.salary.payment-queue',
             'severity' => 'success',
         ],
         'system.admin.workload_snapshots' => [
@@ -145,6 +155,43 @@ class AppNotificationService
         }
     }
 
+    public function createForStaffOnce(array $staffIds, array $payload, string $dedupeKey): void
+    {
+        $dedupeKey = trim($dedupeKey);
+        if (
+            $dedupeKey === ''
+            || ! Schema::hasTable(self::TABLE)
+            || ! Schema::hasColumn(self::TABLE, 'dedupe_key')
+        ) {
+            $this->createForStaff($staffIds, $payload);
+
+            return;
+        }
+
+        $now = now();
+        $uniqueStaffIds = array_values(array_unique(array_filter(array_map('intval', $staffIds))));
+        foreach ($uniqueStaffIds as $staffId) {
+            DB::table(self::TABLE)->insertOrIgnore([
+                'recipient_staff_id' => $staffId,
+                'actor_staff_id' => $payload['actor_staff_id'] ?? null,
+                'module_key' => $payload['module_key'],
+                'entity_type' => $payload['entity_type'],
+                'entity_id' => (int) $payload['entity_id'],
+                'type' => $payload['type'],
+                'dedupe_key' => $dedupeKey,
+                'title' => $payload['title'],
+                'message' => $payload['message'] ?? null,
+                'route' => $payload['route'] ?? null,
+                'severity' => $payload['severity'] ?? 'info',
+                'metadata_json' => isset($payload['metadata'])
+                    ? json_encode($payload['metadata'])
+                    : null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+    }
+
     public function resolveActive(
         string $moduleKey,
         string $entityType,
@@ -172,6 +219,32 @@ class AppNotificationService
             'resolved_at' => now(),
             'updated_at' => now(),
         ]);
+
+        return array_values(array_unique($recipientIds));
+    }
+
+    public function resolveOutstanding(
+        string $moduleKey,
+        string $entityType,
+        int $entityId,
+        ?array $types = null,
+    ): array {
+        if (! Schema::hasTable(self::TABLE)) {
+            return [];
+        }
+
+        $query = DB::table(self::TABLE)
+            ->where('module_key', $moduleKey)
+            ->where('entity_type', $entityType)
+            ->where('entity_id', $entityId)
+            ->whereNull('resolved_at');
+
+        if ($types !== null) {
+            $query->whereIn('type', $types);
+        }
+
+        $recipientIds = (clone $query)->pluck('recipient_staff_id')->map(fn ($id) => (int) $id)->all();
+        $query->update(['resolved_at' => now(), 'updated_at' => now()]);
 
         return array_values(array_unique($recipientIds));
     }
@@ -394,12 +467,16 @@ class AppNotificationService
             self::RECONCILE_MAX,
         );
 
-        $this->reconcileModuleCount(
-            $byModule,
-            'crm.quote-approvals',
-            $this->quoteApprovalAttentionCount($request),
-            self::RECONCILE_MAX,
-        );
+        if ($this->canReviewQuoteApprovals($request)) {
+            $this->reconcileModuleCount(
+                $byModule,
+                'crm.quote-approvals',
+                $this->quoteApprovalAttentionCount($request),
+                self::RECONCILE_MAX,
+            );
+        } else {
+            unset($byModule['crm.quote-approvals']);
+        }
 
         $this->reconcileModuleCount(
             $byModule,
@@ -617,7 +694,9 @@ class AppNotificationService
         }
 
         $steps = ['hod', 'bd'];
-        $allowedSteps = array_values(array_filter($steps, fn (string $step): bool => app(QuoteApprovalRecipientService::class)->canDecide($request, $step)
+        $allowedSteps = array_values(array_filter(
+            $steps,
+            fn (string $step): bool => app(QuoteApprovalRecipientService::class)->canDecide($request, $step),
         ));
         if ($allowedSteps === []) {
             return 0;
@@ -628,6 +707,14 @@ class AppNotificationService
             ->where('status', 'pending')
             ->whereIn('required_step', $allowedSteps)
             ->count();
+    }
+
+    private function canReviewQuoteApprovals(Request $request): bool
+    {
+        $recipientService = app(QuoteApprovalRecipientService::class);
+
+        return $recipientService->canDecide($request, 'hod')
+            || $recipientService->canDecide($request, 'bd');
     }
 
     private function vendorPaymentAttentionCount(Request $request): int

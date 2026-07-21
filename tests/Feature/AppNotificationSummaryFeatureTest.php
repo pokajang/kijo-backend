@@ -254,6 +254,45 @@ class AppNotificationSummaryFeatureTest extends TestCase
         $this->assertSame(2, $unassignedSystemAdminSummary['by_module']['crm.quote-approvals'] ?? 0);
     }
 
+    public function test_summary_hides_quote_approval_badges_for_non_approvers_with_stored_notifications(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 55, 'full_name' => 'Regular User', 'email' => 'regular@example.com'],
+        ]);
+        DB::table('system_users')->insert([
+            ['staff_id' => 55, 'email' => 'regular@example.com', 'role' => 'Employee'],
+        ]);
+
+        DB::table('quote_approval_requests')->insert([
+            ['status' => 'pending', 'required_step' => 'hod', 'is_current' => true],
+        ]);
+
+        DB::table('in_app_notifications')->insert([
+            'recipient_staff_id' => 55,
+            'actor_staff_id' => 11,
+            'module_key' => 'crm.quote-approvals',
+            'entity_type' => 'quote',
+            'entity_id' => 700,
+            'type' => 'quote.approval.pending',
+            'title' => 'Quote 700 pending approval',
+            'message' => 'Manual approval needed',
+            'route' => '/crm/records/700',
+            'severity' => 'warning',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $summary = $this->withSession(['staff_id' => 55, 'roles' => ['Employee']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertArrayNotHasKey('crm.quote-approvals', (array) $summary['by_module']);
+        $this->assertArrayNotHasKey('/crm/records', (array) $summary['by_route_group']);
+        $this->assertArrayNotHasKey('crm.quote-approvals', (array) $summary['by_tab']);
+        $this->assertSame(1, $summary['listable_total'] ?? 0);
+    }
+
     public function test_summary_preserves_negotiation_pending_and_ready_to_apply_badges(): void
     {
         DB::table('quotes_training')->insert([
