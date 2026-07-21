@@ -28,6 +28,7 @@ use App\Http\Controllers\Api\PrivateFileController;
 use App\Http\Controllers\Api\ProcedureController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ProposalTemplateController;
+use App\Http\Controllers\Api\QuoteApprovalController;
 use App\Http\Controllers\Api\QuoteController;
 use App\Http\Controllers\Api\QuotePriceExceptionController;
 use App\Http\Controllers\Api\QuoteRecordController;
@@ -411,6 +412,10 @@ Route::middleware('auth.session')->group(function () {
 
     Route::post('quote-records/{service}/{id}/email', [QuoteRecordEmailController::class, 'send'])
         ->where(['service' => 'training|ih|manpower|special|equipment', 'id' => '[0-9]+']);
+    Route::get('quote-approvals', [QuoteApprovalController::class, 'index']);
+    Route::get('quote-approvals/{id}', [QuoteApprovalController::class, 'show'])->whereNumber('id');
+    Route::patch('quote-approvals/{id}/approve', [QuoteApprovalController::class, 'approve'])->whereNumber('id');
+    Route::patch('quote-approvals/{id}/reject', [QuoteApprovalController::class, 'reject'])->whereNumber('id');
     Route::get('quote-price-exceptions', [QuotePriceExceptionController::class, 'index']);
     Route::get('quote-price-exceptions/pending-count', [QuotePriceExceptionController::class, 'pendingCount']);
     Route::post('quote-price-exceptions/pre-quote', [QuotePriceExceptionController::class, 'createPreQuote']);

@@ -33,13 +33,24 @@ class PdfRenderer
         return 'data:image/png;base64,'.base64_encode($bytes);
     }
 
-    public function renderPortraitWithFooter(string $html, mixed $generatedAt, string $generatorCode, string $generatorId): Dompdf
-    {
-        return $this->renderWithFooter($html, $generatedAt, $generatorCode, $generatorId, 'portrait');
+    public function renderPortraitWithFooter(
+        string $html,
+        mixed $generatedAt,
+        string $generatorCode,
+        string $generatorId,
+        bool $draftWatermark = false,
+    ): Dompdf {
+        return $this->renderWithFooter($html, $generatedAt, $generatorCode, $generatorId, 'portrait', $draftWatermark);
     }
 
-    public function renderWithFooter(string $html, mixed $generatedAt, string $generatorCode, string $generatorId, string $orientation = 'portrait'): Dompdf
-    {
+    public function renderWithFooter(
+        string $html,
+        mixed $generatedAt,
+        string $generatorCode,
+        string $generatorId,
+        string $orientation = 'portrait',
+        bool $draftWatermark = false,
+    ): Dompdf {
         $this->ensureDompdfAutoloaded();
         $dompdf = $this->makeDompdf();
         $dompdf->loadHtml($html);
@@ -62,6 +73,24 @@ class PdfRenderer
             .' ('.$generatorId.')';
         $stampWidth = $metrics->getTextWidth($stamp, $font, $fontSize);
         $canvas->page_text($canvas->get_width() - 20 - $stampWidth, $y, $stamp, $font, $fontSize, $muted);
+
+        if ($draftWatermark) {
+            $watermarkFont = $metrics->getFont('Helvetica', 'bold') ?: $font;
+            $watermark = 'DRAFT - NOT APPROVED';
+            $watermarkSize = 36;
+            $watermarkWidth = $metrics->getTextWidth($watermark, $watermarkFont, $watermarkSize);
+            $canvas->page_text(
+                ($canvas->get_width() - $watermarkWidth) / 2,
+                $canvas->get_height() / 2,
+                $watermark,
+                $watermarkFont,
+                $watermarkSize,
+                [0.82, 0.82, 0.82],
+                0,
+                0,
+                35,
+            );
+        }
 
         return $dompdf;
     }

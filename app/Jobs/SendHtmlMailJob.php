@@ -22,15 +22,17 @@ class SendHtmlMailJob implements ShouldQueue
      * current request and bypass the queue worker, so these properties do not
      * apply to them; those callers handle failures with their own try/catch.
      */
-    public int $tries = 3;
-    public int $backoff = 60;
+    public int $tries = 5;
+
+    /** @var array<int, int> */
+    public array $backoff = [60, 300, 900, 3600];
 
     public function __construct(
         private readonly string $to,
         private readonly string $toName,
         private readonly string $subject,
         private readonly string $body,
-        private readonly array  $cc = [],
+        private readonly array $cc = [],
         private readonly ?string $fromAddress = null,
         private readonly ?string $fromName = null,
         private readonly array $presentation = [],
@@ -57,7 +59,7 @@ class SendHtmlMailJob implements ShouldQueue
                 $m->from($fromAddress, $fromName ?: null);
             }
             $m->to($this->to, $this->toName)->subject($this->subject);
-            if (!empty($this->cc)) {
+            if (! empty($this->cc)) {
                 $m->cc($this->cc);
             }
         });

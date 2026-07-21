@@ -30,6 +30,7 @@ class AppNotificationSummaryFeatureTest extends TestCase
         ]);
 
         foreach ([
+            'quote_approval_requests',
             'quote_price_exception_requests',
             'quotes_training',
             'quotes_manpower',
@@ -121,6 +122,13 @@ class AppNotificationSummaryFeatureTest extends TestCase
             $table->timestamps();
         });
 
+        Schema::create('quote_approval_requests', function (Blueprint $table): void {
+            $table->id();
+            $table->string('status')->default('pending');
+            $table->string('required_step');
+            $table->boolean('is_current')->default(true);
+        });
+
         Schema::create('in_app_notifications', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('recipient_staff_id');
@@ -209,6 +217,41 @@ class AppNotificationSummaryFeatureTest extends TestCase
         $this->assertSame(1, $summary['by_module']['client.vendor_registration'] ?? 0);
         $this->assertSame(1, $summary['by_route_group']['/client/manage'] ?? 0);
         $this->assertSame(1, $summary['by_tab']['client.vendor-registration'] ?? 0);
+    }
+
+    public function test_summary_exposes_only_quote_approvals_assigned_to_the_signed_in_approver(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 11, 'full_name' => 'Azlin', 'email' => 'azlin@amiosh.com'],
+            ['staff_id' => 22, 'full_name' => 'Kamarul', 'email' => 'kamarul@amiosh.com'],
+        ]);
+        DB::table('system_users')->insert([
+            ['staff_id' => 11, 'email' => 'azlin@amiosh.com', 'role' => 'Manager'],
+            ['staff_id' => 22, 'email' => 'kamarul@amiosh.com', 'role' => 'Manager'],
+        ]);
+        DB::table('quote_approval_requests')->insert([
+            ['status' => 'pending', 'required_step' => 'hod', 'is_current' => true],
+            ['status' => 'pending', 'required_step' => 'bd', 'is_current' => true],
+            ['status' => 'approved', 'required_step' => 'hod', 'is_current' => true],
+        ]);
+
+        $hodSummary = $this->withSession(['staff_id' => 11, 'roles' => ['Manager']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $bdSummary = $this->withSession(['staff_id' => 22, 'roles' => ['Manager']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $unassignedSystemAdminSummary = $this->withSession(['staff_id' => 99, 'roles' => ['System Admin']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(1, $hodSummary['by_module']['crm.quote-approvals'] ?? 0);
+        $this->assertSame(1, $hodSummary['by_route_group']['/crm/records'] ?? 0);
+        $this->assertSame(1, $bdSummary['by_module']['crm.quote-approvals'] ?? 0);
+        $this->assertSame(2, $unassignedSystemAdminSummary['by_module']['crm.quote-approvals'] ?? 0);
     }
 
     public function test_summary_preserves_negotiation_pending_and_ready_to_apply_badges(): void

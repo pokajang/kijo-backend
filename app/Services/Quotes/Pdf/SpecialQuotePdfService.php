@@ -178,7 +178,14 @@ class SpecialQuotePdfService
             'logoDataUri' => $logoDataUri,
         ])->render();
 
-        $dompdf = $this->renderer->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $draftWatermark = $request->boolean('approval_preview');
+        $dompdf = $this->renderer->renderPortraitWithFooter(
+            $html,
+            $generatedAt,
+            $generatorCode,
+            $generatorId,
+            $draftWatermark,
+        );
         $quotePdfBytes = $dompdf->output();
 
         if ($appendProposalContent) {
@@ -191,7 +198,13 @@ class SpecialQuotePdfService
                 'contentHtml' => $proposalContentHtml,
                 'logoDataUri' => $logoDataUri,
             ])->render();
-            $proposalPdf = $this->renderer->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $proposalPdf = $this->renderer->renderPortraitWithFooter(
+                $proposalHtml,
+                $generatedAt,
+                $generatorCode,
+                $generatorId,
+                $draftWatermark,
+            )->output();
             $proposalPdfAttachmentPaths = [$proposalPdf, ...$proposalPdfAttachmentPaths];
         }
 

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Console\Commands\ReconcileLeaveNotifications;
 use App\Services\Leaves\LeaveWorkflowRecipientService;
+use App\Services\QuoteApprovals\QuoteApprovalRecipientService;
 use App\Services\Workflows\WorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -69,6 +70,11 @@ class AppNotificationService
             'route_group' => '/crm/price-exceptions',
             'tab_key' => 'crm.negotiations',
             'severity' => 'primary',
+        ],
+        'crm.quote-approvals' => [
+            'route_group' => '/crm/records',
+            'tab_key' => 'crm.quote-approvals',
+            'severity' => 'warning',
         ],
         'vendor.payments' => [
             'route_group' => '/vendor/payment-records',
@@ -390,6 +396,13 @@ class AppNotificationService
 
         $this->reconcileModuleCount(
             $byModule,
+            'crm.quote-approvals',
+            $this->quoteApprovalAttentionCount($request),
+            self::RECONCILE_MAX,
+        );
+
+        $this->reconcileModuleCount(
+            $byModule,
             'vendor.payments',
             $this->vendorPaymentAttentionCount($request),
             self::RECONCILE_MAX,
@@ -595,6 +608,26 @@ class AppNotificationService
         }
 
         return $count;
+    }
+
+    private function quoteApprovalAttentionCount(Request $request): int
+    {
+        if (! Schema::hasTable('quote_approval_requests')) {
+            return 0;
+        }
+
+        $steps = ['hod', 'bd'];
+        $allowedSteps = array_values(array_filter($steps, fn (string $step): bool => app(QuoteApprovalRecipientService::class)->canDecide($request, $step)
+        ));
+        if ($allowedSteps === []) {
+            return 0;
+        }
+
+        return (int) DB::table('quote_approval_requests')
+            ->where('is_current', true)
+            ->where('status', 'pending')
+            ->whereIn('required_step', $allowedSteps)
+            ->count();
     }
 
     private function vendorPaymentAttentionCount(Request $request): int

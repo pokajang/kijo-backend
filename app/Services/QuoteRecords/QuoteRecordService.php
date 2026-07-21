@@ -7,10 +7,9 @@ use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
+use App\Services\QuoteApprovals\QuoteApprovalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class QuoteRecordService
 {
@@ -41,16 +40,29 @@ class QuoteRecordService
 
     public function awardEquipment(AwardQuoteRequest $request): JsonResponse
     {
+        if ($denial = $this->approvalDenial($request, 'equipment')) {
+            return $denial;
+        }
+
         return $this->equipmentQuoteRecordService()->awardEquipment($request);
     }
 
     public function failEquipment(FailQuoteRequest $request): JsonResponse
     {
-        return $this->equipmentQuoteRecordService()->failEquipment($request);
+        return $this->cancelApprovalAfter(
+            $this->equipmentQuoteRecordService()->failEquipment($request),
+            $request,
+            'equipment',
+            'Quotation marked as Failed.',
+        );
     }
 
     public function reAwardEquipment(AwardQuoteRequest $request): JsonResponse
     {
+        if ($denial = $this->approvalDenial($request, 'equipment')) {
+            return $denial;
+        }
+
         return $this->equipmentQuoteRecordService()->reAwardEquipment($request);
     }
 
@@ -61,7 +73,13 @@ class QuoteRecordService
 
     public function destroyEquipment(Request $request, int $id = 0): JsonResponse
     {
-        return $this->equipmentQuoteRecordService()->destroyEquipment($request, $id);
+        return $this->cancelApprovalAfter(
+            $this->equipmentQuoteRecordService()->destroyEquipment($request, $id),
+            $request,
+            'equipment',
+            'Quotation deleted.',
+            $id,
+        );
     }
 
     public function relatedDocsEquipment(Request $request): JsonResponse
@@ -71,6 +89,10 @@ class QuoteRecordService
 
     public function pdfEquipment(Request $request, int $id = 0): mixed
     {
+        if ($denial = $this->approvalDenial($request, 'equipment', $id)) {
+            return $denial;
+        }
+
         return $this->equipmentQuoteRecordService()->pdfEquipment($request, $id);
     }
 
@@ -91,16 +113,29 @@ class QuoteRecordService
 
     public function awardIh(AwardQuoteRequest $request): JsonResponse
     {
+        if ($denial = $this->approvalDenial($request, 'ih')) {
+            return $denial;
+        }
+
         return $this->ihQuoteRecordService()->awardIh($request);
     }
 
     public function failIh(FailQuoteRequest $request): JsonResponse
     {
-        return $this->ihQuoteRecordService()->failIh($request);
+        return $this->cancelApprovalAfter(
+            $this->ihQuoteRecordService()->failIh($request),
+            $request,
+            'ih',
+            'Quotation marked as Failed.',
+        );
     }
 
     public function reAwardIh(AwardQuoteRequest $request): JsonResponse
     {
+        if ($denial = $this->approvalDenial($request, 'ih')) {
+            return $denial;
+        }
+
         return $this->ihQuoteRecordService()->reAwardIh($request);
     }
 
@@ -111,7 +146,13 @@ class QuoteRecordService
 
     public function destroyIh(Request $request, int $id = 0): JsonResponse
     {
-        return $this->ihQuoteRecordService()->destroyIh($request, $id);
+        return $this->cancelApprovalAfter(
+            $this->ihQuoteRecordService()->destroyIh($request, $id),
+            $request,
+            'ih',
+            'Quotation deleted.',
+            $id,
+        );
     }
 
     public function relatedDocsIh(Request $request): JsonResponse
@@ -121,6 +162,10 @@ class QuoteRecordService
 
     public function pdfIh(Request $request, int $id = 0)
     {
+        if ($denial = $this->approvalDenial($request, 'ih', $id)) {
+            return $denial;
+        }
+
         return $this->ihQuoteRecordService()->pdfIh($request, $id);
     }
 
@@ -141,16 +186,29 @@ class QuoteRecordService
 
     public function awardManpower(AwardQuoteRequest $request): JsonResponse
     {
+        if ($denial = $this->approvalDenial($request, 'manpower')) {
+            return $denial;
+        }
+
         return $this->manpowerQuoteRecordService()->awardManpower($request);
     }
 
     public function failManpower(FailQuoteRequest $request): JsonResponse
     {
-        return $this->manpowerQuoteRecordService()->failManpower($request);
+        return $this->cancelApprovalAfter(
+            $this->manpowerQuoteRecordService()->failManpower($request),
+            $request,
+            'manpower',
+            'Quotation marked as Failed.',
+        );
     }
 
     public function reAwardManpower(AwardQuoteRequest $request): JsonResponse
     {
+        if ($denial = $this->approvalDenial($request, 'manpower')) {
+            return $denial;
+        }
+
         return $this->manpowerQuoteRecordService()->reAwardManpower($request);
     }
 
@@ -161,7 +219,13 @@ class QuoteRecordService
 
     public function destroyManpower(Request $request, int $id = 0): JsonResponse
     {
-        return $this->manpowerQuoteRecordService()->destroyManpower($request, $id);
+        return $this->cancelApprovalAfter(
+            $this->manpowerQuoteRecordService()->destroyManpower($request, $id),
+            $request,
+            'manpower',
+            'Quotation deleted.',
+            $id,
+        );
     }
 
     public function relatedDocsManpower(Request $request): JsonResponse
@@ -171,11 +235,41 @@ class QuoteRecordService
 
     public function pdfManpower(Request $request, int $id = 0): mixed
     {
+        if ($denial = $this->approvalDenial($request, 'manpower', $id)) {
+            return $denial;
+        }
+
         return $this->manpowerQuoteRecordService()->pdfManpower($request, $id);
     }
 
     public function syncClientManpower(SyncClientRequest $request): JsonResponse
     {
         return $this->manpowerQuoteRecordService()->syncClientManpower($request);
+    }
+
+    private function approvalDenial(Request $request, string $service, int $id = 0): ?JsonResponse
+    {
+        $quoteId = $id > 0 ? $id : (int) ($request->route('id') ?: $request->input('quote_id', $request->input('id', 0)));
+        $denial = $quoteId > 0 ? app(QuoteApprovalService::class)->issuanceDenial($service, $quoteId, $request) : null;
+
+        return $denial ? response()->json($denial, 409) : null;
+    }
+
+    private function cancelApprovalAfter(
+        JsonResponse $response,
+        Request $request,
+        string $service,
+        string $reason,
+        int $id = 0,
+    ): JsonResponse {
+        $payload = $response->getData(true);
+        if ($response->getStatusCode() < 300 && ($payload['status'] ?? null) === 'success') {
+            $quoteId = $id > 0 ? $id : (int) ($request->route('id') ?: $request->input('quote_id', $request->input('id', 0)));
+            if ($quoteId > 0) {
+                app(QuoteApprovalService::class)->cancelCurrent($service, $quoteId, $reason);
+            }
+        }
+
+        return $response;
     }
 }

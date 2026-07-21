@@ -12,6 +12,7 @@ use App\Http\Requests\Quote\UpdateIhQuoteRequest;
 use App\Http\Requests\Quote\UpdateManpowerQuoteRequest;
 use App\Http\Requests\Quote\UpdateSpecialQuoteRequest;
 use App\Http\Requests\Quote\UpdateTrainingQuoteRequest;
+use App\Services\QuoteApprovals\QuoteApprovalService;
 use App\Services\Quotes\Crud\EquipmentQuoteService;
 use App\Services\Quotes\Crud\IhQuoteService;
 use App\Services\Quotes\Crud\ManpowerQuoteService;
@@ -37,12 +38,16 @@ class QuoteCrudService
 
     public function storeEquipment(StoreEquipmentQuoteRequest $request): JsonResponse
     {
-        return $this->equipmentQuotes->storeEquipment($request);
+        if ($denial = $this->preparerDenial($request)) {
+            return $denial;
+        }
+
+        return $this->finalize($this->equipmentQuotes->storeEquipment($request), 'equipment');
     }
 
     public function updateEquipment(UpdateEquipmentQuoteRequest $request, int $id): JsonResponse
     {
-        return $this->equipmentQuotes->updateEquipment($request, $id);
+        return $this->finalize($this->equipmentQuotes->updateEquipment($request, $id), 'equipment', $id);
     }
 
     public function showManpower(Request $request, int $id): JsonResponse
@@ -52,12 +57,16 @@ class QuoteCrudService
 
     public function storeManpower(StoreManpowerQuoteRequest $request): JsonResponse
     {
-        return $this->manpowerQuotes->storeManpower($request);
+        if ($denial = $this->preparerDenial($request)) {
+            return $denial;
+        }
+
+        return $this->finalize($this->manpowerQuotes->storeManpower($request), 'manpower');
     }
 
     public function updateManpower(UpdateManpowerQuoteRequest $request, int $id): JsonResponse
     {
-        return $this->manpowerQuotes->updateManpower($request, $id);
+        return $this->finalize($this->manpowerQuotes->updateManpower($request, $id), 'manpower', $id);
     }
 
     public function showIh(Request $request, int $id): JsonResponse
@@ -67,12 +76,16 @@ class QuoteCrudService
 
     public function storeIh(StoreIhQuoteRequest $request): JsonResponse
     {
-        return $this->ihQuotes->storeIh($request);
+        if ($denial = $this->preparerDenial($request)) {
+            return $denial;
+        }
+
+        return $this->finalize($this->ihQuotes->storeIh($request), 'ih');
     }
 
     public function updateIh(UpdateIhQuoteRequest $request, int $id): JsonResponse
     {
-        return $this->ihQuotes->updateIh($request, $id);
+        return $this->finalize($this->ihQuotes->updateIh($request, $id), 'ih', $id);
     }
 
     public function showSpecial(Request $request, int $id): JsonResponse
@@ -82,12 +95,16 @@ class QuoteCrudService
 
     public function storeSpecial(StoreSpecialQuoteRequest $request): JsonResponse
     {
-        return $this->specialQuotes->storeSpecial($request);
+        if ($denial = $this->preparerDenial($request)) {
+            return $denial;
+        }
+
+        return $this->finalize($this->specialQuotes->storeSpecial($request), 'special');
     }
 
     public function updateSpecial(UpdateSpecialQuoteRequest $request, int $id): JsonResponse
     {
-        return $this->specialQuotes->updateSpecial($request, $id);
+        return $this->finalize($this->specialQuotes->updateSpecial($request, $id), 'special', $id);
     }
 
     public function showTraining(Request $request, int $id): JsonResponse
@@ -97,11 +114,46 @@ class QuoteCrudService
 
     public function storeTraining(StoreTrainingQuoteRequest $request): JsonResponse
     {
-        return $this->trainingQuotes->storeTraining($request);
+        if ($denial = $this->preparerDenial($request)) {
+            return $denial;
+        }
+
+        return $this->finalize($this->trainingQuotes->storeTraining($request), 'training');
     }
 
     public function updateTraining(UpdateTrainingQuoteRequest $request, int $id): JsonResponse
     {
-        return $this->trainingQuotes->updateTraining($request, $id);
+        return $this->finalize($this->trainingQuotes->updateTraining($request, $id), 'training', $id);
+    }
+
+    private function finalize(JsonResponse $response, string $service, ?int $quoteId = null): JsonResponse
+    {
+        if ($response->getStatusCode() >= 300) {
+            return $response;
+        }
+        $payload = $response->getData(true);
+        if (($payload['status'] ?? null) !== 'success') {
+            return $response;
+        }
+        $resolvedId = $quoteId
+            ?: (int) ($payload['quote_id'] ?? $payload['data']['quote_id'] ?? $payload['data']['id'] ?? 0);
+        if ($resolvedId > 0) {
+            app(QuoteApprovalService::class)->current($service, $resolvedId);
+        }
+
+        return $response;
+    }
+
+    private function preparerDenial(Request $request): ?JsonResponse
+    {
+        if ((int) $request->session()->get('staff_id', 0) > 0) {
+            return null;
+        }
+
+        return response()->json([
+            'status' => 'error',
+            'code' => 'QUOTE_PREPARER_REQUIRED',
+            'message' => 'Your staff identity is unavailable. Sign in again before creating a quotation.',
+        ], 422);
     }
 }

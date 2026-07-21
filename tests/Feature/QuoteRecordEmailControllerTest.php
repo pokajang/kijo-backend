@@ -28,9 +28,43 @@ class QuoteRecordEmailControllerTest extends TestCase
         Schema::create('quotes_training', function (Blueprint $table): void {
             $table->id();
             $table->string('quote_ref_no')->nullable();
+            $table->unsignedInteger('revision_no')->default(0);
+            $table->decimal('grand_total', 15, 2)->default(0);
+            $table->decimal('estimated_total_cost', 15, 2)->nullable();
             $table->string('client_name')->nullable();
             $table->string('pic_name')->nullable();
             $table->text('pic_email')->nullable();
+            $table->string('status')->default('Open');
+            $table->unsignedBigInteger('approval_request_id')->nullable();
+            $table->string('approval_zone')->nullable();
+            $table->string('approval_status')->nullable();
+            $table->string('approval_fingerprint', 64)->nullable();
+        });
+
+        Schema::dropIfExists('quote_approval_requests');
+        Schema::create('quote_approval_requests', function (Blueprint $table): void {
+            $table->id();
+            $table->string('service');
+            $table->unsignedBigInteger('quote_id');
+            $table->string('quote_ref_no')->nullable();
+            $table->unsignedInteger('revision_no')->default(0);
+            $table->string('commercial_fingerprint', 64);
+            $table->string('rule_version');
+            $table->string('zone');
+            $table->string('status');
+            $table->string('required_step')->nullable();
+            $table->decimal('quoted_total', 15, 2)->nullable();
+            $table->decimal('estimated_cost', 15, 2)->nullable();
+            $table->decimal('margin_percent', 8, 2)->nullable();
+            $table->json('trigger_reasons')->nullable();
+            $table->boolean('is_current')->default(true);
+            $table->unsignedBigInteger('requested_by_id')->nullable();
+            $table->timestamp('requested_at')->nullable();
+            $table->unsignedBigInteger('decided_by_id')->nullable();
+            $table->string('decided_by_name')->nullable();
+            $table->text('decision_remarks')->nullable();
+            $table->timestamp('decided_at')->nullable();
+            $table->timestamps();
         });
 
         DB::table('system_users')->insert([
@@ -82,6 +116,21 @@ class QuoteRecordEmailControllerTest extends TestCase
             ->assertJsonPath('message', 'This quotation has no valid client recipient email.');
     }
 
+    public function test_quote_email_blocks_an_unapproved_quote_after_request_validation(): void
+    {
+        $this->configureQuoteMailer();
+        $this->insertTrainingQuote('client@example.test', [
+            'grand_total' => 130,
+            'estimated_total_cost' => 100,
+        ]);
+
+        $this->withSession($this->authenticatedSession())
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson('/quote-records/training/42/email', $this->emailPayload())
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'QUOTE_APPROVAL_REQUIRED');
+    }
+
     private function authenticatedSession(): array
     {
         return [
@@ -117,14 +166,14 @@ class QuoteRecordEmailControllerTest extends TestCase
         ]);
     }
 
-    private function insertTrainingQuote(string $picEmail): void
+    private function insertTrainingQuote(string $picEmail, array $overrides = []): void
     {
-        DB::table('quotes_training')->insert([
+        DB::table('quotes_training')->insert(array_merge([
             'id' => 42,
             'quote_ref_no' => 'Q-42',
             'client_name' => 'Client Sdn Bhd',
             'pic_name' => 'Client PIC',
             'pic_email' => $picEmail,
-        ]);
+        ], $overrides));
     }
 }

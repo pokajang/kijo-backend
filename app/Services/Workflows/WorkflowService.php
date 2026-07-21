@@ -20,6 +20,8 @@ class WorkflowService
 
     public const NEGOTIATION_TEMPLATE_KEY = 'quote-price-exception';
 
+    public const QUOTE_APPROVAL_TEMPLATE_KEY = 'quote-approval';
+
     private const SALARY_SUBJECT_TYPE = 'salary_application';
 
     private const OTHER_CLAIM_SUBJECT_TYPE = 'other_claim_application';
@@ -52,7 +54,7 @@ class WorkflowService
         $this->ensureDefaultTemplates();
 
         $templates = DB::table('workflow_templates')
-            ->orderByRaw("CASE process_key WHEN 'salary-application' THEN 1 WHEN 'vendor-payment' THEN 2 WHEN 'leave-application' THEN 3 WHEN 'quote-price-exception' THEN 4 ELSE 9 END")
+            ->orderByRaw("CASE process_key WHEN 'salary-application' THEN 1 WHEN 'vendor-payment' THEN 2 WHEN 'leave-application' THEN 3 WHEN 'quote-price-exception' THEN 4 WHEN 'quote-approval' THEN 5 ELSE 9 END")
             ->orderBy('label')
             ->get()
             ->map(fn (object $template): array => $this->templateSummary($template))
@@ -73,6 +75,7 @@ class WorkflowService
             self::VENDOR_TEMPLATE_KEY,
             self::LEAVE_TEMPLATE_KEY,
             self::NEGOTIATION_TEMPLATE_KEY,
+            self::QUOTE_APPROVAL_TEMPLATE_KEY,
         ];
         $emptyStatus = array_fill_keys($templateKeys, ['missing' => 0]);
 
@@ -150,7 +153,7 @@ class WorkflowService
         if ($key === self::LEAVE_TEMPLATE_KEY) {
             return response()->json($this->leaveTemplatePayload($request));
         }
-        if ($key === self::NEGOTIATION_TEMPLATE_KEY) {
+        if (in_array($key, [self::NEGOTIATION_TEMPLATE_KEY, self::QUOTE_APPROVAL_TEMPLATE_KEY], true)) {
             return response()->json($this->genericTemplatePayload($request, $key));
         }
 
@@ -181,8 +184,12 @@ class WorkflowService
         if ($key === self::LEAVE_TEMPLATE_KEY) {
             return response()->json($this->updateLeaveTemplate($request));
         }
-        if ($key === self::NEGOTIATION_TEMPLATE_KEY) {
-            return response()->json($this->updateGenericTemplate($request, $key, 'Negotiation workflow settings saved.'));
+        if (in_array($key, [self::NEGOTIATION_TEMPLATE_KEY, self::QUOTE_APPROVAL_TEMPLATE_KEY], true)) {
+            $message = $key === self::QUOTE_APPROVAL_TEMPLATE_KEY
+                ? 'Quotation approval workflow settings saved.'
+                : 'Negotiation workflow settings saved.';
+
+            return response()->json($this->updateGenericTemplate($request, $key, $message));
         }
         if ($key !== self::SALARY_TEMPLATE_KEY) {
             return response()->json(['status' => 'error', 'message' => 'Workflow template not found.'], 404);
@@ -1625,6 +1632,7 @@ class WorkflowService
             ['vendor-payment', 'Vendor Payment', 'vendor', '/vendor/payment-records/{id}'],
             ['leave-application', 'Leave Application', 'leave', '/staff/leaves/records/{id}'],
             ['quote-price-exception', 'Negotiation', 'crm', '/crm/price-exceptions/{id}'],
+            [self::QUOTE_APPROVAL_TEMPLATE_KEY, 'Quotation Approval', 'crm', '/crm/records?approval_scope=mine'],
         ] as [$key, $label, $module, $route]) {
             DB::table('workflow_templates')->updateOrInsert(
                 ['process_key' => $key],
@@ -1743,6 +1751,34 @@ class WorkflowService
                     'updated_at' => $now,
                 ],
             );
+        }
+
+        $quoteApprovalTemplateId = (int) DB::table('workflow_templates')
+            ->where('process_key', self::QUOTE_APPROVAL_TEMPLATE_KEY)
+            ->value('id');
+        if ($quoteApprovalTemplateId > 0) {
+            foreach ([
+                ['step_key' => 'hod', 'sort_order' => 10, 'label' => 'HOD Approval'],
+                ['step_key' => 'bd', 'sort_order' => 20, 'label' => 'BD Final Approval'],
+            ] as $step) {
+                DB::table('workflow_template_steps')->updateOrInsert(
+                    [
+                        'template_id' => $quoteApprovalTemplateId,
+                        'step_key' => $step['step_key'],
+                        'level_no' => 1,
+                    ],
+                    [
+                        ...$step,
+                        'template_id' => $quoteApprovalTemplateId,
+                        'level_no' => 1,
+                        'action_label' => 'Approve',
+                        'fallback_roles' => json_encode([]),
+                        'active' => 1,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ],
+                );
+            }
         }
     }
 

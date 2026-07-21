@@ -5,11 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\QuoteRecord\SendQuoteEmailRequest;
 use App\Services\AuditLogService;
+use App\Services\QuoteApprovals\QuoteApprovalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 
 class QuoteRecordEmailController extends Controller
 {
@@ -20,7 +21,7 @@ class QuoteRecordEmailController extends Controller
     public function send(SendQuoteEmailRequest $request, string $service, int $id): JsonResponse
     {
         $service = strtolower(trim($service));
-        if (!in_array($service, self::SUPPORTED_SERVICES, true)) {
+        if (! in_array($service, self::SUPPORTED_SERVICES, true)) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported quote service.'], 404);
         }
 
@@ -43,7 +44,7 @@ class QuoteRecordEmailController extends Controller
                 'message' => 'Your staff email is not available in the current session.',
             ], 422);
         }
-        if (!$this->isValidEmail($staffEmail)) {
+        if (! $this->isValidEmail($staffEmail)) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Your staff email in the current session is invalid.',
@@ -51,7 +52,7 @@ class QuoteRecordEmailController extends Controller
         }
 
         $quote = $this->findQuote($service, $id);
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quotation not found.'], 404);
         }
 
@@ -64,8 +65,12 @@ class QuoteRecordEmailController extends Controller
         }
         $recipientEmail = implode(', ', $recipientEmails);
 
+        if ($denial = app(QuoteApprovalService::class)->issuanceDenial($service, $id)) {
+            return response()->json($denial, 409);
+        }
+
         $pdfResponse = $this->generatePdfResponse($request, $service, $id);
-        if (!$pdfResponse || $pdfResponse->getStatusCode() !== 200) {
+        if (! $pdfResponse || $pdfResponse->getStatusCode() !== 200) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Unable to generate the quotation PDF attachment.',
@@ -73,7 +78,7 @@ class QuoteRecordEmailController extends Controller
         }
 
         $pdfBinary = $pdfResponse->getContent();
-        if (!is_string($pdfBinary) || $pdfBinary === '') {
+        if (! is_string($pdfBinary) || $pdfBinary === '') {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Generated quotation PDF is empty.',
@@ -196,7 +201,7 @@ class QuoteRecordEmailController extends Controller
 
         if (
             $mailer === '' ||
-            !is_array($mailerConfig) ||
+            ! is_array($mailerConfig) ||
             in_array($transport, ['array', 'log'], true) ||
             $fromAddress === '' ||
             str_contains(strtolower($fromAddress), 'example.com')
@@ -207,7 +212,7 @@ class QuoteRecordEmailController extends Controller
         if ($transport === 'smtp') {
             $missingFields = $this->missingSmtpConfigFields($mailerConfig);
             if ($missingFields !== []) {
-                return 'Quotation SMTP configuration is incomplete. Missing: ' . implode(', ', $missingFields) . '.';
+                return 'Quotation SMTP configuration is incomplete. Missing: '.implode(', ', $missingFields).'.';
             }
         }
 
@@ -267,13 +272,14 @@ class QuoteRecordEmailController extends Controller
     {
         if (
             preg_match('/filename\*?=(?:UTF-8\'\')?"?([^\";]+)"?/i', $contentDisposition, $matches)
-            && !empty($matches[1])
+            && ! empty($matches[1])
         ) {
             return trim(rawurldecode($matches[1]), "\"'");
         }
 
         $safeRef = preg_replace('/[^A-Za-z0-9._-]+/', '_', (string) ($quote->quote_ref_no ?? "quote-{$quoteId}"));
-        return ($safeRef !== '' ? $safeRef : "quote-{$quoteId}") . '.pdf';
+
+        return ($safeRef !== '' ? $safeRef : "quote-{$quoteId}").'.pdf';
     }
 
     private function serviceLabel(string $service): string

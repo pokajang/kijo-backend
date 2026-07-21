@@ -106,7 +106,13 @@ class EquipmentQuoteRecordPdfService extends PdfRenderer
             'logoDataUri'       => $logoDataUri,
         ])->render();
 
-        $dompdf = $this->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $dompdf = $this->renderPortraitWithFooter(
+            $html,
+            $generatedAt,
+            $generatorCode,
+            $generatorId,
+            $request->boolean('approval_preview'),
+        );
 
         $this->auditLog->log($request, "Generated Equipment quotation PDF for quote ID #{$quoteId}");
 

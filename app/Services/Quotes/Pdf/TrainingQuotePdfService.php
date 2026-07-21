@@ -206,7 +206,14 @@ class TrainingQuotePdfService
             'proposalAgendaByDay' => $proposalAgendaByDay,
         ])->render();
 
-        $dompdf = $this->renderer->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $draftWatermark = $request->boolean('approval_preview');
+        $dompdf = $this->renderer->renderPortraitWithFooter(
+            $html,
+            $generatedAt,
+            $generatorCode,
+            $generatorId,
+            $draftWatermark,
+        );
         $pdfBytes = $dompdf->output();
 
         if ($appendProposal && !empty($proposalSections)) {
@@ -220,7 +227,13 @@ class TrainingQuotePdfService
                 'agendaByDay' => $proposalAgendaByDay,
                 'logoDataUri' => $logoDataUri,
             ])->render();
-            $proposalPdf = $this->renderer->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $proposalPdf = $this->renderer->renderPortraitWithFooter(
+                $proposalHtml,
+                $generatedAt,
+                $generatorCode,
+                $generatorId,
+                $draftWatermark,
+            )->output();
             $mergedBytes = $this->pdfMerge->mergeSequence([$pdfBytes, $proposalPdf]);
             if ($mergedBytes !== null) {
                 $pdfBytes = $mergedBytes;

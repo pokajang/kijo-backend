@@ -154,7 +154,8 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
             'logoDataUri'        => $logoDataUri,
         ])->render();
 
-        $dompdf = $this->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId);
+        $draftWatermark = $request->boolean('approval_preview');
+        $dompdf = $this->renderPortraitWithFooter($html, $generatedAt, $generatorCode, $generatorId, $draftWatermark);
         $pdfBytes = $dompdf->output();
 
         if ($appendProposal && !empty($proposalSections)) {
@@ -168,7 +169,13 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
                 'sections' => $proposalSections,
                 'logoDataUri' => $logoDataUri,
             ])->render();
-            $proposalPdf = $this->renderPortraitWithFooter($proposalHtml, $generatedAt, $generatorCode, $generatorId)->output();
+            $proposalPdf = $this->renderPortraitWithFooter(
+                $proposalHtml,
+                $generatedAt,
+                $generatorCode,
+                $generatorId,
+                $draftWatermark,
+            )->output();
             $mergedBytes = $this->pdfMerge->mergeSequence([$pdfBytes, $proposalPdf]);
             if ($mergedBytes !== null) {
                 $pdfBytes = $mergedBytes;

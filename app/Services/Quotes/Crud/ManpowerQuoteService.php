@@ -5,6 +5,7 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreManpowerQuoteRequest;
 use App\Http\Requests\Quote\UpdateManpowerQuoteRequest;
 use App\Services\AuditLogService;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,31 +28,30 @@ class ManpowerQuoteService
             ')
             ->first();
 
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
 
-
     public function storeManpower(StoreManpowerQuoteRequest $request): JsonResponse
     {
-        $staffId  = (int) $request->session()->get('staff_id', 0);
+        $staffId = (int) $request->session()->get('staff_id', 0);
         $nameCode = trim((string) $request->session()->get('name_code', ''));
 
         if ($staffId <= 0 || $nameCode === '') {
             return response()->json(['status' => 'error', 'message' => 'Unauthorized.'], 403);
         }
 
-        $data     = $request->validated();
-        $table    = 'quotes_manpower';
-        $type     = 'manpower';
-        $lockName = "quotes_{$type}_" . date('Y');
-        $prefix   = 'QMS' . date('y') . '-%';
+        $data = $request->validated();
+        $table = 'quotes_manpower';
+        $type = 'manpower';
+        $lockName = "quotes_{$type}_".date('Y');
+        $prefix = 'QMS'.date('y').'-%';
 
         $quoteId = null;
-        $refNo   = null;
+        $refNo = null;
 
         DB::beginTransaction();
         try {
@@ -59,59 +59,66 @@ class ManpowerQuoteService
             $manpowerTotals = $this->manpowerTotals($data, $priceException);
 
             $lockResult = DB::selectOne('SELECT GET_LOCK(?, 10) AS acquired', [$lockName]);
-            if (!$lockResult || !$lockResult->acquired) {
+            if (! $lockResult || ! $lockResult->acquired) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Could not acquire lock. Please retry.'], 503);
             }
 
-            $row  = DB::selectOne(
+            $row = DB::selectOne(
                 "SELECT MAX(CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(quote_ref_no, '-', -1), ?, 1) AS UNSIGNED)) AS max_run FROM {$table} WHERE quote_ref_no LIKE ?",
                 [$nameCode, $prefix]
             );
-            $next  = (($row->max_run ?? 0) ?: 0) + 1;
-            $refNo = 'QMS' . date('y') . '-' . str_pad((string) $next, 4, '0', STR_PAD_LEFT) . $nameCode;
+            $next = (($row->max_run ?? 0) ?: 0) + 1;
+            $refNo = 'QMS'.date('y').'-'.str_pad((string) $next, 4, '0', STR_PAD_LEFT).$nameCode;
 
             $insert = [
-                'service_group'    => 'manpower',
+                'service_group' => 'manpower',
                 'quote_running_no' => $next,
-                'client_id'       => $data['client_id'],
-                'client_name'     => $data['client_name'],
-                'client_ssm'      => $data['client_ssm'] ?? null,
-                'client_address'  => $data['client_address'],
-                'client_city'     => $data['client_city'] ?? null,
-                'client_state'    => $data['client_state'] ?? null,
-                'client_zip'      => $data['client_zip'] ?? null,
-                'pic_name'        => $data['pic_name'],
-                'pic_email'       => $data['pic_email'],
-                'pic_phone'       => $data['pic_phone'],
-                'pic_position'    => $data['pic_position'],
-                'mp_id'           => $data['mp_id'] ?? null,
-                'service_title'   => $data['service_title'],
-                'service_code'    => $data['service_code'],
+                'client_id' => $data['client_id'],
+                'client_name' => $data['client_name'],
+                'client_ssm' => $data['client_ssm'] ?? null,
+                'client_address' => $data['client_address'],
+                'client_city' => $data['client_city'] ?? null,
+                'client_state' => $data['client_state'] ?? null,
+                'client_zip' => $data['client_zip'] ?? null,
+                'pic_name' => $data['pic_name'],
+                'pic_email' => $data['pic_email'],
+                'pic_phone' => $data['pic_phone'],
+                'pic_position' => $data['pic_position'],
+                'mp_id' => $data['mp_id'] ?? null,
+                'service_title' => $data['service_title'],
+                'service_code' => $data['service_code'],
                 'manpower_rate_type' => $data['manpower_rate_type'] ?? null,
-                'billing_unit'    => $data['billing_unit'] ?? 'month',
-                'duration_hours'  => $this->nd($data['duration_hours'] ?? null),
-                'requires_management_approval' => !empty($data['requires_management_approval']) ? 1 : 0,
-                'nature_of_work'  => $data['nature_of_work'] ?? null,
-                'site_location'   => $data['site_location'] ?? null,
+                'billing_unit' => $data['billing_unit'] ?? 'month',
+                'duration_hours' => $this->nd($data['duration_hours'] ?? null),
+                'requires_management_approval' => ! empty($data['requires_management_approval']) ? 1 : 0,
+                'nature_of_work' => $data['nature_of_work'] ?? null,
+                'site_location' => $data['site_location'] ?? null,
                 'duration_months' => $this->nd($data['duration_months'] ?? null),
-                'no_of_pax'       => $data['no_of_pax'] ?? null,
-                'unit_cost'       => $this->nd($data['unit_cost'] ?? null),
-                'discount'        => $manpowerTotals['discount'],
-                'sst_percent'     => $this->nd($data['sst_percent'] ?? null),
-                'sst_amount'      => $manpowerTotals['sst_amount'],
-                'sub_total'       => $manpowerTotals['sub_total'],
-                'grand_total'     => $manpowerTotals['grand_total'],
+                'no_of_pax' => $data['no_of_pax'] ?? null,
+                'unit_cost' => $this->nd($data['unit_cost'] ?? null),
+                'discount' => $manpowerTotals['discount'],
+                'sst_percent' => $this->nd($data['sst_percent'] ?? null),
+                'sst_amount' => $manpowerTotals['sst_amount'],
+                'sub_total' => $manpowerTotals['sub_total'],
+                'grand_total' => $manpowerTotals['grand_total'],
+                ...(Schema::hasColumn($table, 'estimated_total_cost')
+                    ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
+                    : []),
+                ...(Schema::hasColumn($table, 'traffic_light_rule_version')
+                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? null]
+                    : []),
                 'inquiry_remarks' => $data['inquiry_remarks'] ?? null,
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
-                'status'          => 'Open',
-                'revision_no'     => 0,
-                'created_by_id'   => $staffId,
+                'status' => 'Open',
+                'revision_no' => 0,
+                'created_by_id' => $staffId,
                 'created_by_name' => (string) $request->session()->get('full_name', ''),
                 'created_by_code' => $nameCode,
-                'quote_ref_no'    => $refNo,
-                'created_at'      => now(),
-                'updated_at'      => now(),
+                'quote_ref_no' => $refNo,
+                'created_at' => now(),
+                'updated_at' => now(),
             ];
 
             if (Schema::hasColumn($table, 'price_exception_request_id')) {
@@ -125,12 +132,13 @@ class ManpowerQuoteService
             $this->markPriceExceptionUsed($priceException, $quoteId);
 
             DB::commit();
-        } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+        } catch (HttpResponseException $e) {
             DB::rollBack();
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
             DB::select('DO RELEASE_LOCK(?)', [$lockName]);
@@ -139,21 +147,20 @@ class ManpowerQuoteService
         $this->auditLog->log($request, "Created manpower quote {$refNo} (ID #{$quoteId})");
 
         return response()->json([
-            'status'  => 'success',
+            'status' => 'success',
             'message' => 'Manpower quote created successfully.',
-            'quote_id'      => $quoteId,
-            'quote_ref_no'  => $refNo,
-            'data'    => [
-                'quote_id'     => $quoteId,
+            'quote_id' => $quoteId,
+            'quote_ref_no' => $refNo,
+            'data' => [
+                'quote_id' => $quoteId,
                 'quote_ref_no' => $refNo,
             ],
         ]);
     }
 
-
     public function updateManpower(UpdateManpowerQuoteRequest $request, int $id): JsonResponse
     {
-        $staffId  = (int) $request->session()->get('staff_id', 0);
+        $staffId = (int) $request->session()->get('staff_id', 0);
         $nameCode = trim((string) $request->session()->get('name_code', ''));
 
         if ($staffId <= 0 || $nameCode === '') {
@@ -161,11 +168,11 @@ class ManpowerQuoteService
         }
 
         $quote = DB::table('quotes_manpower')->where('id', $id)->first();
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
 
-        $data       = $request->validated();
+        $data = $request->validated();
         $isRevision = $request->boolean('isRevision');
 
         try {
@@ -174,37 +181,43 @@ class ManpowerQuoteService
             $manpowerTotals = $this->manpowerTotals($data, $priceException);
 
             $updates = [
-                'client_id'       => $data['client_id'],
-                'client_name'     => $data['client_name'],
-                'client_ssm'      => $data['client_ssm'] ?? null,
-                'client_address'  => $data['client_address'],
-                'client_city'     => $data['client_city'] ?? null,
-                'client_state'    => $data['client_state'] ?? null,
-                'client_zip'      => $data['client_zip'] ?? null,
-                'pic_name'        => $data['pic_name'],
-                'pic_email'       => $data['pic_email'],
-                'pic_phone'       => $data['pic_phone'],
-                'pic_position'    => $data['pic_position'],
-                'mp_id'           => $data['mp_id'] ?? null,
-                'service_title'   => $data['service_title'],
-                'service_code'    => $data['service_code'],
+                'client_id' => $data['client_id'],
+                'client_name' => $data['client_name'],
+                'client_ssm' => $data['client_ssm'] ?? null,
+                'client_address' => $data['client_address'],
+                'client_city' => $data['client_city'] ?? null,
+                'client_state' => $data['client_state'] ?? null,
+                'client_zip' => $data['client_zip'] ?? null,
+                'pic_name' => $data['pic_name'],
+                'pic_email' => $data['pic_email'],
+                'pic_phone' => $data['pic_phone'],
+                'pic_position' => $data['pic_position'],
+                'mp_id' => $data['mp_id'] ?? null,
+                'service_title' => $data['service_title'],
+                'service_code' => $data['service_code'],
                 'manpower_rate_type' => $data['manpower_rate_type'] ?? null,
-                'billing_unit'    => $data['billing_unit'] ?? 'month',
-                'duration_hours'  => $this->nd($data['duration_hours'] ?? null),
-                'requires_management_approval' => !empty($data['requires_management_approval']) ? 1 : 0,
-                'nature_of_work'  => $data['nature_of_work'] ?? null,
-                'site_location'   => $data['site_location'] ?? null,
+                'billing_unit' => $data['billing_unit'] ?? 'month',
+                'duration_hours' => $this->nd($data['duration_hours'] ?? null),
+                'requires_management_approval' => ! empty($data['requires_management_approval']) ? 1 : 0,
+                'nature_of_work' => $data['nature_of_work'] ?? null,
+                'site_location' => $data['site_location'] ?? null,
                 'duration_months' => $this->nd($data['duration_months'] ?? null),
-                'no_of_pax'       => $data['no_of_pax'] ?? null,
-                'unit_cost'       => $this->nd($data['unit_cost'] ?? null),
-                'discount'        => $manpowerTotals['discount'],
-                'sst_percent'     => $this->nd($data['sst_percent'] ?? null),
-                'sst_amount'      => $manpowerTotals['sst_amount'],
-                'sub_total'       => $manpowerTotals['sub_total'],
-                'grand_total'     => $manpowerTotals['grand_total'],
+                'no_of_pax' => $data['no_of_pax'] ?? null,
+                'unit_cost' => $this->nd($data['unit_cost'] ?? null),
+                'discount' => $manpowerTotals['discount'],
+                'sst_percent' => $this->nd($data['sst_percent'] ?? null),
+                'sst_amount' => $manpowerTotals['sst_amount'],
+                'sub_total' => $manpowerTotals['sub_total'],
+                'grand_total' => $manpowerTotals['grand_total'],
+                ...(Schema::hasColumn('quotes_manpower', 'estimated_total_cost')
+                    ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
+                    : []),
+                ...(Schema::hasColumn('quotes_manpower', 'traffic_light_rule_version')
+                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? null]
+                    : []),
                 'inquiry_remarks' => $data['inquiry_remarks'] ?? null,
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
-                'updated_at'      => now(),
+                'updated_at' => now(),
             ];
 
             if (Schema::hasColumn('quotes_manpower', 'price_exception_request_id')) {
@@ -228,21 +241,22 @@ class ManpowerQuoteService
             $this->markPriceExceptionUsed($priceException, $id);
 
             DB::commit();
-        } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+        } catch (HttpResponseException $e) {
             DB::rollBack();
             throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 
-        $this->auditLog->log($request, "Updated manpower quote ID #{$id} by {$nameCode}" . ($isRevision ? ' (revision)' : ''));
+        $this->auditLog->log($request, "Updated manpower quote ID #{$id} by {$nameCode}".($isRevision ? ' (revision)' : ''));
 
         return response()->json([
-            'status'  => 'success',
+            'status' => 'success',
             'message' => 'Manpower quote updated successfully.',
-            'data'    => [
+            'data' => [
                 'revision_no' => $updates['revision_no'] ?? $quote->revision_no,
             ],
         ]);
@@ -265,5 +279,4 @@ class ManpowerQuoteService
             'grand_total' => round($subtotal + $sstAmount, 2),
         ];
     }
-
 }
