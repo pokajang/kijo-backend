@@ -381,7 +381,6 @@ class QuoteApprovalService
         $commercial = [
             'service' => $service,
             'quote_id' => (int) $quote->id,
-            'revision_no' => (int) ($quote->revision_no ?? 0),
             'grand_total' => round($total, 2),
             'estimated_total_cost' => $cost === null ? null : round($cost, 2),
             'discount_type' => $quote->discount_type ?? null,

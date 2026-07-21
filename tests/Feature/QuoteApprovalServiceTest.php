@@ -333,6 +333,28 @@ class QuoteApprovalServiceTest extends TestCase
         $this->assertSame('pending', DB::table('quote_approval_requests')->where('id', $approval->id)->value('status'));
     }
 
+    public function test_revision_only_change_does_not_create_a_new_approval_request(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-006-REV',
+            'grand_total' => 130,
+            'estimated_total_cost' => 100,
+            'revision_no' => 0,
+        ]);
+        $service = app(QuoteApprovalService::class);
+        $first = $service->current('training', $quoteId, false);
+
+        DB::table('quotes_training')->where('id', $quoteId)->update([
+            'revision_no' => 99,
+            'quote_ref_no' => 'QTR-006-REV-UPDATED',
+        ]);
+        $second = $service->current('training', $quoteId, false);
+
+        $this->assertSame($first->id, $second->id);
+        $this->assertSame('pending', DB::table('quote_approval_requests')->where('id', $first->id)->value('status'));
+        $this->assertSame(1, DB::table('quote_approval_requests')->where('quote_id', $quoteId)->count());
+    }
+
     public function test_default_email_accounts_are_authorized_only_for_their_assigned_step(): void
     {
         $recipients = app(QuoteApprovalRecipientService::class);
