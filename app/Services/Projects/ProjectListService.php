@@ -31,26 +31,6 @@ class ProjectListService
             ? 'p.current_project_value'
             : 'NULL';
         $resolvedProjectValueColumn = $this->projectValueService()->resolvedProjectValueExpression('p');
-        $inquirySourceColumn = Schema::hasTable('quote_inquiry_sources')
-            ? "(
-                SELECT qis.source
-                FROM quote_inquiry_sources qis
-                WHERE qis.quote_id = p.quote_id
-                  AND qis.service_type = p.project_type
-                ORDER BY qis.id DESC
-                LIMIT 1
-            )"
-            : 'NULL';
-        $inquirySourceRemarksColumn = Schema::hasTable('quote_inquiry_sources')
-            ? "(
-                SELECT qis.remarks
-                FROM quote_inquiry_sources qis
-                WHERE qis.quote_id = p.quote_id
-                  AND qis.service_type = p.project_type
-                ORDER BY qis.id DESC
-                LIMIT 1
-            )"
-            : 'NULL';
 
         $projects = DB::select("
             SELECT
@@ -81,9 +61,7 @@ class ProjectListService
                 COALESCE(qt.pic_name, qh.pic_name, qm.pic_name, qs.pic_name, qe.pic_name) AS quote_pic_name,
                 COALESCE(qt.pic_email, qh.pic_email, qm.pic_email, qs.pic_email, qe.pic_email) AS quote_pic_email,
                 COALESCE(qt.pic_phone, qh.pic_phone, qm.pic_phone, qs.pic_phone, qe.pic_phone) AS quote_pic_phone,
-                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position,
-                {$inquirySourceColumn} AS inquiry_source,
-                {$inquirySourceRemarksColumn} AS inquiry_source_remarks
+                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position
             FROM projects_main p
             LEFT JOIN quotes_training qt ON qt.id = p.quote_id AND p.project_type = 'Training'
             LEFT JOIN quotes_ih qh ON qh.id = p.quote_id AND p.project_type = 'Industrial Hygiene'
@@ -110,6 +88,7 @@ class ProjectListService
             return response()->json([]);
         }
 
+        $inquirySourcesByQuote = $this->inquirySourcesByQuote($projects);
         $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
 
         $progressRows = DB::select(
@@ -231,6 +210,12 @@ class ProjectListService
         foreach ($projects as &$project) {
             $id = $project['id'];
             $clientId = $project['client_id'];
+            $inquirySource = $inquirySourcesByQuote[
+                (string) ($project['quote_id'] ?? '').'|'.(string) ($project['project_type'] ?? '')
+            ] ?? null;
+
+            $project['inquiry_source'] = $inquirySource['source'] ?? null;
+            $project['inquiry_source_remarks'] = $inquirySource['remarks'] ?? null;
 
             $addressParts = array_filter([
                 $project['client_address'] ?? '',
@@ -284,6 +269,49 @@ class ProjectListService
         unset($project);
 
         return response()->json($projects);
+    }
+
+    private function inquirySourcesByQuote(array $projects): array
+    {
+        $requiredColumns = ['id', 'quote_id', 'service_type', 'source', 'remarks'];
+        if (! Schema::hasTable('quote_inquiry_sources')) {
+            return [];
+        }
+
+        foreach ($requiredColumns as $column) {
+            if (! Schema::hasColumn('quote_inquiry_sources', $column)) {
+                return [];
+            }
+        }
+
+        $quoteIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $project) => $project['quote_id'] ?? null,
+            $projects
+        ))));
+        if (empty($quoteIds)) {
+            return [];
+        }
+
+        $sourcesByQuote = [];
+        $rows = DB::table('quote_inquiry_sources')
+            ->select(['quote_id', 'service_type', 'source', 'remarks'])
+            ->whereIn('quote_id', $quoteIds)
+            ->orderByDesc('id')
+            ->get();
+
+        foreach ($rows as $row) {
+            $key = (string) $row->quote_id.'|'.(string) $row->service_type;
+            if (isset($sourcesByQuote[$key])) {
+                continue;
+            }
+
+            $sourcesByQuote[$key] = [
+                'source' => $row->source,
+                'remarks' => $row->remarks,
+            ];
+        }
+
+        return $sourcesByQuote;
     }
 
     private function closeReminderSummaries(array $projects, array $closingByProject): array
