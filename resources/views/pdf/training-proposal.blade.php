@@ -29,8 +29,8 @@
         .header-separator { margin-top: 1.3mm; border-bottom: 0.7px solid #696969; }
 
         .title-box {
-            margin: 0 auto 5mm auto;
-            width: 81%;
+            margin: 0 0 5mm;
+            width: 95.2%; /* Dompdf applies horizontal padding outside the percentage width. */
             border: 0.6px solid #c8f0c8;
             background: #f0fff0;
             border-radius: 2mm;
