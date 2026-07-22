@@ -154,8 +154,6 @@
             {{ $pdfLanguage === 'ms-MY' ? 'berdasarkan terma yang dinyatakan di bawah:' : 'under the terms outlined below:' }}
         </p>
 
-        @include('pdf.partials.quote-cross-sell-banner')
-
         <table class="quote-table">
             <tr>
                 <td class="label">{{ $L('training_details', 'Training Details') }}</td>

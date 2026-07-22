@@ -131,8 +131,6 @@
             <strong>{{ $serviceTitle }}</strong>.
         </p>
 
-        @include('pdf.partials.quote-cross-sell-banner')
-
         <table class="quote-table">
             <tr>
                 <td class="label">{{ $L('service_details', 'Service Details') }}</td>

@@ -15,6 +15,8 @@
 @endphp
 <div class="title-box">{{ $proposalDisplayTitle }}</div>
 
+@include('pdf.partials.proposal-company-services')
+
 @foreach(($sections ?? []) as $section)
     @php($sectionContentHtml = (string) ($section['contentHtml'] ?? $section['content'] ?? ''))
     @if(!empty(trim(strip_tags($sectionContentHtml))))

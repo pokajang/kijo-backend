@@ -31,6 +31,26 @@ class ProjectListService
             ? 'p.current_project_value'
             : 'NULL';
         $resolvedProjectValueColumn = $this->projectValueService()->resolvedProjectValueExpression('p');
+        $inquirySourceColumn = Schema::hasTable('quote_inquiry_sources')
+            ? "(
+                SELECT qis.source
+                FROM quote_inquiry_sources qis
+                WHERE qis.quote_id = p.quote_id
+                  AND qis.service_type = p.project_type
+                ORDER BY qis.id DESC
+                LIMIT 1
+            )"
+            : 'NULL';
+        $inquirySourceRemarksColumn = Schema::hasTable('quote_inquiry_sources')
+            ? "(
+                SELECT qis.remarks
+                FROM quote_inquiry_sources qis
+                WHERE qis.quote_id = p.quote_id
+                  AND qis.service_type = p.project_type
+                ORDER BY qis.id DESC
+                LIMIT 1
+            )"
+            : 'NULL';
 
         $projects = DB::select("
             SELECT
@@ -61,7 +81,9 @@ class ProjectListService
                 COALESCE(qt.pic_name, qh.pic_name, qm.pic_name, qs.pic_name, qe.pic_name) AS quote_pic_name,
                 COALESCE(qt.pic_email, qh.pic_email, qm.pic_email, qs.pic_email, qe.pic_email) AS quote_pic_email,
                 COALESCE(qt.pic_phone, qh.pic_phone, qm.pic_phone, qs.pic_phone, qe.pic_phone) AS quote_pic_phone,
-                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position
+                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position,
+                {$inquirySourceColumn} AS inquiry_source,
+                {$inquirySourceRemarksColumn} AS inquiry_source_remarks
             FROM projects_main p
             LEFT JOIN quotes_training qt ON qt.id = p.quote_id AND p.project_type = 'Training'
             LEFT JOIN quotes_ih qh ON qh.id = p.quote_id AND p.project_type = 'Industrial Hygiene'

@@ -67,8 +67,6 @@
         <p>Dear <strong>Valued Customer</strong>,</p>
         <p>Thank you for your interest in the following equipment. Please find below the quotation details.</p>
 
-        @include('pdf.partials.quote-cross-sell-banner')
-
         <table class="items-table">
             <thead>
                 <tr>

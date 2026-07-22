@@ -11,6 +11,8 @@
 @endphp
 <div class="title-box">{{ $proposalTitle ?? ($partialLanguage === 'ms-MY' ? 'Cadangan Perkhidmatan' : 'Service Proposal') }}</div>
 
+@include('pdf.partials.proposal-company-services')
+
 @foreach(($sections ?? []) as $section)
     @php($sectionTitle = (string) ($section['title'] ?? ''))
     <p class="section-title">{{ $partialLanguage === 'ms-MY' ? ($sectionLabels[$sectionTitle] ?? $sectionTitle) : $sectionTitle }}</p>
