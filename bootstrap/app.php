@@ -15,6 +15,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'auth.session' => \App\Http\Middleware\RequireAuth::class,
+            'no-cache' => \App\Http\Middleware\PreventResponseCaching::class,
             'role' => \App\Http\Middleware\RequireRole::class,
         ]);
 

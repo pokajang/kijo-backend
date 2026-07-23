@@ -611,7 +611,7 @@ Route::middleware('auth.session')->group(function () {
     // ─── Batch 5 — Quote Records (clean paths) ──────────────────────────────────
 
     // Equipment
-    Route::get('quote-records/equipment', [QuoteRecordController::class, 'listEquipment']);
+    Route::get('quote-records/equipment', [QuoteRecordController::class, 'listEquipment'])->middleware('no-cache');
     Route::post('quote-records/equipment/{id}/follow-up', [QuoteRecordController::class, 'addEquipmentFollowUp']);
     Route::post('quote-records/equipment/{id}/award', [QuoteRecordController::class, 'awardEquipment']);
     Route::post('quote-records/equipment/{id}/fail', [QuoteRecordController::class, 'failEquipment']);
@@ -623,7 +623,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('quote-records/equipment/{id}/sync-client', [QuoteRecordController::class, 'syncClientEquipment']);
 
     // IH
-    Route::get('quote-records/ih', [QuoteRecordController::class, 'listIh']);
+    Route::get('quote-records/ih', [QuoteRecordController::class, 'listIh'])->middleware('no-cache');
     Route::post('quote-records/ih/{id}/follow-up', [QuoteRecordController::class, 'addIhFollowUp']);
     Route::post('quote-records/ih/{id}/award', [QuoteRecordController::class, 'awardIh']);
     Route::post('quote-records/ih/{id}/fail', [QuoteRecordController::class, 'failIh']);
@@ -635,7 +635,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('quote-records/ih/{id}/sync-client', [QuoteRecordController::class, 'syncClientIh']);
 
     // Manpower
-    Route::get('quote-records/manpower', [QuoteRecordController::class, 'listManpower']);
+    Route::get('quote-records/manpower', [QuoteRecordController::class, 'listManpower'])->middleware('no-cache');
     Route::post('quote-records/manpower/{id}/follow-up', [QuoteRecordController::class, 'addManpowerFollowUp']);
     Route::post('quote-records/manpower/{id}/award', [QuoteRecordController::class, 'awardManpower']);
     Route::post('quote-records/manpower/{id}/fail', [QuoteRecordController::class, 'failManpower']);
@@ -647,7 +647,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('quote-records/manpower/{id}/sync-client', [QuoteRecordController::class, 'syncClientManpower']);
 
     // Training
-    Route::get('quote-records/training', [QuoteRecordTrainingSpecialController::class, 'listTraining']);
+    Route::get('quote-records/training', [QuoteRecordTrainingSpecialController::class, 'listTraining'])->middleware('no-cache');
     Route::post('quote-records/training/{id}/follow-up', [QuoteRecordTrainingSpecialController::class, 'addTrainingFollowUp']);
     Route::post('quote-records/training/{id}/award', [QuoteRecordTrainingSpecialController::class, 'awardTraining']);
     Route::post('quote-records/training/{id}/fail', [QuoteRecordTrainingSpecialController::class, 'failTraining']);
@@ -659,7 +659,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('quote-records/training/{id}/sync-client', [QuoteRecordTrainingSpecialController::class, 'syncClientTraining']);
 
     // Special
-    Route::get('quote-records/special', [QuoteRecordTrainingSpecialController::class, 'listSpecial']);
+    Route::get('quote-records/special', [QuoteRecordTrainingSpecialController::class, 'listSpecial'])->middleware('no-cache');
     Route::get('quote-records/special/line-items', [QuoteRecordTrainingSpecialController::class, 'specialLineItemsByService']);
     Route::post('quote-records/special/{id}/follow-up', [QuoteRecordTrainingSpecialController::class, 'addSpecialFollowUp']);
     Route::post('quote-records/special/{id}/award', [QuoteRecordTrainingSpecialController::class, 'awardSpecial']);
