@@ -334,7 +334,13 @@ class WorkflowService
         $data = Validator::make($request->all(), [
             'action' => ['required', 'string', 'in:check,approve,reject,return'],
             'remarks' => ['nullable', 'string', 'max:1000'],
+            'record_version' => ['nullable', 'integer', 'min:1'],
         ])->validate();
+        if ((string) ($data['action'] ?? '') === 'reject' && trim((string) ($data['remarks'] ?? '')) === '') {
+            throw ValidationException::withMessages([
+                'remarks' => ['Enter a reason before rejecting this record.'],
+            ]);
+        }
 
         $record = null;
         $subjectType = null;
@@ -737,7 +743,6 @@ class WorkflowService
         if (! $step) {
             abort(response()->json(['status' => 'error', 'message' => 'This workflow has no current actionable step.'], 422));
         }
-        $isSystemAdmin = $this->hasAnyRole($request, ['System Admin']);
         if ($actorId <= 0 || $actorId === (int) $instance->maker_staff_id) {
             abort(response()->json(['status' => 'error', 'message' => 'The maker cannot check or approve their own salary application.'], 403));
         }
@@ -844,6 +849,22 @@ class WorkflowService
         if ((string) $instance->status === 'Rejected' || (string) $claim->status === 'Rejected') {
             abort(response()->json(['status' => 'error', 'message' => 'Rejected other claim records cannot be actioned further.'], 422));
         }
+        if (Schema::hasColumn('hr_other_claim_applications', 'record_version')) {
+            $expectedVersion = (int) ($data['record_version'] ?? 0);
+            if ($expectedVersion <= 0) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Refresh this claim before taking action.',
+                    'errors' => ['record_version' => ['The claim version is required.']],
+                ], 422));
+            }
+            if ($expectedVersion !== (int) ($claim->record_version ?? 1)) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'This claim changed or was withdrawn. Refresh before taking action.',
+                ], 409));
+            }
+        }
         if (! in_array((string) $instance->status, [...self::SALARY_PENDING_CHECK_STATUSES, 'Checked'], true)) {
             abort(response()->json(['status' => 'error', 'message' => 'Other claim record cannot be actioned in its current state.'], 422));
         }
@@ -855,8 +876,7 @@ class WorkflowService
         if (! $step) {
             abort(response()->json(['status' => 'error', 'message' => 'This workflow has no current actionable step.'], 422));
         }
-        $isSystemAdmin = $this->hasAnyRole($request, ['System Admin']);
-        if ($actorId <= 0 || (! $isSystemAdmin && $actorId === (int) $instance->maker_staff_id)) {
+        if ($actorId <= 0 || $actorId === (int) $instance->maker_staff_id) {
             abort(response()->json(['status' => 'error', 'message' => 'The maker cannot check or approve their own other claim application.'], 403));
         }
         if (! $this->canActOnStep($request, $step)) {
@@ -911,7 +931,7 @@ class WorkflowService
             if ($checkerId <= 0 || (string) $claim->status !== 'Checked') {
                 abort(response()->json(['status' => 'error', 'message' => 'Other claim record must be checked before approval.'], 422));
             }
-            if (! $isSystemAdmin && $checkerId === $actorId) {
+            if ($checkerId === $actorId) {
                 abort(response()->json(['status' => 'error', 'message' => 'Checker and approver must be different staff.'], 403));
             }
             $statusTo = 'Approved';
@@ -945,6 +965,9 @@ class WorkflowService
             'completed_at' => $completedAt,
             'updated_at' => now(),
         ]);
+        if (Schema::hasColumn('hr_other_claim_applications', 'record_version')) {
+            $claimPayload['record_version'] = DB::raw('record_version + 1');
+        }
         DB::table('hr_other_claim_applications')->where('id', $claim->id)->update($claimPayload);
 
         return $this->otherClaimRecordPayload((int) $claim->id, $request);
@@ -1001,12 +1024,11 @@ class WorkflowService
             return [];
         }
         $actorId = $this->staffId($request);
-        $isSystemAdmin = $this->hasAnyRole($request, ['System Admin']);
         $isSalary = (string) $instance->subject_type === self::SALARY_SUBJECT_TYPE;
         $canActOnStep = $isSalary
             ? $this->canActOnSalaryStep($request, $step)
             : $this->canActOnStep($request, $step);
-        if ($actorId <= 0 || (($isSalary || ! $isSystemAdmin) && $actorId === (int) $instance->maker_staff_id) || ! $canActOnStep) {
+        if ($actorId <= 0 || $actorId === (int) $instance->maker_staff_id || ! $canActOnStep) {
             return [];
         }
 
@@ -1015,7 +1037,7 @@ class WorkflowService
                 ? 'hr_other_claim_applications'
                 : 'hr_salary_applications';
             $checkerId = DB::table($checkerTable)->where('id', $instance->subject_id)->value('checked_by');
-            if (($isSalary || ! $isSystemAdmin) && (int) $checkerId === $actorId) {
+            if ((int) $checkerId === $actorId) {
                 return [];
             }
         }

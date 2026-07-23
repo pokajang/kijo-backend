@@ -528,6 +528,8 @@ Route::middleware('auth.session')->group(function () {
     Route::post('hr/salary/payment-queue/bulk-mark-paid', [SalaryController::class, 'bulkMarkPaymentQueuePaid'])->middleware('role:HR,Manager,Finance,Account,Bank');
     Route::post('hr/salary/payment-queue/bulk-undo-paid', [SalaryController::class, 'bulkUndoPaymentQueuePaid'])->middleware('role:HR,Manager,Finance,Account,Bank');
     Route::get('hr/salary/other-claims/financial-records', [SalaryController::class, 'otherClaimFinancialRecords'])->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
+    Route::get('hr/salary/other-claims/financial-records/{id}', [SalaryController::class, 'otherClaimFinancialRecord'])->whereNumber('id')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
+    Route::get('hr/salary/other-claims/financial-records/{applicationId}/attachments/{attachmentId}', [SalaryController::class, 'otherClaimFinancialAttachment'])->whereNumber('applicationId')->whereNumber('attachmentId')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
     Route::get('hr/salary/other-claims/financial-records/{id}/claims-pdf', [SalaryController::class, 'otherClaimFinancialClaimsPdf'])->whereNumber('id')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
     Route::post('hr/salary/other-claims/financial-records/{id}/action', [SalaryController::class, 'otherClaimFinancialRecordAction'])->whereNumber('id')->middleware('role:HR,Manager,System Admin,Finance,Account,Bank');
     Route::get('hr/salary/other-claims', [SalaryController::class, 'otherClaimRecords']);

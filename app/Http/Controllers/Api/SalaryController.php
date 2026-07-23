@@ -138,6 +138,11 @@ class SalaryController extends Controller
         return $this->otherClaimService->financialRecords($request);
     }
 
+    public function otherClaimFinancialRecord(Request $request, int $id): JsonResponse
+    {
+        return $this->otherClaimService->financialRecord($request, $id);
+    }
+
     public function otherClaimFinancialRecordAction(Request $request, int $id): JsonResponse
     {
         return $this->otherClaimService->financialRecordAction($request, $id);
@@ -186,5 +191,10 @@ class SalaryController extends Controller
     public function otherClaimAttachment(Request $request, int $id)
     {
         return $this->otherClaimService->attachment($request, $id);
+    }
+
+    public function otherClaimFinancialAttachment(Request $request, int $applicationId, int $attachmentId)
+    {
+        return $this->otherClaimService->financialAttachment($request, $applicationId, $attachmentId);
     }
 }

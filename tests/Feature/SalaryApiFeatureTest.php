@@ -50,6 +50,14 @@ class SalaryApiFeatureTest extends TestCase
             '--realpath' => false,
         ])->run();
         $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_07_23_000000_add_travel_claim_remediation_fields.php',
+            '--realpath' => false,
+        ])->run();
+        $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_07_23_010000_add_other_claim_lifecycle_fields.php',
+            '--realpath' => false,
+        ])->run();
+        $this->artisan('migrate', [
             '--path' => 'database/migrations/2026_05_30_140000_create_workflow_tables.php',
             '--realpath' => false,
         ])->run();
@@ -1025,23 +1033,43 @@ class SalaryApiFeatureTest extends TestCase
                 'attachmentId' => $attachmentId,
             ],
         ], [], ['application_id' => $recordId])
-            ->assertOk()
-            ->assertJsonPath('record.id', $recordId)
-            ->assertJsonPath('record.claimsTotal', 75)
-            ->assertJsonPath('record.claims.0.description', 'Updated parking claim')
-            ->assertJsonPath('record.claims.0.attachment.name', 'parking.pdf');
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['application_id']);
 
-        $this->assertDatabaseCount('hr_other_claim_applications', 1);
-        $this->assertDatabaseCount('hr_other_claim_items', 1);
-        $this->assertDatabaseCount('hr_other_claim_attachments', 1);
+        $currentVersion = (int) DB::table('hr_other_claim_applications')
+            ->where('id', $recordId)
+            ->value('record_version');
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'reason' => 'Stale browser attempt',
+                'record_version' => $currentVersion + 1,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath(
+                'message',
+                'This claim changed or was already withdrawn. Refresh before continuing.',
+            );
 
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
-            ->deleteJson("/hr/salary/other-claims/{$recordId}")
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'reason' => 'Submitted with an incorrect receipt',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
             ->assertOk()
-            ->assertJsonPath('message', 'Other claim deleted.');
+            ->assertJsonPath('message', 'Other claim withdrawn.');
 
-        $this->assertDatabaseMissing('hr_other_claim_applications', ['id' => $recordId]);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $recordId,
+            'status' => 'Cancelled',
+            'cancel_reason' => 'Submitted with an incorrect receipt',
+        ]);
+        $this->actingSession()
+            ->getJson("/hr/salary/other-claims/{$recordId}")
+            ->assertOk()
+            ->assertJsonPath('record.status', 'Cancelled')
+            ->assertJsonPath('record.cancelReason', 'Submitted with an incorrect receipt');
     }
 
     public function test_other_claim_supports_one_way_travel_with_linked_expense_and_allocation(): void
@@ -1088,6 +1116,117 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('record.claims.1.attachment.name', 'parking.pdf');
     }
 
+    public function test_other_claim_supports_category_aware_travel_claims_and_total_distance(): void
+    {
+        $this->updateSalaryProfile(defaultMileageRate: '0.60', yearlyMedicalClaim: '1200');
+
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'mileage-different-route',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'Client visit with a different return route',
+                'km' => 30,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'travelCategory' => 'mileage',
+                'distanceMethod' => 'total_distance',
+                'mileageRate' => '0.60',
+            ],
+            [
+                'id' => 'taxi-airport',
+                'type' => 'Expense',
+                'date' => '2026-05-12',
+                'description' => 'Client airport transfer',
+                'amount' => 24,
+                'startLocation' => 'Office',
+                'endLocation' => 'Airport',
+                'travelCategory' => 'taxi',
+                'attachments' => [
+                    ['clientId' => 'taxi-proof', 'purpose' => 'taxi_receipt'],
+                ],
+            ],
+        ], [
+            'taxi-airport' => [
+                'taxi-proof' => UploadedFile::fake()->create('taxi-receipt.pdf', 100, 'application/pdf'),
+            ],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('record.claimsTotal', 42)
+            ->assertJsonPath('record.claims.0.amount', 18)
+            ->assertJsonPath('record.claims.0.meta', '30 KM total distance travelled')
+            ->assertJsonPath('record.claims.0.distanceMethod', 'total_distance')
+            ->assertJsonPath('record.claims.0.mileageRate', 0.6)
+            ->assertJsonPath('record.claims.1.travelCategory', 'taxi')
+            ->assertJsonPath('record.claims.1.attachments.0.name', 'taxi-receipt.pdf')
+            ->assertJsonPath('record.claims.1.attachments.0.purpose', 'taxi_receipt');
+    }
+
+    public function test_other_claim_draft_preserves_mileage_rate_snapshot_when_submitted(): void
+    {
+        $this->updateSalaryProfile(defaultMileageRate: '0.60', yearlyMedicalClaim: '1200');
+        $claim = [
+            [
+                'id' => 'snapshot-mileage',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'Site inspection',
+                'km' => 10,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'travelCategory' => 'mileage',
+                'distanceMethod' => 'one_way',
+                'mileageRate' => '0.60',
+            ],
+        ];
+
+        $draft = $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->put('/hr/salary/other-claims/draft', [
+                'claim_month' => '2026-05',
+                'claims' => json_encode($claim),
+                'draft_payload' => json_encode(['formData' => ['claimMonth' => '2026-05']]),
+            ])
+            ->assertOk()
+            ->assertJsonPath('record.claims.0.amount', 6)
+            ->assertJsonPath('record.claims.0.mileageRate', 0.6);
+
+        $this->updateSalaryProfile(defaultMileageRate: '0.75', yearlyMedicalClaim: '1200');
+
+        $this->submitOtherClaim($claim, [], ['application_id' => $draft->json('record.id')])
+            ->assertOk()
+            ->assertJsonPath('record.claims.0.amount', 6)
+            ->assertJsonPath('record.claims.0.mileageRate', 0.6);
+    }
+
+    public function test_other_claim_rejects_a_new_mileage_claim_with_a_stale_preview_rate(): void
+    {
+        $this->updateSalaryProfile(defaultMileageRate: '0.75', yearlyMedicalClaim: '1200');
+
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'stale-rate-mileage',
+                'type' => 'Mileage',
+                'date' => '2026-05-12',
+                'description' => 'Site inspection',
+                'km' => 10,
+                'startLocation' => 'Office',
+                'endLocation' => 'Client site',
+                'travelCategory' => 'mileage',
+                'distanceMethod' => 'one_way',
+                'mileageRate' => '0.60',
+            ],
+        ]);
+
+        $response->assertUnprocessable();
+        $this->assertSame(
+            'The mileage rate changed to RM 0.7500 per KM. Review the updated amount before submitting.',
+            $response->json('errors')['claims.0.mileageRate'][0] ?? null,
+        );
+    }
+
     public function test_other_claim_supports_expense_only_travel_rows_from_the_workbook(): void
     {
         $response = $this->submitOtherClaim([
@@ -1122,10 +1261,10 @@ class SalaryApiFeatureTest extends TestCase
         $response
             ->assertOk()
             ->assertJsonPath('record.claimsTotal', 18)
-            ->assertJsonPath('record.claims.0.amount', 0)
-            ->assertJsonPath('record.claims.0.meta', 'Travel expense only')
-            ->assertJsonPath('record.claims.1.expenseCategory', 'combined')
-            ->assertJsonPath('record.claims.1.attachment.name', 'travel-receipt.pdf');
+            ->assertJsonCount(1, 'record.claims')
+            ->assertJsonPath('record.claims.0.expenseCategory', 'combined')
+            ->assertJsonPath('record.claims.0.travelCategory', 'legacy_combined')
+            ->assertJsonPath('record.claims.0.attachment.name', 'travel-receipt.pdf');
         $recordId = (int) $response->json('record.id');
         $this->assertDatabaseHas('in_app_notifications', [
             'recipient_staff_id' => 10,
@@ -1173,9 +1312,9 @@ class SalaryApiFeatureTest extends TestCase
                 'draft_payload' => json_encode(['formData' => ['claimMonth' => '2026-05']]),
             ])
             ->assertOk()
-            ->assertJsonCount(2, 'record.claims')
+            ->assertJsonCount(1, 'record.claims')
             ->assertJsonPath('record.claimsTotal', 18)
-            ->assertJsonPath('record.claims.0.meta', 'Travel expense only');
+            ->assertJsonPath('record.claims.0.travelCategory', 'taxi');
     }
 
     public function test_other_claim_pdf_template_covers_workbook_identity_and_travel_fields(): void
@@ -1262,8 +1401,8 @@ class SalaryApiFeatureTest extends TestCase
 
         $missingCategory->assertUnprocessable();
         $this->assertSame(
-            'Linked travel expenses require an expense category.',
-            $missingCategory->json('errors')['claims.1.expenseCategory'][0] ?? null,
+            'Linked legacy travel expenses require a travel category.',
+            $missingCategory->json('errors')['claims.1.travelCategory'][0] ?? null,
         );
     }
 
@@ -1294,12 +1433,12 @@ class SalaryApiFeatureTest extends TestCase
 
         $duplicateMileageGroup->assertUnprocessable();
         $this->assertSame(
-            'Each travel group must contain exactly one mileage row.',
+            'Each travel group can contain only one mileage row.',
             $duplicateMileageGroup->json('errors')['claims.0.travelGroupId'][0] ?? null,
         );
     }
 
-    public function test_approved_other_claim_edit_with_reason_resets_workflow_and_audits(): void
+    public function test_approved_other_claim_must_be_withdrawn_instead_of_overwritten(): void
     {
         $response = $this->submitOtherClaim([
             [
@@ -1331,6 +1470,7 @@ class SalaryApiFeatureTest extends TestCase
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->postJson('/hr/salary/other-claims', [
                 'application_id' => $recordId,
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
                 'claim_month' => '2026-05',
                 'claims' => json_encode([
                     [
@@ -1342,35 +1482,25 @@ class SalaryApiFeatureTest extends TestCase
                     ],
                 ]),
             ])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['amendment_reason']);
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['application_id']);
 
-        $this->submitOtherClaim([
-            [
-                'id' => 'other-allowance-revised',
-                'type' => 'Allowance',
-                'date' => '2026-05-11',
-                'description' => 'Revised meal allowance',
-                'amount' => 125,
-            ],
-        ], [], [
-            'application_id' => $recordId,
-            'amendment_reason' => 'Corrected submitted claim',
-        ])
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'reason' => 'The approved amount needs correction before payment.',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
             ->assertOk()
-            ->assertJsonPath('record.id', $recordId)
-            ->assertJsonPath('record.status', 'Submitted')
-            ->assertJsonPath('record.checkedBy', null)
-            ->assertJsonPath('record.approvedBy', null)
-            ->assertJsonPath('record.claimsTotal', 125);
+            ->assertJsonPath('message', 'Other claim withdrawn.');
 
         $this->assertDatabaseHas('hr_salary_workflow_events', [
             'subject_type' => 'other_claim_application',
             'subject_id' => $recordId,
-            'action' => 'amend',
+            'action' => 'withdraw',
             'status_from' => 'Approved',
-            'status_to' => 'Submitted',
-            'reason' => 'Corrected submitted claim',
+            'status_to' => 'Cancelled',
+            'reason' => 'The approved amount needs correction before payment.',
         ]);
     }
 
@@ -1392,6 +1522,7 @@ class SalaryApiFeatureTest extends TestCase
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->postJson('/hr/salary/other-claims', [
                 'application_id' => $recordId,
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
                 'claim_month' => '2026-05',
                 'claims' => json_encode([
                     [
@@ -1410,9 +1541,68 @@ class SalaryApiFeatureTest extends TestCase
 
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
-            ->deleteJson("/hr/salary/other-claims/{$recordId}", ['reason' => 'Try delete paid'])
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'reason' => 'Try delete paid',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
             ->assertStatus(422)
             ->assertJsonPath('message', 'Paid other claim records cannot be changed.');
+    }
+
+    public function test_rejected_other_claim_creates_a_linked_revision(): void
+    {
+        $original = $this->submitOtherClaim([
+            [
+                'id' => 'other-allowance',
+                'type' => 'Allowance',
+                'date' => '2026-05-10',
+                'description' => 'Meal allowance',
+                'amount' => 100,
+            ],
+        ])->assertOk();
+        $originalId = (int) $original->json('record.id');
+        $reference = (string) $original->json('record.claimReference');
+
+        DB::table('hr_other_claim_applications')->where('id', $originalId)->update([
+            'status' => 'Rejected',
+        ]);
+        DB::table('workflow_instances')
+            ->where('subject_type', 'other_claim_application')
+            ->where('subject_id', $originalId)
+            ->update(['status' => 'Rejected', 'completed_at' => now()]);
+
+        $revision = $this->submitOtherClaim([
+            [
+                'id' => 'other-allowance-corrected',
+                'type' => 'Allowance',
+                'date' => '2026-05-11',
+                'description' => 'Corrected meal allowance',
+                'amount' => 125,
+            ],
+        ], [], [
+            'application_id' => $originalId,
+            'amendment_reason' => 'Corrected the amount after finance feedback.',
+        ])
+            ->assertOk()
+            ->assertJsonPath('record.status', 'Submitted')
+            ->assertJsonPath('record.claimReference', $reference)
+            ->assertJsonPath('record.revisionNo', 2)
+            ->assertJsonPath('record.parentApplicationId', $originalId);
+
+        $revisionId = (int) $revision->json('record.id');
+        $this->assertNotSame($originalId, $revisionId);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $originalId,
+            'superseded_by_application_id' => $revisionId,
+        ]);
+        $this->assertDatabaseHas('hr_salary_workflow_events', [
+            'subject_type' => 'other_claim_application',
+            'subject_id' => $originalId,
+            'action' => 'amend',
+            'status_from' => 'Rejected',
+            'status_to' => 'Revised',
+            'reason' => 'Corrected the amount after finance feedback.',
+        ]);
     }
 
     public function test_financial_other_claim_records_can_be_checked_and_approved(): void
@@ -1449,15 +1639,40 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('records.0.workflow.availableActions.0.action', 'check')
             ->assertJsonPath('records.0.workflow.availableActions.1.action', 'reject');
 
+        $this->actingSession(3, 30, ['Manager'])
+            ->getJson("/hr/salary/other-claims/financial-records/{$recordId}")
+            ->assertOk()
+            ->assertJsonPath('record.id', $recordId)
+            ->assertJsonPath('record.claimReference', sprintf('OC-%06d', $recordId))
+            ->assertJsonPath('record.revisionNo', 1);
+
         $this->actingSession(1, 10, ['Staff'])
             ->getJson('/hr/salary/other-claims/financial-records')
             ->assertForbidden();
+
+        $this->actingSession(1, 10, ['Staff'])
+            ->getJson("/hr/salary/other-claims/financial-records/{$recordId}")
+            ->assertForbidden();
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/action", [
+                'action' => 'check',
+                'remarks' => 'Stale review attempt',
+                'record_version' => 99,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath(
+                'message',
+                'This claim changed or was withdrawn. Refresh before taking action.',
+            );
 
         $this->actingSession(3, 30, ['Manager'])
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/action", [
                 'action' => 'approve',
                 'remarks' => 'Approve too early',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
             ])
             ->assertStatus(422)
             ->assertJsonPath('message', 'Other claim record must be checked before approval.');
@@ -1467,6 +1682,7 @@ class SalaryApiFeatureTest extends TestCase
             ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/action", [
                 'action' => 'check',
                 'remarks' => 'Checked by finance',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
             ])
             ->assertOk()
             ->assertJsonPath('record.status', 'Checked')
@@ -1488,6 +1704,7 @@ class SalaryApiFeatureTest extends TestCase
             ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/action", [
                 'action' => 'approve',
                 'remarks' => 'Approved for payment',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
             ])
             ->assertOk()
             ->assertJsonPath('record.status', 'Approved')
@@ -1620,7 +1837,7 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonCount(2, 'items');
     }
 
-    public function test_payment_queue_mark_paid_requires_workflow_visibility_even_for_payment_roles(): void
+    public function test_payment_role_can_pay_an_approved_record_without_reviewing_it(): void
     {
         $salaryId = DB::table('hr_salary_applications')->insertGetId([
             'staff_id' => 10,
@@ -1655,12 +1872,12 @@ class SalaryApiFeatureTest extends TestCase
                 'payment_method' => 'Bank Transfer',
                 'idempotency_key' => 'pay-2026-05-staff-10-outside-workflow',
             ])
-            ->assertForbidden()
-            ->assertJsonPath('message', 'You are not authorized to mark this payment as paid.');
+            ->assertOk()
+            ->assertJsonPath('message', 'Payment marked as paid.');
 
-        $this->assertDatabaseHas('hr_salary_applications', ['id' => $salaryId, 'status' => 'Approved']);
-        $this->assertDatabaseCount('hr_salary_payment_runs', 0);
-        $this->assertDatabaseCount('hr_salary_payment_run_items', 0);
+        $this->assertDatabaseHas('hr_salary_applications', ['id' => $salaryId, 'status' => 'Paid']);
+        $this->assertDatabaseCount('hr_salary_payment_runs', 1);
+        $this->assertDatabaseCount('hr_salary_payment_run_items', 1);
     }
 
     public function test_payment_queue_blocks_duplicate_approved_salary_records_for_same_period(): void
@@ -1809,7 +2026,11 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('message', 'Payment marked as paid.');
 
         $this->assertDatabaseHas('hr_salary_applications', ['id' => $salaryId, 'status' => 'Paid']);
-        $this->assertDatabaseHas('hr_other_claim_applications', ['id' => $otherClaimId, 'status' => 'Paid']);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $otherClaimId,
+            'status' => 'Paid',
+            'record_version' => 2,
+        ]);
         $this->assertDatabaseHas('hr_salary_payment_runs', [
             'staff_id' => 10,
             'payment_period' => '2026-05',
@@ -1817,6 +2038,13 @@ class SalaryApiFeatureTest extends TestCase
             'idempotency_key' => 'pay-2026-05-staff-10',
         ]);
         $this->assertDatabaseCount('hr_salary_payment_run_items', 2);
+        $this->actingSession(1, 10, ['Staff'])
+            ->getJson("/hr/salary/other-claims/{$otherClaimId}")
+            ->assertOk()
+            ->assertJsonPath('record.paymentHistory.0.status', 'Paid')
+            ->assertJsonPath('record.paymentHistory.0.paymentReference', 'BATCH-001')
+            ->assertJsonPath('record.paymentHistory.0.paymentMethod', 'Bank Transfer')
+            ->assertJsonPath('record.paymentHistory.0.reversalReason', '');
         $paymentRunId = (int) DB::table('hr_salary_payment_runs')->value('id');
         $this->assertDatabaseHas('in_app_notifications', [
             'recipient_staff_id' => 10,
@@ -1858,7 +2086,26 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('message', 'Payment was undone.');
 
         $this->assertDatabaseHas('hr_salary_applications', ['id' => $salaryId, 'status' => 'Approved']);
-        $this->assertDatabaseHas('hr_other_claim_applications', ['id' => $otherClaimId, 'status' => 'Approved']);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $otherClaimId,
+            'status' => 'Approved',
+            'record_version' => 3,
+        ]);
+        $this->actingSession(1, 10, ['Staff'])
+            ->getJson("/hr/salary/other-claims/{$otherClaimId}")
+            ->assertOk()
+            ->assertJsonPath('record.paymentHistory.0.status', 'Reversed')
+            ->assertJsonPath(
+                'record.paymentHistory.0.reversalReason',
+                'Payment reversal recorded. Contact Finance if you need more information.',
+            );
+        $this->actingSession(5, 50, ['Bank'])
+            ->getJson("/hr/salary/other-claims/financial-records/{$otherClaimId}")
+            ->assertOk()
+            ->assertJsonPath(
+                'record.paymentHistory.0.reversalReason',
+                'Payment entered against the wrong bank batch.',
+            );
         $this->assertDatabaseMissing('hr_salary_payment_runs', [
             'staff_id' => 10,
             'payment_period' => '2026-05',
@@ -1892,6 +2139,11 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('message', 'Payment marked as paid.');
 
         $this->assertDatabaseCount('hr_salary_payment_runs', 2);
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $otherClaimId,
+            'status' => 'Paid',
+            'record_version' => 4,
+        ]);
     }
 
     public function test_payment_queue_bulk_mark_paid_and_bulk_undo_report_selected_row_results(): void
@@ -2548,6 +2800,12 @@ class SalaryApiFeatureTest extends TestCase
 
     private function submitOtherClaim(array $claims, array $attachments = [], array $overrides = [])
     {
+        if (isset($overrides['application_id']) && ! isset($overrides['record_version'])) {
+            $overrides['record_version'] = (int) DB::table('hr_other_claim_applications')
+                ->where('id', (int) $overrides['application_id'])
+                ->value('record_version');
+        }
+
         return $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->withHeader('Accept', 'application/json')

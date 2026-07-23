@@ -4,6 +4,7 @@ namespace App\Services\Salary;
 
 use App\Services\Pdf\PdfRenderer;
 use App\Services\Quotes\Pdf\PdfMergeService;
+use App\Services\Salary\OtherClaims\ClaimAttachmentData;
 use App\Services\Salary\OtherClaims\OtherClaimValidator;
 use App\Services\Workflows\WorkflowService;
 use App\Support\AppFilePaths;
@@ -43,7 +44,10 @@ class OtherClaimService extends PdfRenderer
     {
         $records = DB::table('hr_other_claim_applications')
             ->where('staff_id', $this->staffId($request))
-            ->where('status', '<>', self::CANCELLED_STATUS)
+            ->when(
+                Schema::hasColumn('hr_other_claim_applications', 'superseded_at'),
+                fn ($query) => $query->whereNull('superseded_at'),
+            )
             ->orderByDesc('claim_month')
             ->orderByDesc('id')
             ->get()
@@ -69,6 +73,10 @@ class OtherClaimService extends PdfRenderer
                 'approver.name_code as approver_code',
             ])
             ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
+            ->when(
+                Schema::hasColumn('hr_other_claim_applications', 'superseded_at'),
+                fn ($query) => $query->whereNull('application.superseded_at'),
+            )
             ->orderByDesc('application.claim_month')
             ->orderByDesc('application.submitted_at')
             ->orderByDesc('application.id')
@@ -86,6 +94,7 @@ class OtherClaimService extends PdfRenderer
         return response()->json([
             'status' => 'success',
             'records' => $records
+                ->filter(fn (object $record): bool => $this->canViewFinancialRecord($request, $record))
                 ->map(fn (object $record): array => $this->recordPayload(
                     $record,
                     includeClaims: false,
@@ -96,18 +105,43 @@ class OtherClaimService extends PdfRenderer
         ]);
     }
 
+    public function financialRecord(Request $request, int $id): JsonResponse
+    {
+        $record = $this->financialRecordQuery()->where('application.id', $id)->first();
+        if (! $record) {
+            return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
+        }
+
+        $this->workflowService->ensureOtherClaimWorkflowForExistingRecord($record);
+        if (! $this->canViewFinancialRecord($request, $record)) {
+            return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'record' => $this->recordPayload(
+                $record,
+                includeClaims: true,
+                request: $request,
+                financialView: true,
+            ),
+        ]);
+    }
+
     public function financialRecordAction(Request $request, int $id): JsonResponse
     {
         $data = Validator::make($request->all(), [
             'action' => ['required', 'string', 'in:'.implode(',', self::FINANCIAL_ACTIONS)],
-            'remarks' => ['nullable', 'string', 'max:1000'],
+            'remarks' => ['nullable', 'string', 'max:1000', 'required_if:action,reject'],
+            'record_version' => ['required', 'integer', 'min:1'],
         ])->validate();
 
         $record = DB::table('hr_other_claim_applications')->where('id', $id)->first();
         if (! $record) {
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
         }
-        if ((string) $record->status === self::CANCELLED_STATUS) {
+        $this->workflowService->ensureOtherClaimWorkflowForExistingRecord($record);
+        if ((string) $record->status === self::CANCELLED_STATUS || ! $this->canViewFinancialRecord($request, $record)) {
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
         }
         if ((string) $record->status === 'Draft') {
@@ -130,7 +164,6 @@ class OtherClaimService extends PdfRenderer
         $record = DB::table('hr_other_claim_applications')
             ->where('staff_id', $this->staffId($request))
             ->where('id', $id)
-            ->where('status', '<>', self::CANCELLED_STATUS)
             ->first();
 
         if (! $record) {
@@ -160,12 +193,12 @@ class OtherClaimService extends PdfRenderer
 
     public function financialClaimsPdf(Request $request, int $id)
     {
-        $record = $this->pdfRecordQuery()
+        $record = $this->financialRecordQuery()
             ->where('application.id', $id)
             ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
-        if (! $record) {
+        if (! $record || ! $this->canViewFinancialRecord($request, $record)) {
             abort(404, 'Other claim record not found.');
         }
 
@@ -174,113 +207,124 @@ class OtherClaimService extends PdfRenderer
 
     public function destroyRecord(Request $request, int $id): JsonResponse
     {
-        $record = DB::table('hr_other_claim_applications')
-            ->where('staff_id', $this->staffId($request))
-            ->where('id', $id)
-            ->where('status', '<>', self::CANCELLED_STATUS)
-            ->first();
+        $data = Validator::make($request->all(), [
+            'reason' => ['nullable', 'string', 'max:1000'],
+            'record_version' => ['required', 'integer', 'min:1'],
+        ])->validate();
+        $staffId = $this->staffId($request);
+        $record = null;
+        $recipientIds = [];
+        $draftDeleted = false;
+        $withdrawReason = '';
 
-        if (! $record) {
-            return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
-        }
-        if ($this->isPaidStatus((string) $record->status)) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Paid other claim records cannot be changed.',
-            ], 422);
-        }
-        if ($this->isReviewedMutableStatus((string) $record->status)) {
-            $staffId = $this->staffId($request);
-            $reason = trim((string) $request->input('reason', ''));
-            if ($reason === '') {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Enter a reason before cancelling a checked or approved other claim.',
-                    'errors' => ['reason' => ['Enter a reason before cancelling a checked or approved other claim.']],
-                ], 422);
+        DB::transaction(function () use ($data, $id, $staffId, &$record, &$recipientIds, &$draftDeleted, &$withdrawReason): void {
+            $instances = DB::table('workflow_instances')
+                ->where('subject_type', self::SUBJECT_TYPE)
+                ->where('subject_id', $id)
+                ->lockForUpdate()
+                ->get(['id', 'current_step_id', 'status']);
+            $record = DB::table('hr_other_claim_applications')
+                ->where('staff_id', $staffId)
+                ->where('id', $id)
+                ->where('status', '<>', self::CANCELLED_STATUS)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $record) {
+                abort(response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404));
             }
+            if (
+                Schema::hasColumn('hr_other_claim_applications', 'record_version')
+                && (int) $data['record_version'] !== (int) ($record->record_version ?? 1)
+            ) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'This claim changed or was already withdrawn. Refresh before continuing.',
+                ], 409));
+            }
+            if ($this->isPaidStatus((string) $record->status)) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Paid other claim records cannot be changed.',
+                ], 422));
+            }
+            if ((string) $record->status === 'Draft') {
+                $this->deleteApplicationClaims($id);
+                $workflowInstanceIds = $instances
+                    ->pluck('id')
+                    ->map(fn ($workflowInstanceId): int => (int) $workflowInstanceId)
+                    ->all();
+                if ($workflowInstanceIds !== []) {
+                    DB::table('workflow_actions')->whereIn('instance_id', $workflowInstanceIds)->delete();
+                    DB::table('workflow_instances')->whereIn('id', $workflowInstanceIds)->delete();
+                }
+                DB::table('hr_other_claim_applications')->where('id', $id)->delete();
+                $draftDeleted = true;
+
+                return;
+            }
+            if (! in_array((string) $record->status, ['Submitted', 'Prepared', 'Checked', 'Approved', 'Rejected'], true)) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'This other claim cannot be withdrawn in its current state.',
+                ], 422));
+            }
+            $reason = trim((string) ($data['reason'] ?? ''));
+            if ($reason === '') {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Enter a reason before withdrawing a submitted other claim.',
+                    'errors' => ['reason' => ['Enter a reason before withdrawing this other claim.']],
+                ], 422));
+            }
+            $withdrawReason = $reason;
 
             $recipientIds = $this->workflowParticipantIds($record, self::SUBJECT_TYPE, [$staffId]);
-            DB::transaction(function () use ($id, $record, $reason, $staffId): void {
-                $this->recordWorkflowEvent(
-                    self::SUBJECT_TYPE,
-                    $id,
-                    'cancel',
-                    $staffId,
-                    (string) $record->status,
-                    self::CANCELLED_STATUS,
-                    $reason,
-                    $this->snapshotRecord($record, includeClaims: true),
-                );
-                $instances = DB::table('workflow_instances')
-                    ->where('subject_type', self::SUBJECT_TYPE)
-                    ->where('subject_id', $id)
-                    ->get(['id', 'current_step_id', 'status']);
-                foreach ($instances as $instance) {
-                    DB::table('workflow_actions')->insert([
-                        'instance_id' => $instance->id,
-                        'step_id' => $instance->current_step_id,
-                        'action' => 'cancel',
-                        'status_from' => (string) ($instance->status ?? $record->status),
-                        'status_to' => self::CANCELLED_STATUS,
-                        'actor_staff_id' => $staffId,
-                        'remarks' => $reason,
-                        'acted_at' => now(),
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]);
-                }
-                DB::table('hr_other_claim_applications')->where('id', $id)->update([
-                    'status' => self::CANCELLED_STATUS,
-                    'cancelled_at' => now(),
-                    'cancelled_by' => $staffId,
-                    'cancel_reason' => $reason,
+            $this->recordWorkflowEvent(self::SUBJECT_TYPE, $id, 'withdraw', $staffId, (string) $record->status, self::CANCELLED_STATUS, $reason, $this->snapshotRecord($record, includeClaims: true));
+            foreach ($instances as $instance) {
+                DB::table('workflow_actions')->insert([
+                    'instance_id' => $instance->id,
+                    'step_id' => $instance->current_step_id,
+                    'action' => 'withdraw',
+                    'status_from' => (string) ($instance->status ?? $record->status),
+                    'status_to' => self::CANCELLED_STATUS,
+                    'actor_staff_id' => $staffId,
+                    'remarks' => $reason,
+                    'acted_at' => now(),
+                    'created_at' => now(),
                     'updated_at' => now(),
                 ]);
-                DB::table('workflow_instances')
-                    ->where('subject_type', self::SUBJECT_TYPE)
-                    ->where('subject_id', $id)
-                    ->update([
-                        'current_step_id' => null,
-                        'status' => self::CANCELLED_STATUS,
-                        'completed_at' => now(),
-                        'updated_at' => now(),
-                    ]);
-            });
-
-            try {
-                $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $reason);
-            } catch (\Throwable $e) {
-                report($e);
             }
-
-            return response()->json(['status' => 'success', 'message' => 'Other claim cancelled.']);
-        }
-        if (! in_array((string) $record->status, self::STAFF_MUTABLE_STATUSES, true)) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Only draft, submitted/prepared, or rejected other claims can be deleted by staff.',
-            ], 422);
-        }
-
-        DB::transaction(function () use ($id): void {
-            $this->deleteApplicationClaims($id);
-            $workflowInstanceIds = DB::table('workflow_instances')
-                ->where('subject_type', 'other_claim_application')
-                ->where('subject_id', $id)
-                ->pluck('id')
-                ->map(fn ($workflowInstanceId): int => (int) $workflowInstanceId)
-                ->all();
-            if ($workflowInstanceIds !== []) {
-                DB::table('workflow_actions')->whereIn('instance_id', $workflowInstanceIds)->delete();
-                DB::table('workflow_instances')
-                    ->whereIn('id', $workflowInstanceIds)
-                    ->delete();
+            $update = [
+                'status' => self::CANCELLED_STATUS,
+                'cancelled_at' => now(),
+                'cancelled_by' => $staffId,
+                'cancel_reason' => $reason,
+                'updated_at' => now(),
+            ];
+            if (Schema::hasColumn('hr_other_claim_applications', 'record_version')) {
+                $update['record_version'] = DB::raw('record_version + 1');
             }
-            DB::table('hr_other_claim_applications')->where('id', $id)->delete();
+            DB::table('hr_other_claim_applications')->where('id', $id)->update($update);
+            DB::table('workflow_instances')->where('subject_type', self::SUBJECT_TYPE)->where('subject_id', $id)->update([
+                'current_step_id' => null,
+                'status' => self::CANCELLED_STATUS,
+                'completed_at' => now(),
+                'updated_at' => now(),
+            ]);
         });
 
-        return response()->json(['status' => 'success', 'message' => 'Other claim deleted.']);
+        if ($draftDeleted) {
+            return response()->json(['status' => 'success', 'message' => 'Other claim draft deleted.']);
+        }
+
+        try {
+            $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $withdrawReason);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return response()->json(['status' => 'success', 'message' => 'Other claim withdrawn.']);
     }
 
     public function draftApplication(Request $request): JsonResponse
@@ -322,7 +366,13 @@ class OtherClaimService extends PdfRenderer
             $preservedAttachments = $existing
                 ? $this->preservedClaimAttachments((int) $existing->id, $data['claims'], $staffId)
                 : collect();
-            $claims = $this->salaryCalculator->prepareClaims($data['claims'], $mileageRate);
+            $claims = $this->normalizeTravelClaims($data['claims']);
+            $claims = $this->applyMileageRateSnapshots(
+                $claims,
+                $mileageRate,
+                $existing ? $this->existingMileageRateSnapshots((int) $existing->id) : [],
+            );
+            $claims = $this->salaryCalculator->prepareClaims($claims, $mileageRate);
             $claimsTotal = $this->claimsTotal($claims);
 
             if ($existing) {
@@ -418,8 +468,16 @@ class OtherClaimService extends PdfRenderer
                     'application_id' => ['Other claim record not found.'],
                 ]);
             }
+            $isRevision = false;
             if ($existing) {
                 $existingStatus = (string) $existing->status;
+                $expectedVersion = (int) ($data['record_version'] ?? 0);
+                if ($expectedVersion > 0 && Schema::hasColumn('hr_other_claim_applications', 'record_version') && $expectedVersion !== (int) $existing->record_version) {
+                    abort(response()->json([
+                        'status' => 'error',
+                        'message' => 'This other claim changed or was withdrawn. Refresh before submitting.',
+                    ], 409));
+                }
                 if ($this->isPaidStatus($existingStatus)) {
                     abort(response()->json([
                         'status' => 'error',
@@ -427,18 +485,20 @@ class OtherClaimService extends PdfRenderer
                         'errors' => ['application_id' => ['Paid other claim records cannot be changed.']],
                     ], 422));
                 }
-                if ($this->isReviewedMutableStatus($existingStatus) && trim((string) ($data['amendment_reason'] ?? '')) === '') {
+                if ($existingStatus === 'Rejected') {
+                    $isRevision = true;
+                } elseif ($existingStatus !== 'Draft') {
                     throw ValidationException::withMessages([
-                        'amendment_reason' => ['Enter a reason before editing a checked or approved other claim.'],
+                        'application_id' => ['Withdraw this submitted claim before changing it. Rejected claims can be revised and resubmitted.'],
                     ]);
                 }
-                if (! $this->isStaffEditableStatus($existingStatus)) {
-                    throw ValidationException::withMessages([
-                        'application_id' => ['This other claim has already moved into financial review and cannot be edited.'],
-                    ]);
-                }
-                if ($this->isReviewedMutableStatus($existingStatus)) {
-                    $reason = trim((string) $data['amendment_reason']);
+                if ($isRevision) {
+                    $reason = trim((string) ($data['amendment_reason'] ?? ''));
+                    if ($reason === '') {
+                        throw ValidationException::withMessages([
+                            'amendment_reason' => ['Enter a reason before creating a revised other claim.'],
+                        ]);
+                    }
                     $amendmentNotification = [
                         'subjectType' => self::SUBJECT_TYPE,
                         'applicationId' => (int) $existing->id,
@@ -451,7 +511,7 @@ class OtherClaimService extends PdfRenderer
                         'amend',
                         $staffId,
                         $existingStatus,
-                        'Submitted',
+                        'Revised',
                         $reason,
                         $this->snapshotRecord($existing, includeClaims: true),
                     );
@@ -462,8 +522,15 @@ class OtherClaimService extends PdfRenderer
             $preservedAttachments = $existing
                 ? $this->preservedClaimAttachments((int) $existing->id, $data['claims'], $staffId)
                 : collect();
-            $this->claimValidator->assertBusinessRules($data['claims'], $files, $preservedAttachments);
-            $claims = $this->salaryCalculator->prepareClaims($data['claims'], $mileageRate);
+            $claims = $this->normalizeTravelClaims($data['claims']);
+            $claims = $this->applyMileageRateSnapshots(
+                $claims,
+                $mileageRate,
+                $existing ? $this->existingMileageRateSnapshots((int) $existing->id) : [],
+            );
+            $this->assertTravelProjectsAreValid($claims);
+            $this->claimValidator->assertBusinessRules($claims, $files, $preservedAttachments);
+            $claims = $this->salaryCalculator->prepareClaims($claims, $mileageRate);
             $claimsTotal = $this->claimsTotal($claims);
             if ($claimsTotal <= 0) {
                 throw ValidationException::withMessages(['claims' => ['Add at least one claim before submitting.']]);
@@ -476,7 +543,7 @@ class OtherClaimService extends PdfRenderer
                 $existing ? (int) $existing->id : null,
             );
 
-            if ($existing) {
+            if ($existing && ! $isRevision) {
                 $this->deleteApplicationClaims(
                     (int) $existing->id,
                     collect($preservedAttachments)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
@@ -503,11 +570,38 @@ class OtherClaimService extends PdfRenderer
                 'updated_at' => now(),
             ];
 
-            $applicationId = $existing
+            if (Schema::hasColumn('hr_other_claim_applications', 'record_version')) {
+                $payload['record_version'] = $existing && ! $isRevision
+                    ? DB::raw('record_version + 1')
+                    : 1;
+            }
+            if (Schema::hasColumn('hr_other_claim_applications', 'claim_reference')) {
+                $payload['claim_reference'] = $existing?->claim_reference ?: null;
+                $payload['revision_no'] = $isRevision ? (int) ($existing->revision_no ?? 1) + 1 : (int) ($existing->revision_no ?? 1);
+                $payload['parent_application_id'] = $isRevision
+                    ? (int) ($existing->parent_application_id ?: $existing->id)
+                    : ($existing->parent_application_id ?? null);
+                $payload['superseded_by_application_id'] = null;
+                $payload['superseded_at'] = null;
+            }
+
+            $applicationId = $existing && ! $isRevision
                 ? (int) $existing->id
                 : (int) DB::table('hr_other_claim_applications')->insertGetId([...$payload, 'created_at' => now()]);
-            if ($existing) {
+            if (! $existing && Schema::hasColumn('hr_other_claim_applications', 'claim_reference')) {
+                DB::table('hr_other_claim_applications')->where('id', $applicationId)->update([
+                    'claim_reference' => sprintf('OC-%06d', $applicationId),
+                ]);
+            }
+            if ($existing && ! $isRevision) {
                 DB::table('hr_other_claim_applications')->where('id', $applicationId)->update($payload);
+            }
+            if ($existing && $isRevision && Schema::hasColumn('hr_other_claim_applications', 'superseded_at')) {
+                DB::table('hr_other_claim_applications')->where('id', $existing->id)->update([
+                    'superseded_by_application_id' => $applicationId,
+                    'superseded_at' => now(),
+                    'updated_at' => now(),
+                ]);
             }
 
             $this->storeClaims($claims, $files, $preservedAttachments, $applicationId, $staffId, $data['claim_month']);
@@ -566,6 +660,33 @@ class OtherClaimService extends PdfRenderer
         );
     }
 
+    public function financialAttachment(Request $request, int $applicationId, int $attachmentId)
+    {
+        $record = $this->financialRecordQuery()->where('application.id', $applicationId)->first();
+        if (! $record) {
+            abort(404);
+        }
+        $this->workflowService->ensureOtherClaimWorkflowForExistingRecord($record);
+        if (! $this->canViewFinancialRecord($request, $record)) {
+            abort(404);
+        }
+
+        $attachment = DB::table('hr_other_claim_attachments as attachment')
+            ->join('hr_other_claim_items as claim', 'claim.id', '=', 'attachment.claim_id')
+            ->where('attachment.id', $attachmentId)
+            ->where('claim.application_id', $applicationId)
+            ->select('attachment.*')
+            ->first();
+        if (! $attachment) {
+            abort(404);
+        }
+
+        return AppFilePaths::storedPathResponse(
+            (string) $attachment->stored_path,
+            (string) $attachment->original_name,
+        );
+    }
+
     private function validatedApplicationPayload(Request $request): array
     {
         return $this->validatedClaimPayload($request, false);
@@ -601,7 +722,17 @@ class OtherClaimService extends PdfRenderer
             'claims.*.tripMode' => ['nullable', 'string', 'in:one_way,return'],
             'claims.*.travelGroupId' => ['nullable', 'string', 'max:64'],
             'claims.*.expenseCategory' => ['nullable', 'string', 'in:combined,parking,toll,taxi,other'],
+            'claims.*.travelCategory' => ['nullable', 'string', 'in:mileage,taxi,toll,parking,other,legacy_combined'],
+            'claims.*.distanceMethod' => ['nullable', 'string', 'in:one_way,return_same_route,total_distance'],
+            'claims.*.mileageRate' => ['nullable', 'numeric', 'min:0', 'max:999.9999'],
+            'claims.*.chargeToProjectId' => ['nullable', 'integer', 'min:1'],
+            'claims.*.locationDetail' => ['nullable', 'string', 'max:255'],
+            'claims.*.expenseType' => ['nullable', 'string', 'max:120'],
             'claims.*.attachmentId' => ['nullable', 'integer'],
+            'claims.*.attachments' => ['nullable', 'array'],
+            'claims.*.attachments.*.id' => ['nullable', 'integer', 'min:1'],
+            'claims.*.attachments.*.clientId' => ['nullable', 'string', 'max:191'],
+            'claims.*.attachments.*.purpose' => ['nullable', 'string', 'max:32'],
             'draft_payload' => ['array'],
         ]);
 
@@ -620,13 +751,14 @@ class OtherClaimService extends PdfRenderer
         $claims = $this->decodeJsonField($request, 'claims', [], $jsonErrors);
         $draftPayload = $this->decodeJsonField($request, 'draft_payload', [], $jsonErrors);
         $payload = [
-            ...$request->only(['application_id', 'claim_month', 'amendment_reason']),
+            ...$request->only(['application_id', 'claim_month', 'amendment_reason', 'record_version']),
             'claims' => is_array($claims) ? $claims : [],
             'draft_payload' => is_array($draftPayload) ? $draftPayload : [],
         ];
 
         $rules = [
             'application_id' => ['nullable', 'integer', 'min:1'],
+            'record_version' => ['required_with:application_id', 'integer', 'min:1'],
             'claim_month' => ['required', 'date_format:Y-m'],
             'amendment_reason' => ['nullable', 'string', 'max:1000'],
             'claims' => [$isDraft ? 'nullable' : 'required', 'array'],
@@ -644,7 +776,17 @@ class OtherClaimService extends PdfRenderer
             'claims.*.tripMode' => ['nullable', 'string', 'in:one_way,return'],
             'claims.*.travelGroupId' => ['nullable', 'string', 'max:64'],
             'claims.*.expenseCategory' => ['nullable', 'string', 'in:combined,parking,toll,taxi,other'],
+            'claims.*.travelCategory' => ['nullable', 'string', 'in:mileage,taxi,toll,parking,other,legacy_combined'],
+            'claims.*.distanceMethod' => ['nullable', 'string', 'in:one_way,return_same_route,total_distance'],
+            'claims.*.mileageRate' => ['nullable', 'numeric', 'min:0', 'max:999.9999'],
+            'claims.*.chargeToProjectId' => ['nullable', 'integer', 'min:1'],
+            'claims.*.locationDetail' => ['nullable', 'string', 'max:255'],
+            'claims.*.expenseType' => ['nullable', 'string', 'max:120'],
             'claims.*.attachmentId' => ['nullable', 'integer', 'min:1'],
+            'claims.*.attachments' => ['nullable', 'array'],
+            'claims.*.attachments.*.id' => ['nullable', 'integer', 'min:1'],
+            'claims.*.attachments.*.clientId' => ['nullable', 'string', 'max:191'],
+            'claims.*.attachments.*.purpose' => ['nullable', 'string', 'max:32'],
             'draft_payload' => ['nullable', 'array'],
         ];
         $validator = Validator::make($payload, $rules);
@@ -653,20 +795,16 @@ class OtherClaimService extends PdfRenderer
                 $validator->errors()->add($field, $message);
             }
             $claimIds = collect($payload['claims'] ?? [])->pluck('id')->map(fn ($id): string => (string) $id)->all();
-            foreach ($request->file('attachments', []) as $key => $file) {
+            foreach ($request->file('attachments', []) as $key => $files) {
                 if (! in_array((string) $key, $claimIds, true)) {
                     $validator->errors()->add("attachments.{$key}", 'Attachment does not match a claim row.');
 
                     continue;
                 }
-                $matchedClaim = collect($payload['claims'])->first(fn ($claim): bool => (string) ($claim['id'] ?? '') === (string) $key);
-                if (is_array($matchedClaim) && ($matchedClaim['type'] ?? null) === 'Mileage') {
-                    $validator->errors()->add("attachments.{$key}", 'Mileage claims cannot include attachments.');
-
-                    continue;
-                }
-                if (! $this->isClaimAttachmentFile($file)) {
-                    $validator->errors()->add("attachments.{$key}", 'Upload a PDF, JPG, JPEG, or PNG file up to 5 MB.');
+                foreach (ClaimAttachmentData::filesForClaim([$key => $files], (string) $key) as $clientId => $file) {
+                    if (! $this->isClaimAttachmentFile($file)) {
+                        $validator->errors()->add("attachments.{$key}.{$clientId}", 'Upload a PDF, JPG, JPEG, or PNG file up to 5 MB.');
+                    }
                 }
             }
         });
@@ -676,16 +814,8 @@ class OtherClaimService extends PdfRenderer
 
     private function completeDraftClaims(array $claims): array
     {
-        $linkedTravelExpenseGroups = collect($claims)
-            ->filter(fn (array $claim): bool => ($claim['type'] ?? '') === 'Expense' && (float) ($claim['amount'] ?? 0) > 0)
-            ->pluck('travelGroupId')
-            ->map(fn ($value): string => trim((string) $value))
-            ->filter()
-            ->unique()
-            ->all();
-
         return collect($claims)
-            ->filter(function (array $claim) use ($linkedTravelExpenseGroups): bool {
+            ->filter(function (array $claim): bool {
                 $type = (string) ($claim['type'] ?? '');
                 $date = (string) ($claim['date'] ?? '');
                 $amount = (float) ($claim['amount'] ?? 0);
@@ -718,12 +848,10 @@ class OtherClaimService extends PdfRenderer
                     return false;
                 }
                 if ($type === 'Mileage') {
-                    $travelGroupId = trim((string) ($claim['travelGroupId'] ?? ''));
-
                     return ! empty($claim['date'])
                         && trim((string) ($claim['startLocation'] ?? '')) !== ''
                         && trim((string) ($claim['endLocation'] ?? '')) !== ''
-                        && ($km > 0 || ($travelGroupId !== '' && in_array($travelGroupId, $linkedTravelExpenseGroups, true)));
+                        && $km > 0;
                 }
 
                 return $amount > 0;
@@ -749,6 +877,16 @@ class OtherClaimService extends PdfRenderer
                 'travel_group_id' => $claim['travelGroupId'] ?? null,
                 'trip_mode' => $claim['type'] === 'Mileage' ? ($claim['tripMode'] ?? 'return') : null,
                 'expense_category' => $claim['type'] === 'Expense' ? ($claim['expenseCategory'] ?? null) : null,
+                'travel_category' => ClaimAttachmentData::travelCategory($claim) ?: null,
+                'distance_method' => $claim['type'] === 'Mileage' ? ($claim['distanceMethod'] ?? null) : null,
+                'mileage_rate' => $claim['type'] === 'Mileage' && isset($claim['mileageRate'])
+                    ? $this->rate($claim['mileageRate'])
+                    : null,
+                'charge_to_project_id' => isset($claim['chargeToProjectId']) && $claim['chargeToProjectId'] !== ''
+                    ? (int) $claim['chargeToProjectId']
+                    : null,
+                'location_detail' => $claim['locationDetail'] ?? null,
+                'expense_type' => $claim['expenseType'] ?? null,
                 'source' => $claim['source'] ?? null,
                 'source_label' => $claim['sourceLabel'] ?? null,
                 'sort_order' => $index,
@@ -757,10 +895,32 @@ class OtherClaimService extends PdfRenderer
             ]);
 
             $clientClaimId = (string) ($claim['id'] ?? '');
-            if ($clientClaimId !== '' && isset($files[$clientClaimId]) && $this->isClaimAttachmentFile($files[$clientClaimId])) {
-                $this->storeClaimAttachment($files[$clientClaimId], $claimId, $staffId, $claimMonth);
-            } elseif (isset($claim['attachmentId']) && $preservedAttachments->has((int) $claim['attachmentId'])) {
-                $this->copyClaimAttachment($preservedAttachments->get((int) $claim['attachmentId']), $claimId);
+            $claimFiles = ClaimAttachmentData::filesForClaim($files, $clientClaimId);
+            $definitions = ClaimAttachmentData::definitions($claim);
+
+            if ($definitions === [] && $claimFiles !== []) {
+                foreach ($claimFiles as $clientId => $file) {
+                    $definitions[] = [
+                        'clientId' => (string) $clientId,
+                        'id' => null,
+                        'purpose' => ClaimAttachmentData::purpose($claim),
+                    ];
+                }
+            }
+
+            foreach ($definitions as $attachment) {
+                $clientId = (string) $attachment['clientId'];
+                if (isset($claimFiles[$clientId]) && $this->isClaimAttachmentFile($claimFiles[$clientId])) {
+                    $this->storeClaimAttachment(
+                        $claimFiles[$clientId],
+                        $claimId,
+                        $staffId,
+                        $claimMonth,
+                        (string) $attachment['purpose'],
+                    );
+                } elseif ($attachment['id'] !== null && $preservedAttachments->has((int) $attachment['id'])) {
+                    $this->copyClaimAttachment($preservedAttachments->get((int) $attachment['id']), $claimId);
+                }
             }
         }
     }
@@ -770,6 +930,7 @@ class OtherClaimService extends PdfRenderer
         bool $includeClaims,
         ?Request $request = null,
         ?array $workflowPayload = null,
+        bool $financialView = false,
     ): array {
         $payload = [
             'id' => (int) $record->id,
@@ -795,6 +956,12 @@ class OtherClaimService extends PdfRenderer
             'cancelledAt' => $record->cancelled_at ?? null,
             'cancelledBy' => isset($record->cancelled_by) ? (int) $record->cancelled_by : null,
             'cancelReason' => (string) ($record->cancel_reason ?? ''),
+            'claimReference' => (string) ($record->claim_reference ?? sprintf('OC-%06d', (int) $record->id)),
+            'revisionNo' => max(1, (int) ($record->revision_no ?? 1)),
+            'parentApplicationId' => $record->parent_application_id ?? null,
+            'supersededByApplicationId' => $record->superseded_by_application_id ?? null,
+            'supersededAt' => $record->superseded_at ?? null,
+            'recordVersion' => max(1, (int) ($record->record_version ?? 1)),
         ];
         foreach ([
             'staffName' => 'staff_name',
@@ -811,7 +978,8 @@ class OtherClaimService extends PdfRenderer
             }
         }
         if ($includeClaims) {
-            $payload['claims'] = $this->claimsForApplication((int) $record->id);
+            $payload['claims'] = $this->claimsForApplication((int) $record->id, $financialView);
+            $payload['paymentHistory'] = $this->paymentHistoryForApplication((int) $record->id, $financialView);
         }
         $payload['workflow'] = (string) $record->status === 'Draft'
             ? null
@@ -820,7 +988,7 @@ class OtherClaimService extends PdfRenderer
         return $payload;
     }
 
-    private function claimsForApplication(int $applicationId): array
+    private function claimsForApplication(int $applicationId, bool $financialView = false): array
     {
         $claims = DB::table('hr_other_claim_items')
             ->where('application_id', $applicationId)
@@ -830,13 +998,29 @@ class OtherClaimService extends PdfRenderer
         $attachments = DB::table('hr_other_claim_attachments')
             ->whereIn('claim_id', $claims->pluck('id')->all())
             ->get()
-            ->keyBy('claim_id');
+            ->groupBy('claim_id');
 
-        return $claims->map(function (object $claim) use ($attachments): array {
-            $attachment = $attachments->get($claim->id);
+        return $claims->map(function (object $claim) use ($attachments, $applicationId, $financialView): array {
+            $claimAttachments = $attachments->get($claim->id, collect())
+                ->map(fn (object $attachment): array => [
+                    'id' => (int) $attachment->id,
+                    'name' => (string) $attachment->original_name,
+                    'size' => (int) $attachment->size,
+                    'type' => (string) ($attachment->mime_type ?? ''),
+                    'purpose' => (string) ($attachment->purpose ?? ''),
+                    'url' => $financialView
+                        ? url("hr/salary/other-claims/financial-records/{$applicationId}/attachments/{$attachment->id}")
+                        : url("hr/salary/other-claim-attachments/{$attachment->id}"),
+                    'downloadUrl' => $financialView
+                        ? url("hr/salary/other-claims/financial-records/{$applicationId}/attachments/{$attachment->id}")
+                        : url("hr/salary/other-claim-attachments/{$attachment->id}"),
+                ])
+                ->values()
+                ->all();
 
             return [
-                'id' => (int) $claim->id,
+                'id' => (string) ($claim->client_claim_id ?: $claim->id),
+                'recordItemId' => (int) $claim->id,
                 'type' => (string) $claim->type,
                 'date' => (string) ($claim->claim_date ?? ''),
                 'description' => (string) $claim->description,
@@ -848,18 +1032,99 @@ class OtherClaimService extends PdfRenderer
                 'travelGroupId' => (string) ($claim->travel_group_id ?? ''),
                 'tripMode' => (string) ($claim->trip_mode ?? (($claim->type ?? '') === 'Mileage' ? 'return' : '')),
                 'expenseCategory' => (string) ($claim->expense_category ?? ''),
+                'travelCategory' => (string) ($claim->travel_category ?? ''),
+                'distanceMethod' => (string) ($claim->distance_method ?? ''),
+                'mileageRate' => $claim->mileage_rate !== null ? (float) $claim->mileage_rate : null,
+                'chargeToProjectId' => $claim->charge_to_project_id !== null ? (int) $claim->charge_to_project_id : null,
+                'locationDetail' => (string) ($claim->location_detail ?? ''),
+                'expenseType' => (string) ($claim->expense_type ?? ''),
                 'source' => (string) ($claim->source ?? ''),
                 'sourceLabel' => (string) ($claim->source_label ?? ''),
-                'attachment' => $attachment ? [
-                    'id' => (int) $attachment->id,
-                    'name' => (string) $attachment->original_name,
-                    'size' => (int) $attachment->size,
-                    'type' => (string) ($attachment->mime_type ?? ''),
-                    'url' => url("hr/salary/other-claim-attachments/{$attachment->id}"),
-                    'downloadUrl' => url("hr/salary/other-claim-attachments/{$attachment->id}"),
-                ] : null,
+                'attachments' => $claimAttachments,
+                // Kept for older frontend consumers while they migrate to the attachment list.
+                'attachment' => $claimAttachments[0] ?? null,
             ];
         })->all();
+    }
+
+    private function paymentHistoryForApplication(int $applicationId, bool $financialView): array
+    {
+        if (
+            ! Schema::hasTable('hr_salary_payment_runs')
+            || ! Schema::hasTable('hr_salary_payment_run_items')
+        ) {
+            return [];
+        }
+
+        $hasVoids = Schema::hasColumn('hr_salary_payment_runs', 'voided_at')
+            && Schema::hasColumn('hr_salary_payment_run_items', 'voided_at');
+        $query = DB::table('hr_salary_payment_run_items as item')
+            ->join('hr_salary_payment_runs as run', 'run.id', '=', 'item.payment_run_id')
+            ->leftJoin('staff_general as paid_actor', 'paid_actor.staff_id', '=', 'run.actor_staff_id')
+            ->where('item.subject_type', self::SUBJECT_TYPE)
+            ->where('item.subject_id', $applicationId)
+            ->orderByDesc('run.paid_at')
+            ->orderByDesc('run.id')
+            ->select([
+                'run.id',
+                'run.payment_date',
+                'run.payment_reference',
+                'run.payment_method',
+                'run.remarks',
+                'run.actor_staff_id',
+                'run.paid_at',
+                'item.amount_paid',
+                'paid_actor.full_name as paid_actor_name',
+                'paid_actor.name_code as paid_actor_code',
+            ]);
+        if ($hasVoids) {
+            $query->leftJoin('staff_general as void_actor', 'void_actor.staff_id', '=', 'run.voided_by')
+                ->addSelect([
+                    'run.voided_at',
+                    'run.voided_by',
+                    'run.void_reason',
+                    'item.voided_at as item_voided_at',
+                    'void_actor.full_name as void_actor_name',
+                    'void_actor.name_code as void_actor_code',
+                ]);
+        }
+
+        return $query->get()
+            ->map(function (object $payment) use ($financialView, $hasVoids): array {
+                $reversedAt = $hasVoids
+                    ? ($payment->item_voided_at ?? $payment->voided_at ?? null)
+                    : null;
+
+                return [
+                    'id' => (int) $payment->id,
+                    'status' => $reversedAt ? 'Reversed' : 'Paid',
+                    'amount' => (float) $payment->amount_paid,
+                    'paymentDate' => $payment->payment_date,
+                    'paymentReference' => (string) ($payment->payment_reference ?? ''),
+                    'paymentMethod' => (string) ($payment->payment_method ?? ''),
+                    'remarks' => $financialView ? (string) ($payment->remarks ?? '') : '',
+                    'paidAt' => $payment->paid_at,
+                    'paidBy' => $this->staffLabel(
+                        $payment->paid_actor_name ?? '',
+                        $payment->paid_actor_code ?? '',
+                        $payment->actor_staff_id ?? null,
+                    ),
+                    'reversedAt' => $reversedAt,
+                    'reversedBy' => $reversedAt && $financialView
+                        ? $this->staffLabel(
+                            $payment->void_actor_name ?? '',
+                            $payment->void_actor_code ?? '',
+                            $payment->voided_by ?? null,
+                        )
+                        : '',
+                    'reversalReason' => $reversedAt
+                        ? ($financialView
+                            ? (string) ($payment->void_reason ?? '')
+                            : 'Payment reversal recorded. Contact Finance if you need more information.')
+                        : '',
+                ];
+            })
+            ->all();
     }
 
     private function claimPdfResponse(Request $request, object $record)
@@ -977,14 +1242,66 @@ class OtherClaimService extends PdfRenderer
             ]);
     }
 
+    private function financialRecordQuery()
+    {
+        return DB::table('hr_other_claim_applications as application')
+            ->leftJoin('staff_general as staff', 'staff.staff_id', '=', 'application.staff_id')
+            ->leftJoin('staff_general as checker', 'checker.staff_id', '=', 'application.checked_by')
+            ->leftJoin('staff_general as approver', 'approver.staff_id', '=', 'application.approved_by')
+            ->select([
+                'application.*',
+                'staff.full_name as staff_name',
+                'staff.name_code as staff_code',
+                'staff.position as staff_position',
+                'staff.department as staff_department',
+                'checker.full_name as checker_name',
+                'checker.name_code as checker_code',
+                'approver.full_name as approver_name',
+                'approver.name_code as approver_code',
+            ]);
+    }
+
+    private function canViewFinancialRecord(Request $request, object $record): bool
+    {
+        $actorId = $this->staffId($request);
+        if ($actorId <= 0 || $actorId === (int) $record->staff_id) {
+            return false;
+        }
+        if (in_array($actorId, [(int) ($record->checked_by ?? 0), (int) ($record->approved_by ?? 0)], true)) {
+            return true;
+        }
+
+        $instance = DB::table('workflow_instances')
+            ->where('subject_type', self::SUBJECT_TYPE)
+            ->where('subject_id', (int) $record->id)
+            ->first();
+        if (! $instance) {
+            return false;
+        }
+        if (DB::table('workflow_actions')
+            ->where('instance_id', (int) $instance->id)
+            ->where('actor_staff_id', $actorId)
+            ->exists()) {
+            return true;
+        }
+
+        $workflow = $this->workflowService->otherClaimWorkflowPayload((int) $record->id, $request);
+
+        return ! empty($workflow['availableActions']);
+    }
+
     private function claimAttachmentPdfSources(object $record, array $claims, Carbon $generatedAt, string $generatorCode, string $generatorId): array
     {
-        $claimIds = collect($claims)->pluck('id')->filter(fn ($id): bool => is_numeric($id))->map(fn ($id): int => (int) $id)->all();
+        $claimIds = collect($claims)
+            ->pluck('recordItemId')
+            ->filter(fn ($id): bool => is_numeric($id))
+            ->map(fn ($id): int => (int) $id)
+            ->all();
         if ($claimIds === []) {
             return [];
         }
 
-        $claimsById = collect($claims)->keyBy('id');
+        $claimsById = collect($claims)->keyBy('recordItemId');
         $attachments = DB::table('hr_other_claim_attachments')->whereIn('claim_id', $claimIds)->orderBy('id')->get();
         $mergeableAttachments = $attachments
             ->map(function (object $attachment) use ($claimsById): ?array {
@@ -1091,8 +1408,9 @@ class OtherClaimService extends PdfRenderer
     private function preservedClaimAttachments(int $applicationId, array $claims, int $staffId)
     {
         $attachmentIds = collect($claims)
-            ->pluck('attachmentId')
-            ->filter(fn ($id): bool => is_numeric($id))
+            ->flatMap(fn (array $claim) => ClaimAttachmentData::definitions($claim))
+            ->pluck('id')
+            ->filter(fn ($id): bool => $id !== null)
             ->map(fn ($id): int => (int) $id)
             ->unique()
             ->values()
@@ -1136,7 +1454,7 @@ class OtherClaimService extends PdfRenderer
         )->fails();
     }
 
-    private function storeClaimAttachment($file, int $claimId, int $staffId, string $claimMonth): void
+    private function storeClaimAttachment($file, int $claimId, int $staffId, string $claimMonth, string $purpose = 'receipt'): void
     {
         $extension = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
         $storedName = Str::uuid()->toString().'.'.$extension;
@@ -1149,6 +1467,7 @@ class OtherClaimService extends PdfRenderer
             'original_name' => $file->getClientOriginalName(),
             'mime_type' => $file->getMimeType(),
             'size' => $file->getSize() ?: 0,
+            'purpose' => $purpose,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -1156,16 +1475,22 @@ class OtherClaimService extends PdfRenderer
 
     private function copyClaimAttachment(object $attachment, int $claimId): void
     {
-        DB::table('hr_other_claim_attachments')->insert([
+        $payload = [
             'claim_id' => $claimId,
             'staff_id' => (int) $attachment->staff_id,
             'stored_path' => (string) $attachment->stored_path,
             'original_name' => (string) $attachment->original_name,
             'mime_type' => (string) ($attachment->mime_type ?? ''),
             'size' => (int) ($attachment->size ?? 0),
+            'purpose' => (string) ($attachment->purpose ?? ''),
             'created_at' => now(),
             'updated_at' => now(),
-        ]);
+        ];
+        if (Schema::hasColumn('hr_other_claim_attachments', 'source_attachment_id')) {
+            $payload['source_attachment_id'] = (int) $attachment->id;
+        }
+
+        DB::table('hr_other_claim_attachments')->insert($payload);
     }
 
     private function claimsTotal(array $claims): float
@@ -1194,6 +1519,155 @@ class OtherClaimService extends PdfRenderer
     private function mileageRate(int $staffId): float
     {
         return $this->submissionSettings($staffId)['mileageRate'];
+    }
+
+    private function rate(mixed $value): string
+    {
+        return number_format(round((float) $value + PHP_FLOAT_EPSILON, 4), 4, '.', '');
+    }
+
+    private function existingMileageRateSnapshots(int $applicationId): array
+    {
+        return DB::table('hr_other_claim_items')
+            ->where('application_id', $applicationId)
+            ->where('type', 'Mileage')
+            ->whereNotNull('client_claim_id')
+            ->whereNotNull('mileage_rate')
+            ->pluck('mileage_rate', 'client_claim_id')
+            ->map(fn ($rate): float => (float) $rate)
+            ->all();
+    }
+
+    private function applyMileageRateSnapshots(array $claims, float $currentRate, array $existingSnapshots): array
+    {
+        $errors = [];
+
+        foreach ($claims as $index => &$claim) {
+            if (($claim['type'] ?? '') !== 'Mileage') {
+                continue;
+            }
+
+            $clientClaimId = (string) ($claim['id'] ?? '');
+            if ($clientClaimId !== '' && array_key_exists($clientClaimId, $existingSnapshots)) {
+                $claim['mileageRate'] = $existingSnapshots[$clientClaimId];
+
+                continue;
+            }
+
+            if (array_key_exists('mileageRate', $claim) && $claim['mileageRate'] !== null && $claim['mileageRate'] !== '') {
+                $previewRate = round((float) $claim['mileageRate'], 4);
+                if (abs($previewRate - round($currentRate, 4)) > 0.00001) {
+                    $errors["claims.{$index}.mileageRate"][] = sprintf(
+                        'The mileage rate changed to RM %.4f per KM. Review the updated amount before submitting.',
+                        $currentRate,
+                    );
+
+                    continue;
+                }
+            }
+
+            $claim['mileageRate'] = $currentRate;
+        }
+        unset($claim);
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        return $claims;
+    }
+
+    private function normalizeTravelClaims(array $claims): array
+    {
+        $mileageByGroup = [];
+        $legacyExpenseGroups = [];
+
+        foreach ($claims as $claim) {
+            $groupId = trim((string) ($claim['travelGroupId'] ?? ''));
+            if ($groupId === '') {
+                continue;
+            }
+            if (($claim['type'] ?? '') === 'Mileage') {
+                $mileageByGroup[$groupId] = $claim;
+            }
+            if (($claim['type'] ?? '') === 'Expense' && (float) ($claim['amount'] ?? 0) > 0) {
+                $legacyExpenseGroups[$groupId] = true;
+            }
+        }
+
+        $normalized = [];
+        foreach ($claims as $claim) {
+            $type = (string) ($claim['type'] ?? '');
+            $groupId = trim((string) ($claim['travelGroupId'] ?? ''));
+
+            if ($type === 'Mileage') {
+                if ((float) ($claim['km'] ?? 0) <= 0 && $groupId !== '' && isset($legacyExpenseGroups[$groupId])) {
+                    // Older drafts represented an expense-only journey with a synthetic zero-value Mileage row.
+                    continue;
+                }
+                $claim['travelCategory'] = 'mileage';
+                $claim['distanceMethod'] = $claim['distanceMethod'] ?? (
+                    ($claim['tripMode'] ?? null) === 'one_way' ? 'one_way' : 'return_same_route'
+                );
+            } elseif ($type === 'Expense') {
+                $legacyCategory = trim((string) ($claim['expenseCategory'] ?? ''));
+                if (trim((string) ($claim['travelCategory'] ?? '')) === '' && $legacyCategory !== '') {
+                    $claim['travelCategory'] = $legacyCategory === 'combined' ? 'legacy_combined' : $legacyCategory;
+                }
+                if ($groupId !== '' && isset($mileageByGroup[$groupId])) {
+                    $linkedMileage = $mileageByGroup[$groupId];
+                    if (trim((string) ($claim['startLocation'] ?? '')) === '') {
+                        $claim['startLocation'] = $linkedMileage['startLocation'] ?? '';
+                    }
+                    if (trim((string) ($claim['endLocation'] ?? '')) === '') {
+                        $claim['endLocation'] = $linkedMileage['endLocation'] ?? '';
+                    }
+                    if (trim((string) ($claim['source'] ?? '')) === '') {
+                        $claim['source'] = $linkedMileage['source'] ?? '';
+                    }
+                    if (trim((string) ($claim['sourceLabel'] ?? '')) === '') {
+                        $claim['sourceLabel'] = $linkedMileage['sourceLabel'] ?? '';
+                    }
+                }
+            }
+
+            $normalized[] = $claim;
+        }
+
+        return $normalized;
+    }
+
+    private function assertTravelProjectsAreValid(array $claims): void
+    {
+        $projectIds = collect($claims)
+            ->pluck('chargeToProjectId')
+            ->filter(fn ($id): bool => $id !== null && $id !== '')
+            ->map(fn ($id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+        if ($projectIds->isEmpty()) {
+            return;
+        }
+
+        $validIds = DB::table('projects_main')
+            ->whereIn('id', $projectIds->all())
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+        $validIdMap = array_fill_keys($validIds, true);
+        $errors = [];
+
+        foreach ($claims as $index => $claim) {
+            $projectId = (int) ($claim['chargeToProjectId'] ?? 0);
+            if ($projectId > 0 && ! isset($validIdMap[$projectId])) {
+                $errors["claims.{$index}.chargeToProjectId"][] = 'Select a valid project before saving this travel claim.';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 
     private function assertMedicalClaimLimit(
@@ -1295,6 +1769,17 @@ class OtherClaimService extends PdfRenderer
             'Prepared' => 'Submitted',
             default => $status,
         };
+    }
+
+    private function staffLabel(mixed $name, mixed $code, mixed $staffId): string
+    {
+        $name = trim((string) $name);
+        $code = trim((string) $code);
+        if ($name !== '' && $code !== '') {
+            return "{$name} ({$code})";
+        }
+
+        return $name !== '' ? $name : ($code !== '' ? $code : ((int) $staffId > 0 ? 'Staff #'.(int) $staffId : ''));
     }
 
     private function isStaffEditableStatus(string $status): bool

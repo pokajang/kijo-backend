@@ -58,9 +58,9 @@ class PaymentQueueService
         $data = Validator::make($request->all(), [
             'staff_id' => ['required', 'integer', 'min:1'],
             'payment_period' => ['required', 'date_format:Y-m'],
-            'payment_date' => ['nullable', 'date_format:Y-m-d'],
-            'payment_reference' => ['nullable', 'string', 'max:191'],
-            'payment_method' => ['nullable', 'string', 'max:120'],
+            'payment_date' => ['required', 'date_format:Y-m-d'],
+            'payment_reference' => ['required', 'string', 'max:191'],
+            'payment_method' => ['required', 'string', 'max:120'],
             'remarks' => ['nullable', 'string', 'max:1000'],
             'idempotency_key' => ['nullable', 'string', 'max:120'],
         ])->validate();
@@ -85,9 +85,9 @@ class PaymentQueueService
             'rows' => ['required', 'array', 'min:1'],
             'rows.*.staff_id' => ['required', 'integer', 'min:1'],
             'rows.*.payment_period' => ['required', 'date_format:Y-m'],
-            'payment_date' => ['nullable', 'date_format:Y-m-d'],
-            'payment_reference' => ['nullable', 'string', 'max:191'],
-            'payment_method' => ['nullable', 'string', 'max:120'],
+            'payment_date' => ['required', 'date_format:Y-m-d'],
+            'payment_reference' => ['required', 'string', 'max:191'],
+            'payment_method' => ['required', 'string', 'max:120'],
             'remarks' => ['nullable', 'string', 'max:1000'],
         ])->validate();
 
@@ -190,6 +190,10 @@ class PaymentQueueService
                 ->where('application.staff_id', (int) $data['staff_id'])
                 ->where('application.claim_month', (string) $data['payment_period'])
                 ->where('application.status', self::APPROVED_STATUS)
+                ->when(
+                    Schema::hasColumn('hr_other_claim_applications', 'superseded_at'),
+                    fn ($query) => $query->whereNull('application.superseded_at'),
+                )
                 ->lockForUpdate()
                 ->select([
                     'application.*',
@@ -277,9 +281,13 @@ class PaymentQueueService
                     ->update(['status' => self::PAID_STATUS, 'updated_at' => now()]);
             }
             if ($otherClaimItems->isNotEmpty()) {
+                $otherClaimUpdate = ['status' => self::PAID_STATUS, 'updated_at' => now()];
+                if (Schema::hasColumn('hr_other_claim_applications', 'record_version')) {
+                    $otherClaimUpdate['record_version'] = DB::raw('record_version + 1');
+                }
                 DB::table('hr_other_claim_applications')
                     ->whereIn('id', $otherClaimItems->pluck('id')->map(fn ($id): int => (int) $id)->all())
-                    ->update(['status' => self::PAID_STATUS, 'updated_at' => now()]);
+                    ->update($otherClaimUpdate);
             }
         });
 
@@ -392,10 +400,14 @@ class PaymentQueueService
                     ->update(['status' => self::APPROVED_STATUS, 'updated_at' => $now]);
             }
             if ($otherClaimIds) {
+                $otherClaimUpdate = ['status' => self::APPROVED_STATUS, 'updated_at' => $now];
+                if (Schema::hasColumn('hr_other_claim_applications', 'record_version')) {
+                    $otherClaimUpdate['record_version'] = DB::raw('record_version + 1');
+                }
                 DB::table('hr_other_claim_applications')
                     ->whereIn('id', $otherClaimIds)
                     ->where('status', self::PAID_STATUS)
-                    ->update(['status' => self::APPROVED_STATUS, 'updated_at' => $now]);
+                    ->update($otherClaimUpdate);
             }
         });
 
@@ -474,6 +486,9 @@ class PaymentQueueService
 
     private function queueRows(Request $request, ?int $onlyStaffId = null, ?string $onlyPeriod = null, bool $includeItems = false): array
     {
+        if ($this->isSelfServicePaymentView($request)) {
+            $onlyStaffId = $this->staffId($request);
+        }
         $rows = $this->paidRows($request, $onlyStaffId, $onlyPeriod, $includeItems);
 
         $salaryRecords = DB::table('hr_salary_applications as application')
@@ -733,7 +748,12 @@ class PaymentQueueService
             'subjectId' => (int) $record->id,
             'label' => $isSalary
                 ? (string) ($record->salary_month_label ?? $record->salary_month)
-                : (string) ($record->claim_month_label ?? $record->claim_month),
+                : trim(sprintf(
+                    'Other Claim %s rev %d - %s',
+                    (string) ($record->claim_reference ?? ('OC-'.str_pad((string) $record->id, 6, '0', STR_PAD_LEFT))),
+                    max(1, (int) ($record->revision_no ?? 1)),
+                    (string) ($record->claim_month_label ?? $record->claim_month),
+                )),
             'period' => $isSalary ? (string) $record->salary_month : (string) $record->claim_month,
             'amount' => $isSalary ? (float) $record->payable_salary : (float) $record->claims_total,
             'approvedAt' => $record->approved_at ?? null,
@@ -837,6 +857,12 @@ class PaymentQueueService
         $actorId = $this->staffId($request);
         if ($actorId <= 0) {
             return false;
+        }
+        if ($this->hasAnyRole($request, SalaryPaymentAccess::ROLES)) {
+            return true;
+        }
+        if ($this->isSelfServicePaymentView($request) && $actorId === (int) ($record->staff_id ?? 0)) {
+            return true;
         }
         if ((int) ($record->checked_by ?? 0) === $actorId || (int) ($record->approved_by ?? 0) === $actorId) {
             return true;
@@ -942,7 +968,12 @@ class PaymentQueueService
             'period' => $isSalary ? (string) $record->salary_month : (string) $record->claim_month,
             'label' => $isSalary
                 ? (string) ($record->salary_month_label ?? $record->salary_month)
-                : (string) ($record->claim_month_label ?? $record->claim_month),
+                : trim(sprintf(
+                    'Other Claim %s rev %d - %s',
+                    (string) ($record->claim_reference ?? ('OC-'.str_pad((string) $record->id, 6, '0', STR_PAD_LEFT))),
+                    max(1, (int) ($record->revision_no ?? 1)),
+                    (string) ($record->claim_month_label ?? $record->claim_month),
+                )),
             'amount' => $isSalary ? (float) $record->payable_salary : (float) $record->claims_total,
             'status' => (string) $record->status,
             'approvedAt' => $record->approved_at ?? null,
@@ -987,5 +1018,12 @@ class PaymentQueueService
         );
 
         return ! empty(array_intersect($allowed, $current));
+    }
+
+    private function isSelfServicePaymentView(Request $request): bool
+    {
+        return $this->staffId($request) > 0
+            && $this->hasAnyRole($request, ['Staff'])
+            && ! $this->hasAnyRole($request, SalaryPaymentAccess::ROLES);
     }
 }

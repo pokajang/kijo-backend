@@ -232,23 +232,35 @@
         $mileageClaims = $claimRows->where('type', 'Mileage')->values();
         $allowanceClaims = $claimRows->where('type', 'Allowance')->values();
         $expenseClaims = $claimRows->where('type', 'Expense')->values();
-        $mileageTravelGroupIds = $mileageClaims
-            ->pluck('travelGroupId')
-            ->map(fn ($value) => trim((string) $value))
-            ->filter()
-            ->unique()
-            ->values();
+        $travelCategoryForClaim = static function (array $claim): string {
+            $category = trim((string) ($claim['travelCategory'] ?? ''));
+            if ($category !== '') {
+                return $category;
+            }
+
+            $legacyCategory = trim((string) ($claim['expenseCategory'] ?? ''));
+
+            return $legacyCategory === 'combined' ? 'legacy_combined' : $legacyCategory;
+        };
         $travelExpenseClaims = $expenseClaims
-            ->filter(fn ($claim) => $mileageTravelGroupIds->contains(trim((string) ($claim['travelGroupId'] ?? ''))))
-            ->groupBy(fn ($claim) => (string) $claim['travelGroupId']);
+            ->filter(fn (array $claim): bool => in_array(
+                $travelCategoryForClaim($claim),
+                ['taxi', 'toll', 'parking', 'other', 'legacy_combined'],
+                true,
+            ))
+            ->values();
         $standaloneExpenseClaims = $expenseClaims
-            ->reject(fn ($claim) => $mileageTravelGroupIds->contains(trim((string) ($claim['travelGroupId'] ?? ''))))
+            ->reject(fn (array $claim): bool => in_array(
+                $travelCategoryForClaim($claim),
+                ['taxi', 'toll', 'parking', 'other', 'legacy_combined'],
+                true,
+            ))
             ->values();
         $medicalClaims = $claimRows->where('type', 'Medical')->values();
         $mileageTotal = $mileageClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $allowanceTotal = $allowanceClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $expenseTotal = $expenseClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
-        $travelExpenseTotal = $travelExpenseClaims->flatten(1)->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
+        $travelExpenseTotal = $travelExpenseClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $standaloneExpenseTotal = $standaloneExpenseClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $medicalTotal = $medicalClaims->sum(fn ($claim) => (float) ($claim['amount'] ?? 0));
         $claimTotal = (float) ($record['claimsTotal'] ?? ($mileageTotal + $allowanceTotal + $expenseTotal + $medicalTotal));
@@ -327,23 +339,19 @@
                     @foreach($mileageClaims as $claim)
                         @php
                             $oneWayKm = (float) ($claim['km'] ?? 0);
-                            $tripMode = ($claim['tripMode'] ?? null) === 'one_way' ? 'one_way' : 'return';
-                            $claimableKm = $oneWayKm * ($tripMode === 'one_way' ? 1 : 2);
+                            $distanceMethod = $claim['distanceMethod'] ?? (($claim['tripMode'] ?? null) === 'one_way' ? 'one_way' : 'return_same_route');
+                            $claimableKm = $oneWayKm * ($distanceMethod === 'return_same_route' ? 2 : 1);
                             $claimAmount = (float) ($claim['amount'] ?? 0);
-                            $linkedExpenses = $travelExpenseClaims->get((string) ($claim['travelGroupId'] ?? ''), collect());
-                            $linkedExpenseAmount = $linkedExpenses->sum(fn ($expense) => (float) ($expense['amount'] ?? 0));
-                             $linkedExpenseLabel = $linkedExpenses->map(function ($expense) {
-                                 return match ($expense['expenseCategory'] ?? '') {
-                                     'combined' => 'Parking / taxi / toll / others',
-                                     'parking' => 'Parking',
-                                    'toll' => 'Toll',
-                                    'taxi' => 'Taxi',
-                                    default => 'Other',
-                                };
-                            })->unique()->implode(', ');
-                            $rowMileageRate = $profileMileageRate > 0
-                                ? $profileMileageRate
-                                : ($claimableKm > 0 ? $claimAmount / $claimableKm : 0);
+                            $rowMileageRate = isset($claim['mileageRate']) && $claim['mileageRate'] !== null
+                                ? (float) $claim['mileageRate']
+                                : ($profileMileageRate > 0
+                                    ? $profileMileageRate
+                                    : ($claimableKm > 0 ? $claimAmount / $claimableKm : 0));
+                            $distanceLabel = match ($distanceMethod) {
+                                'one_way' => 'one-way',
+                                'total_distance' => 'total distance',
+                                default => 'return',
+                            };
                         @endphp
                         <tr>
                             <td>{{ $dateLabel($claim['date'] ?? '') }}</td>
@@ -357,18 +365,51 @@
                              </td>
                              <td>
                                  @if($claimableKm > 0)
-                                     {{ $trimDecimal($claimableKm) }} KM {{ $tripMode === 'one_way' ? 'one-way' : 'return' }}
+                                     {{ $trimDecimal($claimableKm) }} KM {{ $distanceLabel }}
                                      <span class="mileage-km-note">{{ $trimDecimal($claimableKm) }} KM x RM {{ $trimDecimal($rowMileageRate) }}</span>
                                  @else
                                      -
                                  @endif
-                             </td>
-                            <td class="text-right">
-                                {{ $plainMoney($linkedExpenseAmount) }}
-                                @if($linkedExpenseLabel !== '')<span class="mileage-km-note">{{ $linkedExpenseLabel }}</span>@endif
                             </td>
+                            <td class="text-right">{{ $plainMoney(0) }}</td>
                             <td class="text-right">{{ $plainMoney($claimAmount) }}</td>
-                            <td class="text-right">{{ $plainMoney($claimAmount + $linkedExpenseAmount) }}</td>
+                            <td class="text-right">{{ $plainMoney($claimAmount) }}</td>
+                        </tr>
+                    @endforeach
+                    @foreach($travelExpenseClaims as $claim)
+                        @php
+                            $travelCategory = $travelCategoryForClaim($claim);
+                            $travelCategoryLabel = match ($travelCategory) {
+                                'taxi' => 'Taxi / e-hailing',
+                                'toll' => 'Toll',
+                                'parking' => 'Parking',
+                                'legacy_combined' => 'Parking / taxi / toll / others',
+                                default => 'Other travel expense',
+                            };
+                            $travelAmount = (float) ($claim['amount'] ?? 0);
+                            $travelDetail = trim((string) ($claim['locationDetail'] ?? ''))
+                                ?: trim((string) ($claim['expenseType'] ?? ''));
+                        @endphp
+                        <tr>
+                            <td>{{ $dateLabel($claim['date'] ?? '') }}</td>
+                            <td>{{ $claim['startLocation'] ?? '-' }}</td>
+                            <td>{{ $claim['endLocation'] ?? '-' }}</td>
+                            <td colspan="2">
+                                {{ $claim['description'] ?? '-' }}
+                                @if($travelDetail !== '')
+                                    <span class="mileage-km-note">{{ $travelDetail }}</span>
+                                @endif
+                                @if(!empty($claim['sourceLabel']))
+                                    <span class="mileage-km-note">Charge to: {{ $claim['sourceLabel'] }}</span>
+                                @endif
+                            </td>
+                            <td>-</td>
+                            <td class="text-right">
+                                {{ $plainMoney($travelAmount) }}
+                                <span class="mileage-km-note">{{ $travelCategoryLabel }}</span>
+                            </td>
+                            <td class="text-right">{{ $plainMoney(0) }}</td>
+                            <td class="text-right">{{ $plainMoney($travelAmount) }}</td>
                         </tr>
                     @endforeach
                     <tr class="total-row">
