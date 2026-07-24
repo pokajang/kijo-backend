@@ -848,6 +848,34 @@ class SalaryApiFeatureTest extends TestCase
         );
     }
 
+    public function test_salary_multipart_draft_can_use_post_method_override(): void
+    {
+        $claims = [
+            [
+                'id' => 'claim-payroll-adjustment',
+                'type' => 'Allowance',
+                'date' => '2026-05-16',
+                'description' => 'Payroll adjustment',
+                'amount' => 65,
+            ],
+        ];
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->post('/hr/salary/applications/draft', [
+                '_method' => 'PUT',
+                'salary_month' => '2026-05',
+                'basic_salary' => '4200',
+                'claims' => json_encode($claims),
+                'draft_payload' => json_encode(['formData' => ['salaryMonth' => '2026-05']]),
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Salary draft saved.')
+            ->assertJsonPath('record.status', 'Draft')
+            ->assertJsonPath('record.salaryMonthValue', '2026-05')
+            ->assertJsonPath('record.claims.0.description', 'Payroll adjustment');
+    }
+
     public function test_other_claim_application_enforces_annual_medical_claim_balance(): void
     {
         $this->actingSession()
@@ -895,6 +923,28 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('errors.claims.0', 'Medical claims exceed the annual medical claim balance of 20.00.');
     }
 
+    public function test_other_claim_application_explains_missing_medical_entitlement(): void
+    {
+        $this->updateSalaryProfile(defaultMileageRate: '0.60', yearlyMedicalClaim: '0');
+
+        $this->submitOtherClaim([
+            [
+                'id' => 'claim-medical-without-entitlement',
+                'type' => 'Medical',
+                'date' => '2026-05-18',
+                'description' => 'Clinic claim',
+                'amount' => 30,
+            ],
+        ], [
+            'claim-medical-without-entitlement' => UploadedFile::fake()->create('clinic.pdf', 100, 'application/pdf'),
+        ])
+            ->assertUnprocessable()
+            ->assertJsonPath(
+                'errors.claims.0',
+                'A medical claim is included, but no annual medical entitlement is configured. Remove the medical claim if it was added by mistake, or contact HR.',
+            );
+    }
+
     public function test_other_claim_draft_can_be_saved_restored_and_cleared(): void
     {
         $claims = [
@@ -938,6 +988,46 @@ class SalaryApiFeatureTest extends TestCase
             ->getJson('/hr/salary/other-claims/draft?claim_month=2026-05')
             ->assertOk()
             ->assertJsonPath('record', null);
+    }
+
+    public function test_other_claim_multipart_draft_can_use_post_method_override(): void
+    {
+        $claims = [
+            [
+                'id' => 'other-expense-multipart-draft',
+                'type' => 'Expense',
+                'date' => '2026-05-10',
+                'description' => 'Parking',
+                'amount' => 12,
+                'attachments' => [
+                    ['clientId' => 'parking-receipt', 'purpose' => 'parking_receipt'],
+                ],
+            ],
+        ];
+
+        $response = $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->post('/hr/salary/other-claims/draft', [
+                '_method' => 'PUT',
+                'claim_month' => '2026-05',
+                'claims' => json_encode($claims),
+                'draft_payload' => json_encode(['formData' => ['claimMonth' => '2026-05']]),
+                'attachments' => [
+                    'other-expense-multipart-draft' => [
+                        'parking-receipt' => UploadedFile::fake()->create('parking.pdf', 100, 'application/pdf'),
+                    ],
+                ],
+            ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('record.status', 'Draft')
+            ->assertJsonPath('record.claims.0.description', 'Parking')
+            ->assertJsonPath('record.claims.0.attachments.0.name', 'parking.pdf');
+
+        $storedPath = DB::table('hr_other_claim_attachments')->value('stored_path');
+        $this->assertNotEmpty($storedPath);
+        Storage::disk('private')->assertExists($storedPath);
     }
 
     public function test_other_claim_application_create_replace_attachment_owner_access_and_pdf(): void
@@ -1195,10 +1285,23 @@ class SalaryApiFeatureTest extends TestCase
 
         $this->updateSalaryProfile(defaultMileageRate: '0.75', yearlyMedicalClaim: '1200');
 
-        $this->submitOtherClaim($claim, [], ['application_id' => $draft->json('record.id')])
+        $submitted = $this->submitOtherClaim($claim, [], [
+            'application_id' => $draft->json('record.id'),
+        ])
             ->assertOk()
             ->assertJsonPath('record.claims.0.amount', 6)
-            ->assertJsonPath('record.claims.0.mileageRate', 0.6);
+            ->assertJsonPath('record.claims.0.mileageRate', 0.6)
+            ->assertJsonPath(
+                'record.claimReference',
+                sprintf('OC-%06d', $draft->json('record.id')),
+            );
+
+        $this->assertSame(
+            $submitted->json('record.claimReference'),
+            DB::table('hr_other_claim_applications')
+                ->where('id', $draft->json('record.id'))
+                ->value('claim_reference'),
+        );
     }
 
     public function test_other_claim_rejects_a_new_mileage_claim_with_a_stale_preview_rate(): void

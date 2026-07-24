@@ -588,13 +588,17 @@ class OtherClaimService extends PdfRenderer
             $applicationId = $existing && ! $isRevision
                 ? (int) $existing->id
                 : (int) DB::table('hr_other_claim_applications')->insertGetId([...$payload, 'created_at' => now()]);
-            if (! $existing && Schema::hasColumn('hr_other_claim_applications', 'claim_reference')) {
-                DB::table('hr_other_claim_applications')->where('id', $applicationId)->update([
-                    'claim_reference' => sprintf('OC-%06d', $applicationId),
-                ]);
-            }
             if ($existing && ! $isRevision) {
                 DB::table('hr_other_claim_applications')->where('id', $applicationId)->update($payload);
+            }
+            if (Schema::hasColumn('hr_other_claim_applications', 'claim_reference')
+                && empty($payload['claim_reference'])) {
+                $referenceApplicationId = $isRevision
+                    ? (int) ($existing->parent_application_id ?: $existing->id)
+                    : $applicationId;
+                DB::table('hr_other_claim_applications')->where('id', $applicationId)->update([
+                    'claim_reference' => sprintf('OC-%06d', $referenceApplicationId),
+                ]);
             }
             if ($existing && $isRevision && Schema::hasColumn('hr_other_claim_applications', 'superseded_at')) {
                 DB::table('hr_other_claim_applications')->where('id', $existing->id)->update([
@@ -1459,6 +1463,11 @@ class OtherClaimService extends PdfRenderer
         $extension = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
         $storedName = Str::uuid()->toString().'.'.$extension;
         $storedPath = AppFilePaths::storeFileAs("other-claims/{$staffId}/{$claimMonth}", $file, $storedName);
+        if (! AppFilePaths::storedPathExists($storedPath)) {
+            throw ValidationException::withMessages([
+                'attachments' => ['The supporting document could not be stored. Try again or contact an administrator.'],
+            ]);
+        }
 
         DB::table('hr_other_claim_attachments')->insert([
             'claim_id' => $claimId,
@@ -1682,6 +1691,13 @@ class OtherClaimService extends PdfRenderer
             ->sum(fn (array $claim): float => (float) ($claim['amount'] ?? 0)));
         if ($medicalTotal <= 0) {
             return;
+        }
+        if ($yearlyMedicalClaim <= 0) {
+            throw ValidationException::withMessages([
+                'claims' => [
+                    'A medical claim is included, but no annual medical entitlement is configured. Remove the medical claim if it was added by mistake, or contact HR.',
+                ],
+            ]);
         }
 
         $available = (float) $this->money($yearlyMedicalClaim - $this->usedMedicalClaimsForYear(
