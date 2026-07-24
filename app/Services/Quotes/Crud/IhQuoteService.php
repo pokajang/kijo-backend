@@ -5,6 +5,7 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreIhQuoteRequest;
 use App\Http\Requests\Quote\UpdateIhQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\Quotes\Pricing\IhPricingCalculator;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,7 +17,10 @@ class IhQuoteService
 {
     use SharedQuoteCrudHelpers;
 
-    public function __construct(private AuditLogService $auditLog) {}
+    public function __construct(
+        private AuditLogService $auditLog,
+        private IhPricingCalculator $pricingCalculator,
+    ) {}
 
     public function showIh(Request $request, int $id): JsonResponse
     {
@@ -27,6 +31,11 @@ class IhQuoteService
         }
 
         $quote->hygiene_items = $this->ihItems($id);
+        $quote->pricing_rule_version = $this->quotePricingRule($quote);
+        $quote->complexity_rating = $this->quoteComplexityRating($quote);
+        $quote->complexity_multiplier = $this->pricingCalculator->multiplierFor(
+            $quote->complexity_rating,
+        );
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
@@ -42,7 +51,8 @@ class IhQuoteService
 
         $data = $request->validated();
         $lineItems = $this->normalizeIhItems($data['hygiene_items'] ?? []);
-        $totals = $this->calculateIhTotals($data, $lineItems);
+        $pricingRule = IhPricingCalculator::STANDARD_RULE;
+        $totals = $this->pricingCalculator->calculate($data, $lineItems, $pricingRule);
         $table = 'quotes_ih';
         $type = 'ih';
         $lockName = "quotes_{$type}_".date('Y');
@@ -95,6 +105,9 @@ class IhQuoteService
                 'sst_amount' => $totals['sst_amount'],
                 'sub_total' => $totals['sub_total'],
                 'grand_total' => $totals['grand_total'],
+                ...(Schema::hasColumn($table, 'pricing_rule_version')
+                    ? ['pricing_rule_version' => $pricingRule]
+                    : []),
                 ...(Schema::hasColumn($table, 'estimated_total_cost')
                     ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                     : []),
@@ -162,11 +175,22 @@ class IhQuoteService
         }
 
         $data = $request->validated();
-        $hasLineItemsPayload = $request->exists('hygiene_items');
+        $pricingRule = $this->quotePricingRule($quote);
+        $hasLineItemsPayload = $pricingRule === IhPricingCalculator::STANDARD_RULE
+            && $request->exists('hygiene_items');
         $lineItems = $hasLineItemsPayload
             ? $this->normalizeIhItems($data['hygiene_items'] ?? [])
             : $this->existingIhItemsForTotals($id);
-        $totals = $this->calculateIhTotals($data, $lineItems);
+        $complexityRating = $this->quoteComplexityRating($quote);
+        $pricingChanged = $this->ihPricingInputsChanged($quote, $data);
+        $totals = $pricingRule === IhPricingCalculator::LEGACY_RULE && ! $pricingChanged
+            ? $this->preservedIhTotals($quote, $pricingRule, $complexityRating)
+            : $this->pricingCalculator->calculate(
+                $data,
+                $lineItems,
+                $pricingRule,
+                $complexityRating,
+            );
         $isRevision = $request->boolean('isRevision');
 
         $updates = [
@@ -195,6 +219,9 @@ class IhQuoteService
             'sst_amount' => $totals['sst_amount'],
             'sub_total' => $totals['sub_total'],
             'grand_total' => $totals['grand_total'],
+            ...(Schema::hasColumn('quotes_ih', 'pricing_rule_version')
+                ? ['pricing_rule_version' => $pricingRule]
+                : []),
             ...(Schema::hasColumn('quotes_ih', 'estimated_total_cost')
                 ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                 : []),
@@ -215,11 +242,14 @@ class IhQuoteService
             $priceException = $this->approvedPriceException($request, 'ih', $id);
             if ($priceException) {
                 $discount = (float) $priceException->approved_discount_amount;
-                $grossSubtotal = (float) $totals['sub_total'];
+                $grossSubtotal = (float) $totals['gross_subtotal'];
                 $taxableTotal = max(0, $grossSubtotal - $discount);
                 $sstAmount = round($taxableTotal * (float) $totals['sst_percent'] / 100, 2);
                 $updates['discount'] = $discount;
                 $updates['sst_amount'] = $sstAmount;
+                $updates['sub_total'] = $pricingRule === IhPricingCalculator::LEGACY_RULE
+                    ? round($taxableTotal, 2)
+                    : round($grossSubtotal, 2);
                 $updates['grand_total'] = round($taxableTotal + $sstAmount, 2);
                 if (Schema::hasColumn('quotes_ih', 'price_exception_request_id')) {
                     $updates['price_exception_request_id'] = $priceException->id;
@@ -287,27 +317,61 @@ class IhQuoteService
         }, $items, array_keys($items))));
     }
 
-    private function calculateIhTotals(array $data, array $lineItems): array
+    private function quotePricingRule(object $quote): string
     {
-        $sampleCounts = max(0, (float) ($data['sample_counts'] ?? 0));
-        $workUnits = max(1, (float) ($data['num_work_units'] ?? 0));
-        $unitPrice = max(0, (float) ($data['unit_price'] ?? 0));
-        $travelCharge = max(0, (float) ($data['travel_charge'] ?? 0));
-        $itemsTotal = array_sum(array_map(fn (array $item): float => (float) $item['line_total'], $lineItems));
-        $discount = max(0, (float) ($data['discount'] ?? 0));
-        $sstPercent = max(0, (float) ($data['sst_percent'] ?? 0));
+        if (isset($quote->pricing_rule_version)) {
+            return $this->pricingCalculator->normalizeRule($quote->pricing_rule_version);
+        }
 
-        $serviceTotal = $sampleCounts * $workUnits * $unitPrice;
-        $subTotal = round($serviceTotal + $travelCharge + $itemsTotal, 2);
-        $taxableTotal = max(0, $subTotal - $discount);
-        $sstAmount = round($taxableTotal * $sstPercent / 100, 2);
+        return property_exists($quote, 'complexity_rating')
+            ? IhPricingCalculator::LEGACY_RULE
+            : IhPricingCalculator::STANDARD_RULE;
+    }
+
+    private function quoteComplexityRating(object $quote): int
+    {
+        return max(1, min(5, (int) ($quote->complexity_rating ?? 1)));
+    }
+
+    private function ihPricingInputsChanged(object $quote, array $data): bool
+    {
+        foreach ([
+            'sample_counts',
+            'num_work_units',
+            'unit_price',
+            'travel_charge',
+            'discount',
+            'sst_percent',
+        ] as $field) {
+            if (abs((float) ($data[$field] ?? 0) - (float) ($quote->{$field} ?? 0)) > 0.00001) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function preservedIhTotals(
+        object $quote,
+        string $pricingRule,
+        int $complexityRating,
+    ): array {
+        $discount = max(0, (float) ($quote->discount ?? 0));
+        $subTotal = max(0, (float) ($quote->sub_total ?? 0));
+        $grossSubtotal = $pricingRule === IhPricingCalculator::LEGACY_RULE
+            ? $subTotal + $discount
+            : $subTotal;
 
         return [
+            'pricing_rule_version' => $pricingRule,
+            'complexity_rating' => $complexityRating,
+            'complexity_multiplier' => $this->pricingCalculator->multiplierFor($complexityRating),
+            'gross_subtotal' => round($grossSubtotal, 2),
             'discount' => round($discount, 2),
-            'sst_percent' => $sstPercent,
-            'sst_amount' => $sstAmount,
-            'sub_total' => $subTotal,
-            'grand_total' => round($taxableTotal + $sstAmount, 2),
+            'sst_percent' => max(0, (float) ($quote->sst_percent ?? 0)),
+            'sst_amount' => round(max(0, (float) ($quote->sst_amount ?? 0)), 2),
+            'sub_total' => round($subTotal, 2),
+            'grand_total' => round(max(0, (float) ($quote->grand_total ?? 0)), 2),
         ];
     }
 

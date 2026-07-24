@@ -61,6 +61,7 @@ class IhQuoteAdditionalFeesTest extends TestCase
         $this->assertSame(1540.0, (float) DB::table('quotes_ih')->where('id', $quoteId)->value('sub_total'));
         $this->assertSame(1200.45, (float) DB::table('quotes_ih')->where('id', $quoteId)->value('estimated_total_cost'));
         $this->assertSame('v1', DB::table('quotes_ih')->where('id', $quoteId)->value('traffic_light_rule_version'));
+        $this->assertSame('ih_standard_v2', DB::table('quotes_ih')->where('id', $quoteId)->value('pricing_rule_version'));
         $this->assertSame(2, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
 
         $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
@@ -113,6 +114,45 @@ class IhQuoteAdditionalFeesTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', 'success');
         $this->assertSame(0, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
+        $this->authenticated()->getJson("/quotes/ih/{$quoteId}")->assertNotFound();
+        $this->authenticated()->getJson("/invoices/quote/ih/{$quoteId}")->assertNotFound();
+        $this->authenticated()->getJson('/quote-records/ih')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
+    public function test_new_quote_flow_cannot_be_downgraded_to_legacy_pricing_by_the_client(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload([
+            'pricing_rule_version' => 'ih_complexity_v1',
+            'complexity_rating' => 5,
+            'hygiene_items' => [
+                [
+                    'item_description' => 'Laboratory analysis',
+                    'quantity' => 2,
+                    'unit' => 'sample',
+                    'unit_price' => 100,
+                ],
+            ],
+        ]));
+
+        $create->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $quoteId = (int) $create->json('quote_id');
+        $quote = DB::table('quotes_ih')->where('id', $quoteId)->first();
+
+        $this->assertSame('ih_standard_v2', $quote->pricing_rule_version);
+        $this->assertSame(1, (int) $quote->complexity_rating);
+        $this->assertSame(1200.0, (float) $quote->sub_total);
+        $this->assertSame(1200.0, (float) $quote->grand_total);
+        $this->assertSame(1, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
+
+        $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('data.pricing_rule_version', 'ih_standard_v2')
+            ->assertJsonPath('data.complexity_rating', 1)
+            ->assertJsonPath('data.complexity_multiplier', 1);
     }
 
     public function test_ih_quote_update_preserves_additional_fees_when_payload_omits_them(): void
@@ -148,6 +188,85 @@ class IhQuoteAdditionalFeesTest extends TestCase
         $this->assertSame(1, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
     }
 
+    public function test_standard_revision_increments_once_and_preserves_the_v2_contract(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload([
+            'estimated_total_cost' => 800,
+            'hygiene_items' => [[
+                'item_description' => 'Laboratory fee',
+                'quantity' => 1,
+                'unit' => 'Lot',
+                'unit_price' => 200,
+            ]],
+        ]));
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        $revisionPayload = $this->payload([
+            'isRevision' => true,
+            'estimated_total_cost' => 800,
+        ]);
+        unset($revisionPayload['hygiene_items']);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $revisionPayload)
+            ->assertOk()
+            ->assertJsonPath('data.revision_no', 1);
+
+        $quote = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame(1, (int) $quote->revision_no);
+        $this->assertSame('ih_standard_v2', $quote->pricing_rule_version);
+        $this->assertSame(1200.0, (float) $quote->grand_total);
+        $this->assertSame(1, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", [
+            ...$revisionPayload,
+            'inquiry_remarks' => 'Second revision',
+        ])->assertOk()
+            ->assertJsonPath('data.revision_no', 2);
+
+        $this->assertSame(2, (int) DB::table('quotes_ih')->where('id', $quoteId)->value('revision_no'));
+    }
+
+    public function test_create_rolls_back_quote_when_additional_fee_storage_fails(): void
+    {
+        Schema::drop('quotes_ih_items');
+
+        $this->authenticated()->postJson('/quotes/ih', $this->payload([
+            'hygiene_items' => [[
+                'item_description' => 'Cannot persist',
+                'quantity' => 1,
+                'unit' => 'Lot',
+                'unit_price' => 100,
+            ]],
+        ]))->assertStatus(500)
+            ->assertJsonPath('status', 'error');
+
+        $this->assertSame(0, DB::table('quotes_ih')->count());
+    }
+
+    public function test_update_rolls_back_quote_when_additional_fee_storage_fails(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+        Schema::drop('quotes_ih_items');
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $this->payload([
+            'unit_price' => 900,
+            'hygiene_items' => [[
+                'item_description' => 'Cannot persist',
+                'quantity' => 1,
+                'unit' => 'Lot',
+                'unit_price' => 100,
+            ]],
+        ]))->assertStatus(500)
+            ->assertJsonPath('status', 'error');
+
+        $quote = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame(500.0, (float) $quote->unit_price);
+        $this->assertSame(1000.0, (float) $quote->grand_total);
+    }
+
     public function test_ih_quote_rejects_malformed_additional_fee_rows(): void
     {
         $this->authenticated()->postJson('/quotes/ih', $this->payload([
@@ -178,6 +297,81 @@ class IhQuoteAdditionalFeesTest extends TestCase
                 ],
             ],
         ]))->assertStatus(422);
+    }
+
+    public function test_legacy_revision_preserves_complexity_rule_and_existing_totals(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'sample_counts' => 10,
+            'num_work_units' => 2,
+            'unit_price' => 500,
+            'travel_charge' => 200,
+            'discount' => 300,
+            'sst_percent' => 8,
+            'sub_total' => 12900,
+            'sst_amount' => 1032,
+            'grand_total' => 13932,
+            'estimated_total_cost' => null,
+            'pricing_rule_version' => 'ih_complexity_v1',
+            'complexity_rating' => 4,
+        ]);
+
+        $legacyPayload = $this->payload([
+            'sample_counts' => 10,
+            'num_work_units' => 2,
+            'unit_price' => 500,
+            'travel_charge' => 200,
+            'discount' => 300,
+            'sst_percent' => 8,
+            'estimated_total_cost' => null,
+            'inquiry_remarks' => 'Non-pricing revision',
+            'isRevision' => true,
+            // These fields are intentionally hostile: the server must derive
+            // the immutable pricing rule and rating from the existing quote.
+            'pricing_rule_version' => 'ih_standard_v2',
+            'complexity_rating' => 1,
+        ]);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $legacyPayload)
+            ->assertOk();
+
+        $preserved = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame(12900.0, (float) $preserved->sub_total);
+        $this->assertSame(1032.0, (float) $preserved->sst_amount);
+        $this->assertSame(13932.0, (float) $preserved->grand_total);
+        $this->assertSame('ih_complexity_v1', $preserved->pricing_rule_version);
+        $this->assertSame(4, (int) $preserved->complexity_rating);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", [
+            ...$legacyPayload,
+            'hygiene_items' => [[
+                'item_description' => 'V2 fee injection',
+                'quantity' => 1,
+                'unit' => 'Lot',
+                'unit_price' => 999,
+            ]],
+        ])->assertOk();
+        $this->assertSame(0, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", [
+            ...$legacyPayload,
+            'unit_price' => 600,
+        ])->assertOk();
+
+        $recalculated = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame(15500.0, (float) $recalculated->sub_total);
+        $this->assertSame(1240.0, (float) $recalculated->sst_amount);
+        $this->assertSame(16740.0, (float) $recalculated->grand_total);
+
+        $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('data.pricing_rule_version', 'ih_complexity_v1')
+            ->assertJsonPath('data.complexity_rating', 4)
+            ->assertJsonPath('data.complexity_multiplier', 1.3);
     }
 
     private function payload(array $overrides = []): array
@@ -270,6 +464,9 @@ class IhQuoteAdditionalFeesTest extends TestCase
             $table->decimal('grand_total', 15, 2)->default(0);
             $table->decimal('estimated_total_cost', 15, 2)->nullable();
             $table->string('traffic_light_rule_version', 50)->nullable();
+            $table->string('pricing_rule_version', 40)->default('ih_standard_v2');
+            $table->unsignedTinyInteger('complexity_rating')->default(1);
+            $table->decimal('complexity_markup', 15, 2)->default(0);
             $table->text('inquiry_remarks')->nullable();
             $table->boolean('attach_proposal')->default(false);
             $table->string('proposal_language')->nullable();

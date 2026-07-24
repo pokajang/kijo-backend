@@ -27,6 +27,7 @@ class QuoteApprovalServiceTest extends TestCase
         Schema::dropIfExists('in_app_notifications');
         Schema::dropIfExists('system_users');
         Schema::dropIfExists('staff_general');
+        Schema::dropIfExists('quotes_ih');
         Schema::dropIfExists('quotes_training');
 
         Schema::create('quotes_training', function (Blueprint $table): void {
@@ -40,6 +41,24 @@ class QuoteApprovalServiceTest extends TestCase
             $table->decimal('discount_amount', 15, 2)->nullable();
             $table->decimal('subtotal', 15, 2)->nullable();
             $table->string('training_rate_type')->nullable();
+            $table->unsignedBigInteger('created_by_id')->nullable();
+            $table->string('created_by_code')->nullable();
+            $table->string('status')->default('Open');
+            $table->unsignedBigInteger('approval_request_id')->nullable();
+            $table->string('approval_zone')->nullable();
+            $table->string('approval_status')->nullable();
+            $table->string('approval_fingerprint', 64)->nullable();
+        });
+
+        Schema::create('quotes_ih', function (Blueprint $table): void {
+            $table->id();
+            $table->string('quote_ref_no')->nullable();
+            $table->unsignedInteger('revision_no')->default(0);
+            $table->decimal('grand_total', 15, 2);
+            $table->decimal('estimated_total_cost', 15, 2)->nullable();
+            $table->decimal('discount', 15, 2)->default(0);
+            $table->decimal('travel_charge', 15, 2)->default(0);
+            $table->string('pricing_rule_version', 40);
             $table->unsignedBigInteger('created_by_id')->nullable();
             $table->string('created_by_code')->nullable();
             $table->string('status')->default('Open');
@@ -128,6 +147,7 @@ class QuoteApprovalServiceTest extends TestCase
     protected function tearDown(): void
     {
         Schema::dropIfExists('quote_approval_requests');
+        Schema::dropIfExists('quotes_ih');
         Schema::dropIfExists('in_app_notifications');
         Schema::dropIfExists('system_users');
         Schema::dropIfExists('staff_general');
@@ -149,6 +169,57 @@ class QuoteApprovalServiceTest extends TestCase
         $this->assertSame('approved', $approval->status);
         $this->assertNull($approval->required_step);
         $this->assertNull(app(QuoteApprovalService::class)->issuanceDenial('training', $quoteId));
+    }
+
+    public function test_legacy_ih_quote_without_estimated_cost_keeps_its_original_approval_basis(): void
+    {
+        $quoteId = DB::table('quotes_ih')->insertGetId([
+            'quote_ref_no' => 'QIH-LEGACY',
+            'grand_total' => 13932,
+            'estimated_total_cost' => null,
+            'travel_charge' => 200,
+            'pricing_rule_version' => 'ih_complexity_v1',
+            'created_by_id' => 33,
+        ]);
+
+        $approval = app(QuoteApprovalService::class)->current('ih', $quoteId, false);
+
+        $this->assertSame('green', $approval->zone);
+        $this->assertSame('approved', $approval->status);
+        $this->assertStringContainsString(
+            'Legacy complexity quotation',
+            implode(' ', json_decode($approval->trigger_reasons, true, flags: JSON_THROW_ON_ERROR)),
+        );
+    }
+
+    public function test_standard_ih_quote_routes_through_yellow_and_red_approval_zones(): void
+    {
+        $quoteId = DB::table('quotes_ih')->insertGetId([
+            'quote_ref_no' => 'QIH-V2-APPROVAL',
+            'grand_total' => 130,
+            'estimated_total_cost' => 100,
+            'pricing_rule_version' => 'ih_standard_v2',
+            'created_by_id' => 33,
+        ]);
+        $service = app(QuoteApprovalService::class);
+
+        $yellow = $service->current('ih', $quoteId, false);
+        $this->assertSame('yellow', $yellow->zone);
+        $this->assertSame('pending', $yellow->status);
+        $this->assertSame('hod', $yellow->required_step);
+        $this->assertSame('QUOTE_APPROVAL_REQUIRED', $service->issuanceDenial('ih', $quoteId)['code']);
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'grand_total' => 110,
+            'revision_no' => 1,
+        ]);
+        $red = $service->current('ih', $quoteId, false);
+
+        $this->assertNotSame($yellow->id, $red->id);
+        $this->assertSame('red', $red->zone);
+        $this->assertSame('pending', $red->status);
+        $this->assertSame('bd', $red->required_step);
+        $this->assertFalse((bool) DB::table('quote_approval_requests')->where('id', $yellow->id)->value('is_current'));
     }
 
     public function test_listing_approvals_does_not_backfill_or_notify_legacy_open_quotes(): void

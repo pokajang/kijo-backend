@@ -3,6 +3,7 @@
 namespace App\Services\Quotes\Pdf;
 
 use App\Services\AuditLogService;
+use App\Services\Quotes\Pricing\IhPricingCalculator;
 use App\Support\ProposalTitleFormatter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,26 +14,27 @@ class IhQuotePdfService
     public function __construct(
         private AuditLogService $auditLog,
         private QuotePdfRenderer $renderer,
-        private PdfMergeService $pdfMerge
+        private PdfMergeService $pdfMerge,
+        private IhPricingCalculator $pricingCalculator,
     ) {}
 
     public function generate(Request $request, int $quoteId)
     {
         $quote = DB::table('quotes_ih')->where('id', $quoteId)->first();
-        if (!$quote) {
+        if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found'], 404);
         }
 
         $staff = null;
-        if (!empty($quote->created_by_id) && $this->hasTable('staff_general')) {
+        if (! empty($quote->created_by_id) && $this->hasTable('staff_general')) {
             $staff = DB::table('staff_general')
                 ->where('staff_id', (int) $quote->created_by_id)
                 ->select(['position', 'crm_position', 'department'])
                 ->first();
         }
-        $signOffTitle = !empty($staff?->crm_position)
+        $signOffTitle = ! empty($staff?->crm_position)
             ? (string) $staff->crm_position
-            : trim(((string) ($staff?->position ?? '')) . ' (' . ((string) ($staff?->department ?? '')) . ')');
+            : trim(((string) ($staff?->position ?? '')).' ('.((string) ($staff?->department ?? '')).')');
         if ($signOffTitle === '()' || $signOffTitle === '') {
             $signOffTitle = 'Staff';
         }
@@ -47,6 +49,16 @@ class IhQuotePdfService
         $remarksHtml = $remarksRaw !== '' ? nl2br(e($remarksRaw)) : '-';
 
         $unitPrice = (float) ($quote->unit_price ?? 0);
+        $pricingRuleVersion = $this->pricingCalculator->normalizeRule(
+            $quote->pricing_rule_version ?? null,
+        );
+        $isLegacyPricing = $pricingRuleVersion === IhPricingCalculator::LEGACY_RULE;
+        $complexityRating = $isLegacyPricing
+            ? max(1, min(5, (int) ($quote->complexity_rating ?? 1)))
+            : 1;
+        $complexityMultiplier = $isLegacyPricing
+            ? $this->pricingCalculator->multiplierFor($complexityRating)
+            : 1.0;
         $travelCharge = (float) ($quote->travel_charge ?? 0);
         $discountAmount = (float) ($quote->discount ?? 0);
         $sstPercent = (float) ($quote->sst_percent ?? 0);
@@ -55,7 +67,7 @@ class IhQuotePdfService
         $sstPercentLabel = ((float) (int) $sstPercent === $sstPercent)
             ? number_format($sstPercent, 0)
             : number_format($sstPercent, 2);
-        $additionalItems = Schema::hasTable('quotes_ih_items')
+        $additionalItems = ! $isLegacyPricing && Schema::hasTable('quotes_ih_items')
             ? DB::table('quotes_ih_items')
                 ->where('quote_id', $quoteId)
                 ->orderBy('sort_order')
@@ -64,9 +76,15 @@ class IhQuotePdfService
             : collect();
         $additionalFeesTotal = $additionalItems->sum(fn ($item): float => (float) ($item->line_total ?? 0));
 
-        $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice;
-        $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;
-        $subTotalNet = max(0, $grossSubtotal - $discountAmount);
+        $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice * $complexityMultiplier;
+        if ($isLegacyPricing) {
+            // Historical PDFs retain the contractual totals saved by the legacy client.
+            $subTotalNet = max(0, (float) ($quote->sub_total ?? 0));
+            $grossSubtotal = $subTotalNet + $discountAmount;
+        } else {
+            $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;
+            $subTotalNet = max(0, $grossSubtotal - $discountAmount);
+        }
 
         $appendProposal = (int) ($quote->attach_proposal ?? 0) === 1 && (int) ($quote->service_id ?? 0) > 0;
         $proposalTitle = '';
@@ -154,6 +172,11 @@ class IhQuotePdfService
             'workUnitsDisplay' => $workUnitsDisplay,
             'remarksHtml' => $remarksHtml,
             'serviceTotal' => $serviceTotal,
+            'isLegacyPricing' => $isLegacyPricing,
+            'complexityRating' => $complexityRating,
+            'complexityMultiplier' => $complexityMultiplier,
+            'unitPrice' => $unitPrice,
+            'workUnitsForCalc' => $workUnitsForCalc,
             'travelCharge' => $travelCharge,
             'additionalItems' => $additionalItems,
             'additionalFeesTotal' => $additionalFeesTotal,
@@ -182,7 +205,7 @@ class IhQuotePdfService
         );
         $pdfBytes = $dompdf->output();
 
-        if ($appendProposal && (!empty($proposalSections) || $additionalInfoHtml !== '')) {
+        if ($appendProposal && (! empty($proposalSections) || $additionalInfoHtml !== '')) {
             $proposalServiceTitle = ProposalTitleFormatter::removeSuffix($proposalTitle, 'Service Proposal');
             $proposalHtml = view($this->renderer->pdfView('pdf.ih-proposal', $quote->proposal_language ?? 'en'), [
                 'proposal' => (object) [
@@ -216,7 +239,7 @@ class IhQuotePdfService
         $this->auditLog->log($request, "Generated IH quotation PDF for quote ID #{$quoteId}");
 
         $safeClient = preg_replace('/[^A-Za-z0-9._-]+/', '_', (string) ($quote->client_name ?? 'client'));
-        $filename = ((string) ($quote->quote_ref_no ?? "quote-{$quoteId}")) . '_' . trim($safeClient, '_') . '.pdf';
+        $filename = ((string) ($quote->quote_ref_no ?? "quote-{$quoteId}")).'_'.trim($safeClient, '_').'.pdf';
 
         return response($pdfBytes, 200, [
             'Content-Type' => 'application/pdf',
