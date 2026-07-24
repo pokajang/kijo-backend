@@ -139,13 +139,30 @@
                     <strong>{{ $L('site_address', 'Site Address') }}:</strong> {{ $siteAddress }}<br>
                     <strong>{{ $L('samples', 'Samples') }}:</strong> {{ $sampleCount }} {{ $sampleUnit }}<br>
                     <strong>{{ $L('work_units', 'Work Units') }}:</strong> {{ $workUnitsDisplay }}<br>
+                    @if(!empty($isLegacyPricing))
+                        <strong>Complexity Rating:</strong> {{ $complexityRating }}
+                        ({{ number_format((float) $complexityMultiplier, 1) }}&times;)<br>
+                    @endif
                     <strong>{{ $L('remarks', 'Remarks') }}:</strong> {!! $remarksHtml !!}<br>
                     <strong>{{ $L('important', 'Important') }}:</strong> <em>{{ $pdfLanguage === 'ms-MY' ? 'Caj tambahan akan dikenakan untuk unit kerja tambahan (jika berkaitan) dan bilangan sampel.' : 'Additional charges will be applied for extra work units (where applicable) and number of samples.' }}</em>
                 </td>
             </tr>
             <tr>
                 <td class="label">{{ $L('service_fee', 'Service Fee') }}</td>
-                <td class="value">RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}</td>
+                <td class="value">
+                    RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}
+                    @if(!empty($isLegacyPricing))
+                        <span class="small-note">
+                            ({{ number_format((float) $sampleCount, 2) }} {{ $sampleUnit }}
+                            x {{ number_format((float) $workUnitsForCalc, 2) }} work unit(s)
+                            x RM {{ number_format((float) $unitPrice, 2) }}/unit
+                            @if((int) $complexityRating > 1)
+                                x complexity {{ $complexityRating }}
+                                ({{ number_format((float) $complexityMultiplier, 1) }}x)
+                            @endif)
+                        </span>
+                    @endif
+                </td>
             </tr>
             @if((float) ($travelCharge ?? 0) > 0)
                 <tr>

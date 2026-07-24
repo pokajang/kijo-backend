@@ -331,10 +331,16 @@ class QuoteApprovalService
             ? (float) $quote->estimated_total_cost : null;
         $margin = $cost !== null && $cost > 0 ? (($total - $cost) / $cost) * 100 : null;
         $reasons = [];
+        $isGrandfatheredLegacyIh = $service === 'ih'
+            && ($quote->pricing_rule_version ?? null) === 'ih_complexity_v1'
+            && ($cost === null || $cost <= 0);
 
         if ($service === 'special') {
             $zone = 'red';
             $reasons[] = 'Special/custom quotation requires BD final approval.';
+        } elseif ($isGrandfatheredLegacyIh) {
+            $zone = 'green';
+            $reasons[] = 'Legacy complexity quotation retains its original approval basis.';
         } elseif ($cost === null || $cost <= 0) {
             $zone = 'red';
             $reasons[] = 'Estimated total cost is missing; profitability cannot be validated.';
@@ -373,7 +379,12 @@ class QuoteApprovalService
             $zone = 'red';
             $reasons[] = 'Special training or special-client pricing requires BD final approval.';
         }
-        if ($service === 'ih' && (float) ($quote->travel_charge ?? 0) > 0 && $zone === 'green') {
+        if (
+            $service === 'ih'
+            && ! $isGrandfatheredLegacyIh
+            && (float) ($quote->travel_charge ?? 0) > 0
+            && $zone === 'green'
+        ) {
             $zone = 'yellow';
             $reasons[] = 'Industrial Hygiene quotation includes travel/outstation charges.';
         }
