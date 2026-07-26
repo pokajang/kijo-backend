@@ -151,7 +151,7 @@
                 <td class="label">{{ $L('service_fee', 'Service Fee') }}</td>
                 <td class="value">
                     RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}
-                    @if(!empty($isLegacyPricing))
+                    @if(!empty($isLegacyPricing) || empty($isHistoricalPricing))
                         <span class="small-note">
                             ({{ number_format((float) $sampleCount, 2) }} {{ $sampleUnit }}
                             x {{ number_format((float) $workUnitsForCalc, 2) }} work unit(s)
@@ -160,6 +160,15 @@
                                 x complexity {{ $complexityRating }}
                                 ({{ number_format((float) $complexityMultiplier, 1) }}x)
                             @endif)
+                        </span>
+                    @else
+                        <span class="small-note">
+                            Saved Unit Rate: RM {{ number_format((float) $unitPrice, 2) }}/unit.
+                            @if(!empty($serviceCalculationReconciles))
+                                Rate basis reconciles with the contractual service fee.
+                            @else
+                                Contractual service fee retained from the historical quotation.
+                            @endif
                         </span>
                     @endif
                 </td>

@@ -187,7 +187,28 @@ class QuoteApprovalServiceTest extends TestCase
         $this->assertSame('green', $approval->zone);
         $this->assertSame('approved', $approval->status);
         $this->assertStringContainsString(
-            'Legacy complexity quotation',
+            'Historical IH quotation',
+            implode(' ', json_decode($approval->trigger_reasons, true, flags: JSON_THROW_ON_ERROR)),
+        );
+    }
+
+    public function test_intermediate_ih_quote_without_estimated_cost_keeps_its_original_approval_basis(): void
+    {
+        $quoteId = DB::table('quotes_ih')->insertGetId([
+            'quote_ref_no' => 'QIH-STANDARD-V1',
+            'grand_total' => 9300,
+            'estimated_total_cost' => null,
+            'travel_charge' => 0,
+            'pricing_rule_version' => 'ih_standard_v1',
+            'created_by_id' => 33,
+        ]);
+
+        $approval = app(QuoteApprovalService::class)->current('ih', $quoteId, false);
+
+        $this->assertSame('green', $approval->zone);
+        $this->assertSame('approved', $approval->status);
+        $this->assertStringContainsString(
+            'Historical IH quotation',
             implode(' ', json_decode($approval->trigger_reasons, true, flags: JSON_THROW_ON_ERROR)),
         );
     }

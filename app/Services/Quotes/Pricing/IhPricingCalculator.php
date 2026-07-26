@@ -6,6 +6,8 @@ final class IhPricingCalculator
 {
     public const LEGACY_RULE = 'ih_complexity_v1';
 
+    public const INTERMEDIATE_RULE = 'ih_standard_v1';
+
     public const STANDARD_RULE = 'ih_standard_v2';
 
     public function calculate(
@@ -49,14 +51,35 @@ final class IhPricingCalculator
             'sst_percent' => $sstPercent,
             'sst_amount' => $sstAmount,
             // V1 historically stored the post-discount amount in sub_total.
-            'sub_total' => $rule === self::LEGACY_RULE ? $taxableTotal : $grossSubtotal,
+            'sub_total' => $this->isHistoricalRule($rule) ? $taxableTotal : $grossSubtotal,
             'grand_total' => round($taxableTotal + $sstAmount, 2),
         ];
     }
 
     public function normalizeRule(?string $value): string
     {
-        return $value === self::LEGACY_RULE ? self::LEGACY_RULE : self::STANDARD_RULE;
+        if (in_array($value, self::rules(), true)) {
+            return $value;
+        }
+
+        throw new \InvalidArgumentException(sprintf(
+            'Unsupported IH pricing rule [%s].',
+            $value ?? 'null',
+        ));
+    }
+
+    public function isHistoricalRule(?string $value): bool
+    {
+        return in_array($value, [self::LEGACY_RULE, self::INTERMEDIATE_RULE], true);
+    }
+
+    public static function rules(): array
+    {
+        return [
+            self::LEGACY_RULE,
+            self::INTERMEDIATE_RULE,
+            self::STANDARD_RULE,
+        ];
     }
 
     public function multiplierFor(int $complexityRating): float

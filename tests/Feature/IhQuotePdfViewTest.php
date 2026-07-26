@@ -28,6 +28,33 @@ class IhQuotePdfViewTest extends TestCase
 
         $this->assertStringNotContainsString('Complexity Rating', $html);
         $this->assertStringNotContainsString('x complexity', $html);
+        $this->assertStringContainsString('x RM 500.00/unit', $html);
+    }
+
+    public function test_intermediate_pdf_displays_saved_rate_without_false_equation(): void
+    {
+        $html = view('pdf.ih-quote', $this->viewData([
+            'sampleCount' => 120,
+            'workUnitsDisplay' => '1',
+            'workUnitsForCalc' => 1,
+            'unitPrice' => 79.17,
+            'serviceTotal' => 9500,
+            'grossSubtotal' => 9500,
+            'discountAmount' => 200,
+            'subTotalNet' => 9300,
+            'grandTotal' => 9300,
+            'isHistoricalPricing' => true,
+            'serviceCalculationReconciles' => false,
+        ]))->render();
+
+        $plain = preg_replace('/\s+/', ' ', strip_tags(html_entity_decode($html)));
+
+        $this->assertStringContainsString('Saved Unit Rate: RM 79.17/unit.', $plain);
+        $this->assertStringContainsString(
+            'Contractual service fee retained from the historical quotation.',
+            $plain,
+        );
+        $this->assertStringNotContainsString('120.00 sample(s) x 1.00 work unit(s)', $plain);
     }
 
     private function viewData(array $overrides = []): array
@@ -54,6 +81,9 @@ class IhQuotePdfViewTest extends TestCase
             'remarksHtml' => '-',
             'serviceTotal' => 10000,
             'isLegacyPricing' => false,
+            'isHistoricalPricing' => false,
+            'isUnknownPricing' => false,
+            'serviceCalculationReconciles' => true,
             'complexityRating' => 1,
             'complexityMultiplier' => 1.0,
             'unitPrice' => 500,

@@ -331,16 +331,20 @@ class QuoteApprovalService
             ? (float) $quote->estimated_total_cost : null;
         $margin = $cost !== null && $cost > 0 ? (($total - $cost) / $cost) * 100 : null;
         $reasons = [];
-        $isGrandfatheredLegacyIh = $service === 'ih'
-            && ($quote->pricing_rule_version ?? null) === 'ih_complexity_v1'
+        $isGrandfatheredHistoricalIh = $service === 'ih'
+            && in_array(
+                $quote->pricing_rule_version ?? null,
+                ['ih_complexity_v1', 'ih_standard_v1'],
+                true,
+            )
             && ($cost === null || $cost <= 0);
 
         if ($service === 'special') {
             $zone = 'red';
             $reasons[] = 'Special/custom quotation requires BD final approval.';
-        } elseif ($isGrandfatheredLegacyIh) {
+        } elseif ($isGrandfatheredHistoricalIh) {
             $zone = 'green';
-            $reasons[] = 'Legacy complexity quotation retains its original approval basis.';
+            $reasons[] = 'Historical IH quotation retains its original approval basis.';
         } elseif ($cost === null || $cost <= 0) {
             $zone = 'red';
             $reasons[] = 'Estimated total cost is missing; profitability cannot be validated.';
@@ -381,7 +385,7 @@ class QuoteApprovalService
         }
         if (
             $service === 'ih'
-            && ! $isGrandfatheredLegacyIh
+            && ! $isGrandfatheredHistoricalIh
             && (float) ($quote->travel_charge ?? 0) > 0
             && $zone === 'green'
         ) {

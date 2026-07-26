@@ -49,10 +49,19 @@ class IhQuotePdfService
         $remarksHtml = $remarksRaw !== '' ? nl2br(e($remarksRaw)) : '-';
 
         $unitPrice = (float) ($quote->unit_price ?? 0);
-        $pricingRuleVersion = $this->pricingCalculator->normalizeRule(
-            $quote->pricing_rule_version ?? null,
-        );
+        $isUnknownPricing = false;
+        try {
+            $pricingRuleVersion = $this->pricingCalculator->normalizeRule(
+                $quote->pricing_rule_version ?? null,
+            );
+        } catch (\InvalidArgumentException) {
+            // Stored contractual values remain printable even if a rule needs administrator repair.
+            $pricingRuleVersion = (string) ($quote->pricing_rule_version ?? 'unknown');
+            $isUnknownPricing = true;
+        }
         $isLegacyPricing = $pricingRuleVersion === IhPricingCalculator::LEGACY_RULE;
+        $isHistoricalPricing = $isUnknownPricing
+            || $this->pricingCalculator->isHistoricalRule($pricingRuleVersion);
         $complexityRating = $isLegacyPricing
             ? max(1, min(5, (int) ($quote->complexity_rating ?? 1)))
             : 1;
@@ -67,7 +76,8 @@ class IhQuotePdfService
         $sstPercentLabel = ((float) (int) $sstPercent === $sstPercent)
             ? number_format($sstPercent, 0)
             : number_format($sstPercent, 2);
-        $additionalItems = ! $isLegacyPricing && Schema::hasTable('quotes_ih_items')
+        $additionalItems = $pricingRuleVersion === IhPricingCalculator::STANDARD_RULE
+            && Schema::hasTable('quotes_ih_items')
             ? DB::table('quotes_ih_items')
                 ->where('quote_id', $quoteId)
                 ->orderBy('sort_order')
@@ -76,15 +86,21 @@ class IhQuotePdfService
             : collect();
         $additionalFeesTotal = $additionalItems->sum(fn ($item): float => (float) ($item->line_total ?? 0));
 
-        $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice * $complexityMultiplier;
-        if ($isLegacyPricing) {
-            // Historical PDFs retain the contractual totals saved by the legacy client.
+        if ($isHistoricalPricing) {
+            // Historical PDFs retain the contractual totals saved by their original clients.
             $subTotalNet = max(0, (float) ($quote->sub_total ?? 0));
             $grossSubtotal = $subTotalNet + $discountAmount;
+            $serviceTotal = max(0, $grossSubtotal - $travelCharge);
         } else {
+            $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice;
             $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;
             $subTotalNet = max(0, $grossSubtotal - $discountAmount);
         }
+        $calculatedServiceTotal = round(
+            $sampleCount * $workUnitsForCalc * $unitPrice * $complexityMultiplier,
+            2,
+        );
+        $serviceCalculationReconciles = abs($calculatedServiceTotal - $serviceTotal) <= 0.01;
 
         $appendProposal = (int) ($quote->attach_proposal ?? 0) === 1 && (int) ($quote->service_id ?? 0) > 0;
         $proposalTitle = '';
@@ -173,6 +189,9 @@ class IhQuotePdfService
             'remarksHtml' => $remarksHtml,
             'serviceTotal' => $serviceTotal,
             'isLegacyPricing' => $isLegacyPricing,
+            'isHistoricalPricing' => $isHistoricalPricing,
+            'isUnknownPricing' => $isUnknownPricing,
+            'serviceCalculationReconciles' => $serviceCalculationReconciles,
             'complexityRating' => $complexityRating,
             'complexityMultiplier' => $complexityMultiplier,
             'unitPrice' => $unitPrice,

@@ -374,6 +374,206 @@ class IhQuoteAdditionalFeesTest extends TestCase
             ->assertJsonPath('data.complexity_multiplier', 1.3);
     }
 
+    public function test_intermediate_revision_preserves_stored_precision_variance_until_pricing_changes(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'sample_counts' => 120,
+            'num_work_units' => 1,
+            'unit_price' => 79.17,
+            'travel_charge' => 0,
+            'discount' => 200,
+            'sst_percent' => 0,
+            'sub_total' => 9300,
+            'sst_amount' => 0,
+            'grand_total' => 9300,
+            'estimated_total_cost' => null,
+            'pricing_rule_version' => 'ih_standard_v1',
+            'complexity_rating' => 4,
+        ]);
+
+        $payload = $this->payload([
+            'sample_counts' => 120,
+            'num_work_units' => 1,
+            'unit_price' => 79.17,
+            'travel_charge' => 0,
+            'discount' => 200,
+            'sst_percent' => 0,
+            'estimated_total_cost' => null,
+            'inquiry_remarks' => 'Non-pricing intermediate update',
+            'hygiene_items' => [[
+                'item_description' => 'Must not be added',
+                'quantity' => 1,
+                'unit' => 'Lot',
+                'unit_price' => 500,
+            ]],
+        ]);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $payload)->assertOk();
+
+        $preserved = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame(9300.0, (float) $preserved->sub_total);
+        $this->assertSame(9300.0, (float) $preserved->grand_total);
+        $this->assertSame('ih_standard_v1', $preserved->pricing_rule_version);
+        $this->assertSame(4, (int) $preserved->complexity_rating);
+        $this->assertSame(0, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", [
+            ...$payload,
+            'unit_price' => 80,
+        ])->assertOk();
+
+        $recalculated = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame(9400.0, (float) $recalculated->sub_total);
+        $this->assertSame(9400.0, (float) $recalculated->grand_total);
+
+        $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('data.pricing_rule_version', 'ih_standard_v1')
+            ->assertJsonPath('data.complexity_rating', 4)
+            ->assertJsonPath('data.complexity_multiplier', 1);
+    }
+
+    public function test_historical_quote_requires_explicit_upgrade_flag_to_move_to_standard_v2(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'sample_counts' => 120,
+            'num_work_units' => 1,
+            'unit_price' => 79.17,
+            'travel_charge' => 0,
+            'discount' => 200,
+            'sst_percent' => 0,
+            'sub_total' => 9300,
+            'sst_amount' => 0,
+            'grand_total' => 9300,
+            'estimated_total_cost' => null,
+            'pricing_rule_version' => 'ih_standard_v1',
+            'complexity_rating' => 4,
+        ]);
+
+        $upgradePayload = $this->payload([
+            'sample_counts' => 120,
+            'num_work_units' => 1,
+            'unit_price' => 79.17,
+            'travel_charge' => 0,
+            'discount' => 200,
+            'sst_percent' => 0,
+            'upgrade_pricing_rule' => true,
+            'hygiene_items' => [],
+        ]);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", [
+            ...$upgradePayload,
+            'estimated_total_cost' => null,
+        ])->assertStatus(422);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", [
+            ...$upgradePayload,
+            'estimated_total_cost' => 7000,
+        ])->assertOk();
+
+        $upgraded = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        $this->assertSame('ih_standard_v2', $upgraded->pricing_rule_version);
+        $this->assertSame(9500.4, (float) $upgraded->sub_total);
+        $this->assertSame(9300.4, (float) $upgraded->grand_total);
+        $this->assertSame(4, (int) $upgraded->complexity_rating);
+    }
+
+    public function test_show_exposes_quote_version_and_stale_update_preserves_newer_data(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        $show = $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('data.pricing_state.editable', true)
+            ->assertJsonPath('data.pricing_state.code', 'CURRENT_PRICING');
+        $staleVersion = (string) $show->json('data.quote_version');
+        $this->assertSame(64, strlen($staleVersion));
+
+        DB::table('quotes_ih_items')->insert([
+            'quote_id' => $quoteId,
+            'item_description' => 'Concurrent fee row',
+            'description' => null,
+            'quantity' => 1,
+            'unit' => 'Lot',
+            'unit_price' => 25,
+            'line_total' => 25,
+            'sort_order' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $this->payload([
+            'quote_version' => $staleVersion,
+            'inquiry_remarks' => 'Stale user data',
+        ]))
+            ->assertStatus(409)
+            ->assertJsonPath('error_code', 'STALE_QUOTE_VERSION')
+            ->assertJsonPath('remediation.primary', 'reload_quote')
+            ->assertJsonPath('remediation.secondary', 'review_unsaved_changes');
+
+        $this->assertNotSame(
+            'Stale user data',
+            DB::table('quotes_ih')->where('id', $quoteId)->value('inquiry_remarks'),
+        );
+        $this->assertSame(
+            1,
+            DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count(),
+        );
+    }
+
+    public function test_unknown_rule_remains_viewable_but_financial_update_fails_closed(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'pricing_rule_version' => 'ih_unrecognized_v9',
+        ]);
+
+        $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('data.pricing_rule_version', 'ih_unrecognized_v9')
+            ->assertJsonPath('data.pricing_state.editable', false)
+            ->assertJsonPath('data.pricing_state.code', 'UNKNOWN_PRICING_RULE');
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $this->payload())
+            ->assertStatus(409)
+            ->assertJsonPath('error_code', 'UNKNOWN_PRICING_RULE')
+            ->assertJsonPath('remediation.secondary', 'contact_administrator');
+    }
+
+    public function test_upgrade_validation_returns_actionable_remediation(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
+        $create->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'pricing_rule_version' => 'ih_standard_v1',
+            'estimated_total_cost' => null,
+        ]);
+
+        $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $this->payload([
+            'upgrade_pricing_rule' => true,
+            'estimated_total_cost' => null,
+        ]))
+            ->assertStatus(422)
+            ->assertJsonPath('error_code', 'ESTIMATED_COST_REQUIRED')
+            ->assertJsonPath('remediation.primary', 'enter_estimated_cost')
+            ->assertJsonPath('remediation.secondary', 'return_to_historical_pricing');
+    }
+
     private function payload(array $overrides = []): array
     {
         return array_replace_recursive([

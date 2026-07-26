@@ -31,11 +31,35 @@ class IhQuoteService
         }
 
         $quote->hygiene_items = $this->ihItems($id);
-        $quote->pricing_rule_version = $this->quotePricingRule($quote);
+        try {
+            $quote->pricing_rule_version = $this->quotePricingRule($quote);
+        } catch (\InvalidArgumentException) {
+            $quote->pricing_rule_version = (string) ($quote->pricing_rule_version ?? 'unknown');
+            $quote->quote_version = $this->quoteVersion($quote, $id);
+            $quote->pricing_state = [
+                'editable' => false,
+                'code' => 'UNKNOWN_PRICING_RULE',
+                'message' => 'This quotation uses an unsupported pricing rule. Its stored data remains available, but financial editing is disabled.',
+                'remediation' => [
+                    'primary' => 'reload_quote',
+                    'secondary' => 'contact_administrator',
+                ],
+            ];
+
+            return response()->json(['status' => 'success', 'data' => $quote]);
+        }
         $quote->complexity_rating = $this->quoteComplexityRating($quote);
-        $quote->complexity_multiplier = $this->pricingCalculator->multiplierFor(
-            $quote->complexity_rating,
-        );
+        $quote->complexity_multiplier = $quote->pricing_rule_version === IhPricingCalculator::LEGACY_RULE
+            ? $this->pricingCalculator->multiplierFor($quote->complexity_rating)
+            : 1.0;
+        $quote->quote_version = $this->quoteVersion($quote, $id);
+        $quote->pricing_state = [
+            'editable' => true,
+            'code' => $this->pricingCalculator->isHistoricalRule($quote->pricing_rule_version)
+                ? 'HISTORICAL_TOTAL_PRESERVED'
+                : 'CURRENT_PRICING',
+            'historical' => $this->pricingCalculator->isHistoricalRule($quote->pricing_rule_version),
+        ];
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
@@ -175,15 +199,43 @@ class IhQuoteService
         }
 
         $data = $request->validated();
-        $pricingRule = $this->quotePricingRule($quote);
+        try {
+            $storedPricingRule = $this->quotePricingRule($quote);
+        } catch (\InvalidArgumentException) {
+            return $this->lifecycleError(
+                'UNKNOWN_PRICING_RULE',
+                'This quotation uses an unsupported pricing rule. Financial changes were not saved.',
+                409,
+                'reload_quote',
+                'contact_administrator',
+            );
+        }
+        $upgradePricingRule = $request->boolean('upgrade_pricing_rule');
+        if (
+            $upgradePricingRule
+            && $this->pricingCalculator->isHistoricalRule($storedPricingRule)
+            && (float) ($data['estimated_total_cost'] ?? 0) <= 0
+        ) {
+            return $this->lifecycleError(
+                'ESTIMATED_COST_REQUIRED',
+                'Estimated total cost is required when upgrading to current IH pricing.',
+                422,
+                'enter_estimated_cost',
+                'return_to_historical_pricing',
+            );
+        }
+        $pricingRule = $upgradePricingRule
+            && $this->pricingCalculator->isHistoricalRule($storedPricingRule)
+                ? IhPricingCalculator::STANDARD_RULE
+                : $storedPricingRule;
         $hasLineItemsPayload = $pricingRule === IhPricingCalculator::STANDARD_RULE
             && $request->exists('hygiene_items');
         $lineItems = $hasLineItemsPayload
             ? $this->normalizeIhItems($data['hygiene_items'] ?? [])
             : $this->existingIhItemsForTotals($id);
         $complexityRating = $this->quoteComplexityRating($quote);
-        $pricingChanged = $this->ihPricingInputsChanged($quote, $data);
-        $totals = $pricingRule === IhPricingCalculator::LEGACY_RULE && ! $pricingChanged
+        $pricingChanged = $upgradePricingRule || $this->ihPricingInputsChanged($quote, $data);
+        $totals = $this->pricingCalculator->isHistoricalRule($pricingRule) && ! $pricingChanged
             ? $this->preservedIhTotals($quote, $pricingRule, $complexityRating)
             : $this->pricingCalculator->calculate(
                 $data,
@@ -239,6 +291,26 @@ class IhQuoteService
 
         try {
             DB::beginTransaction();
+            $lockedQuote = DB::table('quotes_ih')->where('id', $id)->lockForUpdate()->first();
+            $clientVersion = trim((string) ($data['quote_version'] ?? ''));
+            $databaseVersion = $lockedQuote ? $this->quoteVersion($lockedQuote, $id) : '';
+            if (
+                ! $lockedQuote
+                || ($clientVersion !== '' && ! hash_equals($databaseVersion, $clientVersion))
+                || (array) $lockedQuote !== (array) $quote
+            ) {
+                DB::rollBack();
+
+                return $this->lifecycleError(
+                    'STALE_QUOTE_VERSION',
+                    'This quotation changed while it was being edited. Your unsaved values were not overwritten.',
+                    409,
+                    'reload_quote',
+                    'review_unsaved_changes',
+                    ['current_quote_version' => $databaseVersion],
+                );
+            }
+
             $priceException = $this->approvedPriceException($request, 'ih', $id);
             if ($priceException) {
                 $discount = (float) $priceException->approved_discount_amount;
@@ -247,7 +319,7 @@ class IhQuoteService
                 $sstAmount = round($taxableTotal * (float) $totals['sst_percent'] / 100, 2);
                 $updates['discount'] = $discount;
                 $updates['sst_amount'] = $sstAmount;
-                $updates['sub_total'] = $pricingRule === IhPricingCalculator::LEGACY_RULE
+                $updates['sub_total'] = $this->pricingCalculator->isHistoricalRule($pricingRule)
                     ? round($taxableTotal, 2)
                     : round($grossSubtotal, 2);
                 $updates['grand_total'] = round($taxableTotal + $sstAmount, 2);
@@ -280,16 +352,31 @@ class IhQuoteService
             DB::rollBack();
             report($e);
 
-            return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
+            return $this->lifecycleError(
+                'QUOTE_SAVE_FAILED',
+                'The quotation could not be saved. Your form data is still available; please retry.',
+                500,
+                'retry_save',
+                'copy_unsaved_data',
+            );
         }
 
-        $this->auditLog->log($request, "Updated IH quote ID #{$id} by {$nameCode}".($isRevision ? ' (revision)' : ''));
+        $this->auditLog->log(
+            $request,
+            "Updated IH quote ID #{$id} by {$nameCode}"
+                .($isRevision ? ' (revision)' : '')
+                .($pricingRule !== $storedPricingRule ? ' (pricing upgraded to ih_standard_v2)' : ''),
+        );
+
+        $savedQuote = DB::table('quotes_ih')->where('id', $id)->first();
 
         return response()->json([
             'status' => 'success',
             'message' => 'IH quote updated successfully.',
             'data' => [
                 'revision_no' => $updates['revision_no'] ?? $quote->revision_no,
+                'pricing_rule_version' => $pricingRule,
+                'quote_version' => $savedQuote ? $this->quoteVersion($savedQuote, $id) : null,
             ],
         ]);
     }
@@ -328,6 +415,55 @@ class IhQuoteService
             : IhPricingCalculator::STANDARD_RULE;
     }
 
+    private function quoteVersion(object $quote, ?int $quoteId = null): string
+    {
+        $row = (array) $quote;
+        unset(
+            $row['hygiene_items'],
+            $row['quote_version'],
+            $row['pricing_state'],
+            $row['complexity_multiplier'],
+        );
+        ksort($row);
+
+        $items = $quoteId === null
+            ? []
+            : $this->ihItems($quoteId)
+                ->map(function ($item): array {
+                    $normalized = (array) $item;
+                    ksort($normalized);
+
+                    return $normalized;
+                })
+                ->values()
+                ->all();
+
+        return hash('sha256', json_encode([
+            'quote' => $row,
+            'items' => $items,
+        ], JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR));
+    }
+
+    private function lifecycleError(
+        string $code,
+        string $message,
+        int $httpStatus,
+        string $primaryAction,
+        ?string $secondaryAction = null,
+        array $context = [],
+    ): JsonResponse {
+        return response()->json([
+            'status' => 'error',
+            'error_code' => $code,
+            'message' => $message,
+            'remediation' => [
+                'primary' => $primaryAction,
+                'secondary' => $secondaryAction,
+            ],
+            ...$context,
+        ], $httpStatus);
+    }
+
     private function quoteComplexityRating(object $quote): int
     {
         return max(1, min(5, (int) ($quote->complexity_rating ?? 1)));
@@ -358,14 +494,16 @@ class IhQuoteService
     ): array {
         $discount = max(0, (float) ($quote->discount ?? 0));
         $subTotal = max(0, (float) ($quote->sub_total ?? 0));
-        $grossSubtotal = $pricingRule === IhPricingCalculator::LEGACY_RULE
+        $grossSubtotal = $this->pricingCalculator->isHistoricalRule($pricingRule)
             ? $subTotal + $discount
             : $subTotal;
 
         return [
             'pricing_rule_version' => $pricingRule,
             'complexity_rating' => $complexityRating,
-            'complexity_multiplier' => $this->pricingCalculator->multiplierFor($complexityRating),
+            'complexity_multiplier' => $pricingRule === IhPricingCalculator::LEGACY_RULE
+                ? $this->pricingCalculator->multiplierFor($complexityRating)
+                : 1.0,
             'gross_subtotal' => round($grossSubtotal, 2),
             'discount' => round($discount, 2),
             'sst_percent' => max(0, (float) ($quote->sst_percent ?? 0)),

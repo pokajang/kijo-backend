@@ -10,12 +10,13 @@ use Illuminate\Support\Facades\Schema;
 class ManageIhSmokeFixture extends Command
 {
     protected $signature = 'quotes:ih-smoke-fixture
-        {action : prepare or cleanup}
+        {action : prepare, touch, or cleanup}
         {--source-id= : Existing IH quote to clone for prepare}
         {--quote-id= : Disposable legacy quote to remove for cleanup}
+        {--rule=legacy : legacy or intermediate pricing fixture}
         {--complexity=4 : Legacy complexity rating for prepare}';
 
-    protected $description = 'Create or remove a disposable legacy IH quote for local browser smoke tests';
+    protected $description = 'Create, modify, or remove a disposable historical IH quote for local browser smoke tests';
 
     public function handle(IhPricingCalculator $calculator): int
     {
@@ -33,6 +34,7 @@ class ManageIhSmokeFixture extends Command
 
         return match (strtolower((string) $this->argument('action'))) {
             'prepare' => $this->prepare($calculator),
+            'touch' => $this->touch(),
             'cleanup' => $this->cleanup(),
             default => $this->invalidAction(),
         };
@@ -48,21 +50,36 @@ class ManageIhSmokeFixture extends Command
             return self::FAILURE;
         }
 
+        $fixtureRule = strtolower(trim((string) $this->option('rule')));
+        if (! in_array($fixtureRule, ['legacy', 'intermediate'], true)) {
+            $this->error('Fixture rule must be legacy or intermediate.');
+
+            return self::INVALID;
+        }
+
+        $isIntermediate = $fixtureRule === 'intermediate';
         $rating = max(1, min(5, (int) $this->option('complexity')));
+        $pricingRule = $isIntermediate
+            ? IhPricingCalculator::INTERMEDIATE_RULE
+            : IhPricingCalculator::LEGACY_RULE;
         $pricingInput = [
-            'sample_counts' => 2,
+            'sample_counts' => $isIntermediate ? 120 : 2,
             'num_work_units' => 1,
-            'unit_price' => 500,
+            'unit_price' => $isIntermediate ? 79.17 : 500,
             'travel_charge' => 0,
-            'discount' => 0,
+            'discount' => $isIntermediate ? 200 : 0,
             'sst_percent' => 0,
         ];
         $totals = $calculator->calculate(
             $pricingInput,
             [],
-            IhPricingCalculator::LEGACY_RULE,
+            $pricingRule,
             $rating,
         );
+        if ($isIntermediate) {
+            $totals['sub_total'] = 9300;
+            $totals['grand_total'] = 9300;
+        }
         $columns = array_flip(Schema::getColumnListing('quotes_ih'));
         $row = array_intersect_key((array) $source, $columns);
         unset($row['id']);
@@ -84,10 +101,10 @@ class ManageIhSmokeFixture extends Command
             'sub_total' => $totals['sub_total'],
             'grand_total' => $totals['grand_total'],
             'estimated_total_cost' => null,
-            'pricing_rule_version' => IhPricingCalculator::LEGACY_RULE,
+            'pricing_rule_version' => $pricingRule,
             'complexity_rating' => $rating,
             'complexity_markup' => 0,
-            'inquiry_remarks' => 'Disposable IH legacy browser smoke fixture',
+            'inquiry_remarks' => 'Disposable IH historical browser smoke fixture',
             'attach_proposal' => 0,
             'created_at' => now(),
             'updated_at' => now(),
@@ -107,9 +124,33 @@ class ManageIhSmokeFixture extends Command
             'action' => 'prepare',
             'quote_id' => $quoteId,
             'quote_ref_no' => $row['quote_ref_no'],
-            'pricing_rule_version' => IhPricingCalculator::LEGACY_RULE,
+            'pricing_rule_version' => $pricingRule,
             'complexity_rating' => $rating,
             'grand_total' => $totals['grand_total'],
+        ], JSON_THROW_ON_ERROR));
+
+        return self::SUCCESS;
+    }
+
+    private function touch(): int
+    {
+        $quoteId = (int) $this->option('quote-id');
+        $quote = DB::table('quotes_ih')->where('id', $quoteId)->first();
+        if (! $quote || ! str_starts_with((string) ($quote->quote_ref_no ?? ''), 'SMOKE-IH-V1-')) {
+            $this->error("Quote #{$quoteId} is not a disposable IH smoke fixture.");
+
+            return self::FAILURE;
+        }
+
+        DB::table('quotes_ih')->where('id', $quoteId)->update([
+            'inquiry_remarks' => 'Concurrent smoke update',
+            'updated_at' => now()->addSecond(),
+        ]);
+
+        $this->line(json_encode([
+            'status' => 'success',
+            'action' => 'touch',
+            'quote_id' => $quoteId,
         ], JSON_THROW_ON_ERROR));
 
         return self::SUCCESS;
@@ -176,7 +217,7 @@ class ManageIhSmokeFixture extends Command
 
     private function invalidAction(): int
     {
-        $this->error('Action must be prepare or cleanup.');
+        $this->error('Action must be prepare, touch, or cleanup.');
 
         return self::INVALID;
     }

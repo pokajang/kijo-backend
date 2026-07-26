@@ -90,4 +90,37 @@ class IhSmokeFixtureCommandTest extends TestCase
 
         $this->assertTrue(DB::table('quotes_ih')->where('id', 10)->exists());
     }
+
+    public function test_command_prepares_precision_fixture_and_can_simulate_concurrent_edit(): void
+    {
+        $this->artisan('quotes:ih-smoke-fixture', [
+            'action' => 'prepare',
+            '--source-id' => 10,
+            '--rule' => 'intermediate',
+        ])->assertSuccessful();
+
+        $quote = DB::table('quotes_ih')
+            ->where('quote_ref_no', 'like', 'SMOKE-IH-V1-%')
+            ->first();
+
+        $this->assertNotNull($quote);
+        $this->assertSame('ih_standard_v1', $quote->pricing_rule_version);
+        $this->assertSame(79.17, (float) $quote->unit_price);
+        $this->assertSame(9300.0, (float) $quote->grand_total);
+
+        $version = (string) $quote->updated_at;
+        $this->artisan('quotes:ih-smoke-fixture', [
+            'action' => 'touch',
+            '--quote-id' => $quote->id,
+        ])->assertSuccessful();
+
+        $touched = DB::table('quotes_ih')->where('id', $quote->id)->first();
+        $this->assertSame('Concurrent smoke update', $touched->inquiry_remarks);
+        $this->assertNotSame($version, (string) $touched->updated_at);
+
+        $this->artisan('quotes:ih-smoke-fixture', [
+            'action' => 'cleanup',
+            '--quote-id' => $quote->id,
+        ])->assertSuccessful();
+    }
 }
