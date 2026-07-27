@@ -17,6 +17,18 @@ class EquipmentQuoteRecordListingService
         $estimatedCostSelect = Schema::hasColumn('quotes_equipment', 'estimated_total_cost')
             ? 'estimated_total_cost'
             : 'NULL AS estimated_total_cost';
+        $trafficLightRuleSelect = Schema::hasColumn('quotes_equipment', 'traffic_light_rule_version')
+            ? 'traffic_light_rule_version'
+            : 'NULL AS traffic_light_rule_version';
+        $supplierNameSelect = Schema::hasColumn('catalog_items', 'supplier_name')
+            ? 'ci.supplier_name'
+            : 'NULL AS supplier_name';
+        $supplierPriceSelect = Schema::hasColumn('catalog_items', 'supplier_price')
+            ? 'ci.supplier_price'
+            : 'NULL AS supplier_price';
+        $priceDateSelect = Schema::hasColumn('catalog_items', 'price_date')
+            ? 'ci.price_date'
+            : 'NULL AS price_date';
         $quotes = DB::select("
             SELECT
                 qe.id,
@@ -52,6 +64,7 @@ class EquipmentQuoteRecordListingService
                 qe.sub_total,
                 qe.grand_total,
                 {$estimatedCostSelect},
+                {$trafficLightRuleSelect},
                 qe.attach_proposal,
                 (
                     SELECT qis.source
@@ -111,6 +124,9 @@ class EquipmentQuoteRecordListingService
                 ci.category_id,
                 ci.description,
                 ci.unit,
+                {$supplierNameSelect},
+                {$supplierPriceSelect},
+                {$priceDateSelect},
                 qi.quantity,
                 qi.unit_price,
                 qi.marked_up_price,

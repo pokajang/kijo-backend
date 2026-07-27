@@ -18,6 +18,9 @@ class SpecialQuoteRecordListingService
         $estimatedCostSelect = Schema::hasColumn('quotes_special', 'estimated_total_cost')
             ? 'estimated_total_cost'
             : 'NULL AS estimated_total_cost';
+        $discountSelect = Schema::hasColumn('quotes_special', 'discount')
+            ? 'qs.discount AS discount'
+            : '0 AS discount';
         $quotes = DB::select("
             SELECT
                 qs.id,
@@ -49,6 +52,7 @@ class SpecialQuoteRecordListingService
                 qs.service_code,
                 qs.proposal_language,
                 qs.general_remarks,
+                {$discountSelect},
                 qs.sst_percent,
                 qs.sst_amount,
                 qs.sub_total,

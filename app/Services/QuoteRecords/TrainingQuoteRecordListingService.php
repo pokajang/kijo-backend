@@ -61,8 +61,11 @@ class TrainingQuoteRecordListingService
                 session_count,
                 duration_per_session,
                 duration_unit,
+                pricing_basis,
+                training_rate_type,
                 unit_price,
                 travel_charge,
+                travel_region,
                 meals_provided,
                 meal_price,
                 discount_type,
@@ -78,6 +81,7 @@ class TrainingQuoteRecordListingService
                 hrd_amount,
                 grand_total,
                 {$estimatedCostSelect},
+                traffic_light_rule_version,
                 (
                     SELECT qis.source
                     FROM quote_inquiry_sources qis

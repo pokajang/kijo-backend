@@ -17,6 +17,15 @@ class IhQuoteRecordListingService
         $estimatedCostSelect = Schema::hasColumn('quotes_ih', 'estimated_total_cost')
             ? 'estimated_total_cost'
             : 'NULL AS estimated_total_cost';
+        $trafficLightRuleSelect = Schema::hasColumn('quotes_ih', 'traffic_light_rule_version')
+            ? 'traffic_light_rule_version'
+            : 'NULL AS traffic_light_rule_version';
+        $pricingRuleSelect = Schema::hasColumn('quotes_ih', 'pricing_rule_version')
+            ? 'pricing_rule_version'
+            : 'NULL AS pricing_rule_version';
+        $complexityRatingSelect = Schema::hasColumn('quotes_ih', 'complexity_rating')
+            ? 'complexity_rating'
+            : '1 AS complexity_rating';
         $quotes = DB::select("
             SELECT
                 id, quote_running_no, quote_ref_no, revision_no, price_exception_request_id, created_at, updated_at, status,
@@ -28,6 +37,7 @@ class IhQuoteRecordListingService
                 travel_charge, sample_counts, sample_unit, num_work_units,
                 inquiry_remarks,
                 unit_price, discount, sst_percent, sst_amount, sub_total, grand_total, {$estimatedCostSelect},
+                {$trafficLightRuleSelect}, {$pricingRuleSelect}, {$complexityRatingSelect},
                 (
                     SELECT qis.source FROM quote_inquiry_sources qis
                     WHERE qis.quote_id = quotes_ih.id
