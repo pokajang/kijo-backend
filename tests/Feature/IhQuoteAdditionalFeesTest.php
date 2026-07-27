@@ -486,7 +486,7 @@ class IhQuoteAdditionalFeesTest extends TestCase
         $this->assertSame(4, (int) $upgraded->complexity_rating);
     }
 
-    public function test_show_exposes_quote_version_and_stale_update_preserves_newer_data(): void
+    public function test_edit_accepts_any_client_version_and_saves_the_submitted_form_data(): void
     {
         $create = $this->authenticated()->postJson('/quotes/ih', $this->payload());
         $create->assertOk();
@@ -496,8 +496,6 @@ class IhQuoteAdditionalFeesTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.pricing_state.editable', true)
             ->assertJsonPath('data.pricing_state.code', 'CURRENT_PRICING');
-        $staleVersion = (string) $show->json('data.quote_version');
-        $this->assertSame(64, strlen($staleVersion));
 
         DB::table('quotes_ih_items')->insert([
             'quote_id' => $quoteId,
@@ -513,20 +511,18 @@ class IhQuoteAdditionalFeesTest extends TestCase
         ]);
 
         $this->authenticated()->putJson("/quotes/ih/{$quoteId}", $this->payload([
-            'quote_version' => $staleVersion,
-            'inquiry_remarks' => 'Stale user data',
+            'quote_version' => str_repeat('0', 64),
+            'inquiry_remarks' => 'Latest submitted form data',
         ]))
-            ->assertStatus(409)
-            ->assertJsonPath('error_code', 'STALE_QUOTE_VERSION')
-            ->assertJsonPath('remediation.primary', 'reload_quote')
-            ->assertJsonPath('remediation.secondary', 'review_unsaved_changes');
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
 
-        $this->assertNotSame(
-            'Stale user data',
+        $this->assertSame(
+            'Latest submitted form data',
             DB::table('quotes_ih')->where('id', $quoteId)->value('inquiry_remarks'),
         );
         $this->assertSame(
-            1,
+            0,
             DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count(),
         );
     }

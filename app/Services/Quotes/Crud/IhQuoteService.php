@@ -35,7 +35,6 @@ class IhQuoteService
             $quote->pricing_rule_version = $this->quotePricingRule($quote);
         } catch (\InvalidArgumentException) {
             $quote->pricing_rule_version = (string) ($quote->pricing_rule_version ?? 'unknown');
-            $quote->quote_version = $this->quoteVersion($quote, $id);
             $quote->pricing_state = [
                 'editable' => false,
                 'code' => 'UNKNOWN_PRICING_RULE',
@@ -52,7 +51,6 @@ class IhQuoteService
         $quote->complexity_multiplier = $quote->pricing_rule_version === IhPricingCalculator::LEGACY_RULE
             ? $this->pricingCalculator->multiplierFor($quote->complexity_rating)
             : 1.0;
-        $quote->quote_version = $this->quoteVersion($quote, $id);
         $quote->pricing_state = [
             'editable' => true,
             'code' => $this->pricingCalculator->isHistoricalRule($quote->pricing_rule_version)
@@ -292,23 +290,10 @@ class IhQuoteService
         try {
             DB::beginTransaction();
             $lockedQuote = DB::table('quotes_ih')->where('id', $id)->lockForUpdate()->first();
-            $clientVersion = trim((string) ($data['quote_version'] ?? ''));
-            $databaseVersion = $lockedQuote ? $this->quoteVersion($lockedQuote, $id) : '';
-            if (
-                ! $lockedQuote
-                || ($clientVersion !== '' && ! hash_equals($databaseVersion, $clientVersion))
-                || (array) $lockedQuote !== (array) $quote
-            ) {
+            if (! $lockedQuote) {
                 DB::rollBack();
 
-                return $this->lifecycleError(
-                    'STALE_QUOTE_VERSION',
-                    'This quotation changed while it was being edited. Your unsaved values were not overwritten.',
-                    409,
-                    'reload_quote',
-                    'review_unsaved_changes',
-                    ['current_quote_version' => $databaseVersion],
-                );
+                return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
             }
 
             $priceException = $this->approvedPriceException($request, 'ih', $id);
@@ -368,15 +353,12 @@ class IhQuoteService
                 .($pricingRule !== $storedPricingRule ? ' (pricing upgraded to ih_standard_v2)' : ''),
         );
 
-        $savedQuote = DB::table('quotes_ih')->where('id', $id)->first();
-
         return response()->json([
             'status' => 'success',
             'message' => 'IH quote updated successfully.',
             'data' => [
                 'revision_no' => $updates['revision_no'] ?? $quote->revision_no,
                 'pricing_rule_version' => $pricingRule,
-                'quote_version' => $savedQuote ? $this->quoteVersion($savedQuote, $id) : null,
             ],
         ]);
     }
@@ -413,35 +395,6 @@ class IhQuoteService
         return property_exists($quote, 'complexity_rating')
             ? IhPricingCalculator::LEGACY_RULE
             : IhPricingCalculator::STANDARD_RULE;
-    }
-
-    private function quoteVersion(object $quote, ?int $quoteId = null): string
-    {
-        $row = (array) $quote;
-        unset(
-            $row['hygiene_items'],
-            $row['quote_version'],
-            $row['pricing_state'],
-            $row['complexity_multiplier'],
-        );
-        ksort($row);
-
-        $items = $quoteId === null
-            ? []
-            : $this->ihItems($quoteId)
-                ->map(function ($item): array {
-                    $normalized = (array) $item;
-                    ksort($normalized);
-
-                    return $normalized;
-                })
-                ->values()
-                ->all();
-
-        return hash('sha256', json_encode([
-            'quote' => $row,
-            'items' => $items,
-        ], JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR));
     }
 
     private function lifecycleError(
