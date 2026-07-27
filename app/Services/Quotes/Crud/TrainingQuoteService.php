@@ -17,8 +17,6 @@ class TrainingQuoteService
 {
     use SharedQuoteCrudHelpers;
 
-    private const DEFAULT_HRD_CHARGE_RATE = 4.0;
-
     public function __construct(private AuditLogService $auditLog) {}
 
     public function showTraining(Request $request, int $id): JsonResponse
@@ -337,9 +335,7 @@ class TrainingQuoteService
             return 0.0;
         }
 
-        $rate = (float) ($data['hrd_charge'] ?? 0);
-
-        return $rate > 0 ? $rate : self::DEFAULT_HRD_CHARGE_RATE;
+        return max(0.0, (float) ($data['hrd_charge'] ?? 0));
     }
 
     private function databaseErrorResponse(\Throwable $e, array $context = []): JsonResponse
