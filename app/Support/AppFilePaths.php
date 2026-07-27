@@ -207,6 +207,45 @@ class AppFilePaths
         return self::storedPathExists($targetRelativePath);
     }
 
+    public static function migrateSensitivePathToPrivate(?string $storedPath): bool
+    {
+        $relativePath = self::publicStorageRelativePath($storedPath);
+        if ($relativePath === null || ! self::isSensitiveRelativePath($relativePath)) {
+            return false;
+        }
+        if (Storage::disk('private')->exists($relativePath)) {
+            return true;
+        }
+        if (! Storage::disk('public')->exists($relativePath)) {
+            return false;
+        }
+
+        $contents = Storage::disk('public')->get($relativePath);
+        if (! Storage::disk('private')->put($relativePath, $contents)) {
+            return false;
+        }
+        if (! hash_equals(
+            hash('sha256', $contents),
+            hash('sha256', Storage::disk('private')->get($relativePath)),
+        )) {
+            Storage::disk('private')->delete($relativePath);
+
+            return false;
+        }
+
+        Storage::disk('public')->delete($relativePath);
+
+        return true;
+    }
+
+    public static function deletePublicDiskPath(?string $storedPath): void
+    {
+        $relativePath = self::publicStorageRelativePath($storedPath);
+        if ($relativePath !== null) {
+            Storage::disk('public')->delete($relativePath);
+        }
+    }
+
     public static function deletePublicPath(string $publicPath): void
     {
         $publicPath = trim($publicPath);
@@ -217,6 +256,7 @@ class AppFilePaths
         $relativePath = self::publicStorageRelativePath($publicPath);
         if ($relativePath !== null) {
             self::deleteStoredPath($relativePath);
+
             return;
         }
 

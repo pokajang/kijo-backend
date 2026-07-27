@@ -2,15 +2,12 @@
 
 namespace App\Services\Handbook;
 
-use App\Services\AuditLogService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 
 class HandbookContentService extends HandbookBaseService
 {
-
     public function current(Request $request)
     {
         $version = $this->currentVersion();
@@ -21,13 +18,15 @@ class HandbookContentService extends HandbookBaseService
             'data' => $this->formatVersion($version),
             'can_manage' => $canManage,
             'current_signature' => $this->currentSignature($request, (int) $version->id),
+            'signing_context' => app(HandbookSignatureService::class)
+                ->signingContext($request, $version),
             'draft' => $canManage ? $this->formatDraft($this->activeDraft((int) $version->id)) : null,
         ]);
     }
 
     public function saveDraftSection(Request $request)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to edit handbook drafts.',
@@ -94,7 +93,7 @@ class HandbookContentService extends HandbookBaseService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$current) {
+            if (! $current) {
                 $current = $this->currentVersion();
                 DB::table('hr_handbook_versions')->where('id', $current->id)->lockForUpdate()->first();
             }
@@ -102,12 +101,13 @@ class HandbookContentService extends HandbookBaseService
             $currentId = (int) $current->id;
             if ($submittedBaseVersionId !== $currentId) {
                 $staleVersion = true;
+
                 return;
             }
 
             $draft = $this->activeDraft($currentId, true);
             $sourceContent = json_decode((string) ($draft?->content_json ?? $current->content_json), true);
-            if (!is_array($sourceContent)) {
+            if (! is_array($sourceContent)) {
                 $sourceContent = ['title' => 'AMIOSH Employee Handbook', 'chapters' => []];
             }
 
@@ -124,6 +124,7 @@ class HandbookContentService extends HandbookBaseService
                     }
 
                     $matched = true;
+
                     return [
                         'id' => mb_substr($sectionId, 0, 80),
                         'title' => $sectionTitle,
@@ -134,18 +135,24 @@ class HandbookContentService extends HandbookBaseService
                 ->values()
                 ->all();
 
-            if (!$matched) {
+            if (! $matched) {
                 $missingSection = true;
+
                 return;
             }
 
             $content = [
                 'title' => mb_substr(trim((string) ($sourceContent['title'] ?? 'AMIOSH Employee Handbook')), 0, 255),
                 'chapters' => $chapters,
+                'acknowledgement' => $this->acknowledgements()->sanitize(
+                    $sourceContent['acknowledgement'] ?? null,
+                    true,
+                ),
             ];
             $encoded = json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if (!is_string($encoded)) {
+            if (! is_string($encoded)) {
                 $encodeFailed = true;
+
                 return;
             }
 
@@ -218,7 +225,7 @@ class HandbookContentService extends HandbookBaseService
 
     public function discardDraft(Request $request)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to discard handbook drafts.',
@@ -227,7 +234,7 @@ class HandbookContentService extends HandbookBaseService
 
         $current = $this->currentVersion();
         $draft = $this->activeDraft((int) $current->id);
-        if (!$draft) {
+        if (! $draft) {
             return response()->json([
                 'success' => true,
                 'message' => 'No active handbook draft to discard.',
@@ -251,7 +258,7 @@ class HandbookContentService extends HandbookBaseService
 
     public function changeLogs(Request $request)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to view handbook change logs.',

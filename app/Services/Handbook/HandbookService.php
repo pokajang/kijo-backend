@@ -2,11 +2,7 @@
 
 namespace App\Services\Handbook;
 
-use App\Services\AuditLogService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Validator;
 
 class HandbookService
 {
@@ -85,4 +81,13 @@ class HandbookService
         return $this->handbookSignatureService()->signatures($request);
     }
 
+    public function signatureEvidence(Request $request, int $id)
+    {
+        return $this->handbookSignatureService()->signatureEvidence($request, $id);
+    }
+
+    public function signatureEvidenceImage(Request $request, int $id)
+    {
+        return $this->handbookSignatureService()->signatureEvidenceImage($request, $id);
+    }
 }

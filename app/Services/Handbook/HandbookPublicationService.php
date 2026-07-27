@@ -2,7 +2,6 @@
 
 namespace App\Services\Handbook;
 
-use App\Services\AuditLogService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -10,10 +9,9 @@ use Illuminate\Support\Facades\Validator;
 
 class HandbookPublicationService extends HandbookBaseService
 {
-
     public function versions(Request $request)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to view handbook versions.',
@@ -83,7 +81,7 @@ class HandbookPublicationService extends HandbookBaseService
 
     public function version(Request $request, int $id)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to view handbook versions.',
@@ -91,7 +89,7 @@ class HandbookPublicationService extends HandbookBaseService
         }
 
         $version = DB::table('hr_handbook_versions')->where('id', $id)->first();
-        if (!$version) {
+        if (! $version) {
             return response()->json([
                 'success' => false,
                 'message' => 'Handbook version not found.',
@@ -111,7 +109,7 @@ class HandbookPublicationService extends HandbookBaseService
 
     public function reactivateVersion(Request $request, int $id)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to reactivate handbook versions.',
@@ -141,7 +139,7 @@ class HandbookPublicationService extends HandbookBaseService
         $now = now();
         $result = DB::transaction(function () use ($request, $id, $summary, $now) {
             $target = DB::table('hr_handbook_versions')->where('id', $id)->lockForUpdate()->first();
-            if (!$target) {
+            if (! $target) {
                 return [
                     'success' => false,
                     'status' => 404,
@@ -174,6 +172,36 @@ class HandbookPublicationService extends HandbookBaseService
                 ];
             }
 
+            $currentVersionForSchema = DB::table('hr_handbook_versions')
+                ->where('is_current', 1)
+                ->orderByDesc('published_at')
+                ->orderByDesc('id')
+                ->first();
+            $currentContentForSchema = json_decode(
+                (string) ($currentVersionForSchema?->content_json ?? ''),
+                true,
+            );
+            $currentSchemaVersion = (int) (
+                $currentVersionForSchema?->acknowledgement_schema_version
+                ?? $currentContentForSchema['acknowledgement']['schemaVersion']
+                ?? 0
+            );
+            $targetContent = json_decode((string) $target->content_json, true);
+            $targetSchemaVersion = (int) (
+                $target->acknowledgement_schema_version
+                ?? $targetContent['acknowledgement']['schemaVersion']
+                ?? 0
+            );
+
+            if ($currentSchemaVersion >= HandbookAcknowledgementService::SCHEMA_VERSION
+                && $targetSchemaVersion < HandbookAcknowledgementService::SCHEMA_VERSION) {
+                return [
+                    'success' => false,
+                    'status' => 422,
+                    'message' => 'Legacy handbook versions without the current acknowledgement evidence module cannot be reactivated.',
+                ];
+            }
+
             $previousCurrent = DB::table('hr_handbook_versions')
                 ->where('is_current', 1)
                 ->orderByDesc('published_at')
@@ -200,7 +228,7 @@ class HandbookPublicationService extends HandbookBaseService
             ];
         });
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return response()->json([
                 'success' => false,
                 'message' => $result['message'],
@@ -226,7 +254,7 @@ class HandbookPublicationService extends HandbookBaseService
 
     public function publishDraft(Request $request)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to publish handbook drafts.',
@@ -247,7 +275,7 @@ class HandbookPublicationService extends HandbookBaseService
 
         $current = $this->currentVersion();
         $draft = $this->activeDraft((int) $current->id);
-        if (!$draft) {
+        if (! $draft) {
             return response()->json([
                 'success' => false,
                 'message' => 'No active handbook draft to publish.',
@@ -276,63 +304,116 @@ class HandbookPublicationService extends HandbookBaseService
         }
         $now = now();
         $versionId = null;
+        $versionLabel = null;
 
-        DB::transaction(function () use ($request, $current, $draft, $changes, $staffId, $nameCode, $summary, $now, &$versionId) {
-            DB::table('hr_handbook_versions')->where('id', $current->id)->lockForUpdate()->first();
-            DB::table('hr_handbook_drafts')->where('id', $draft->id)->lockForUpdate()->first();
+        try {
+            DB::transaction(function () use ($request, $current, $draft, $staffId, $nameCode, $summary, $now, &$versionLabel, &$versionId) {
+                $lockedCurrent = DB::table('hr_handbook_versions')
+                    ->where('id', $current->id)
+                    ->lockForUpdate()
+                    ->first(['id', 'is_current']);
+                $lockedDraft = DB::table('hr_handbook_drafts')
+                    ->where('id', $draft->id)
+                    ->lockForUpdate()
+                    ->first();
+                if (! $lockedCurrent
+                    || ! (bool) $lockedCurrent->is_current
+                    || ! $lockedDraft
+                    || $lockedDraft->status !== 'active'
+                    || (int) $lockedDraft->base_handbook_version_id !== (int) $current->id) {
+                    throw new StaleHandbookDraftException;
+                }
+                $lockedChanges = DB::table('hr_handbook_draft_changes')
+                    ->where('handbook_draft_id', $lockedDraft->id)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+                if ($lockedChanges->isEmpty()) {
+                    throw new StaleHandbookDraftException;
+                }
+                $versionLabel = $this->nextVersionLabel();
 
-            DB::table('hr_handbook_versions')->where('is_current', 1)->update(
-                $this->currentVersionOffPayload($now),
-            );
+                $draftContent = json_decode((string) $lockedDraft->content_json, true);
+                if (! is_array($draftContent)) {
+                    throw new \RuntimeException('Handbook draft content is invalid.');
+                }
+                $content = $this->prepareContentForPublication($draftContent, $versionLabel);
+                $encoded = json_encode(
+                    $content,
+                    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+                );
 
-            $versionPayload = [
-                'version_label' => $this->nextVersionLabel(),
-                'content_json' => (string) $draft->content_json,
-                'change_summary' => $summary,
-                'published_by_staff_id' => $staffId,
-                'published_by_name_code' => mb_substr($nameCode, 0, 50),
-                'published_at' => $now,
-                'is_current' => true,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ];
+                DB::table('hr_handbook_versions')->where('is_current', 1)->update(
+                    $this->currentVersionOffPayload($now),
+                );
 
-            if ($this->hasCurrentVersionGuard()) {
-                $versionPayload['current_version_guard'] = 1;
-            }
-
-            $versionId = DB::table('hr_handbook_versions')->insertGetId($versionPayload);
-
-            $this->assertSingleCurrentVersion();
-
-            $this->insertChangeLog($request, $versionId, 'publish', $summary, $now);
-
-            foreach ($changes as $change) {
-                DB::table('hr_handbook_change_logs')->insert([
-                    'handbook_version_id' => $versionId,
-                    'action' => 'section',
-                    'section_id' => $change->section_id,
-                    'section_title' => $change->section_title,
-                    'summary' => $change->summary,
-                    'changed_by_staff_id' => $change->changed_by_staff_id,
-                    'changed_by_name_code' => $change->changed_by_name_code,
-                    'changed_at' => $change->changed_at ?: $now,
-                    'ip_address' => $change->ip_address,
-                    'user_agent' => $change->user_agent,
+                $versionPayload = [
+                    'version_label' => $versionLabel,
+                    'content_json' => $encoded,
+                    'change_summary' => $summary,
+                    'published_by_staff_id' => $staffId,
+                    'published_by_name_code' => mb_substr($nameCode, 0, 50),
+                    'published_at' => $now,
+                    'is_current' => true,
                     'created_at' => $now,
                     'updated_at' => $now,
-                ]);
-            }
+                ];
+                if (Schema::hasColumn('hr_handbook_versions', 'content_sha256')) {
+                    $versionPayload = array_merge(
+                        $versionPayload,
+                        $this->versionIntegrityPayload($content, $encoded),
+                    );
+                }
 
-            DB::table('hr_handbook_drafts')->where('id', $draft->id)->update([
-                'status' => 'published',
-                'published_handbook_version_id' => $versionId,
-                'published_at' => $now,
-                'updated_by_staff_id' => $staffId,
-                'updated_by_name_code' => mb_substr($nameCode, 0, 50),
-                'updated_at' => $now,
-            ]);
-        });
+                if ($this->hasCurrentVersionGuard()) {
+                    $versionPayload['current_version_guard'] = 1;
+                }
+
+                $versionId = DB::table('hr_handbook_versions')->insertGetId($versionPayload);
+
+                $this->assertSingleCurrentVersion();
+
+                $this->insertChangeLog($request, $versionId, 'publish', $summary, $now);
+
+                foreach ($lockedChanges as $change) {
+                    DB::table('hr_handbook_change_logs')->insert([
+                        'handbook_version_id' => $versionId,
+                        'action' => 'section',
+                        'section_id' => $change->section_id,
+                        'section_title' => $change->section_title,
+                        'summary' => $change->summary,
+                        'changed_by_staff_id' => $change->changed_by_staff_id,
+                        'changed_by_name_code' => $change->changed_by_name_code,
+                        'changed_at' => $change->changed_at ?: $now,
+                        'ip_address' => $change->ip_address,
+                        'user_agent' => $change->user_agent,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+                }
+
+                DB::table('hr_handbook_drafts')->where('id', $draft->id)->update([
+                    'status' => 'published',
+                    'published_handbook_version_id' => $versionId,
+                    'published_at' => $now,
+                    'updated_by_staff_id' => $staffId,
+                    'updated_by_name_code' => mb_substr($nameCode, 0, 50),
+                    'updated_at' => $now,
+                ]);
+            });
+        } catch (StaleHandbookDraftException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The handbook or draft changed before publishing. Reload and review the active draft.',
+            ], 409);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to publish handbook draft safely.',
+            ], 500);
+        }
 
         $this->auditLog->log($request, "Published employee handbook draft as version #{$versionId}");
 
@@ -346,7 +427,7 @@ class HandbookPublicationService extends HandbookBaseService
 
     public function publish(Request $request)
     {
-        if (!$this->canManage($request)) {
+        if (! $this->canManage($request)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized: insufficient role to publish handbook changes.',
@@ -364,31 +445,33 @@ class HandbookPublicationService extends HandbookBaseService
         }
 
         $data = $validator->validated();
-        $content = $this->sanitizeContent($data['content']);
-        $encoded = json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-        if (!is_string($encoded)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to encode handbook content.',
-            ], 422);
-        }
-
         $staffId = (int) $request->session()->get('staff_id', 0) ?: null;
         $nameCode = (string) $request->session()->get('name_code', '');
         $summary = trim((string) $data['change_summary']);
         $sectionId = trim((string) ($data['section_id'] ?? '')) ?: null;
         $sectionTitle = trim((string) ($data['section_title'] ?? '')) ?: null;
         $now = now();
+        $versionLabel = null;
 
         DB::beginTransaction();
         try {
+            DB::table('hr_handbook_versions')
+                ->where('is_current', 1)
+                ->lockForUpdate()
+                ->get(['id']);
+            $versionLabel = $this->nextVersionLabel();
+            $content = $this->prepareContentForPublication($data['content'], $versionLabel);
+            $encoded = json_encode(
+                $content,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+            );
+
             DB::table('hr_handbook_versions')->where('is_current', 1)->update(
                 $this->currentVersionOffPayload($now),
             );
 
             $versionPayload = [
-                'version_label' => $this->nextVersionLabel(),
+                'version_label' => $versionLabel,
                 'content_json' => $encoded,
                 'change_summary' => $summary,
                 'published_by_staff_id' => $staffId,
@@ -398,6 +481,12 @@ class HandbookPublicationService extends HandbookBaseService
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
+            if (Schema::hasColumn('hr_handbook_versions', 'content_sha256')) {
+                $versionPayload = array_merge(
+                    $versionPayload,
+                    $this->versionIntegrityPayload($content, $encoded),
+                );
+            }
 
             if ($this->hasCurrentVersionGuard()) {
                 $versionPayload['current_version_guard'] = 1;
@@ -409,6 +498,14 @@ class HandbookPublicationService extends HandbookBaseService
 
             $this->insertChangeLog($request, $versionId, 'publish', $summary, $now, $sectionId, $sectionTitle);
             DB::commit();
+        } catch (\InvalidArgumentException|\JsonException $exception) {
+            DB::rollBack();
+            report($exception);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'The handbook content or acknowledgement definition is invalid.',
+            ], 422);
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
@@ -428,3 +525,5 @@ class HandbookPublicationService extends HandbookBaseService
         ]);
     }
 }
+
+class StaleHandbookDraftException extends \RuntimeException {}

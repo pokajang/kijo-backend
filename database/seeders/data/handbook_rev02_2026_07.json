@@ -61,5 +61,45 @@
                          "id":  "section-12",
                          "bodyHtml":  "\u003ch6\u003e12.1 Resignation Notice Periods\u003c/h6\u003e\n\u003cp\u003eAn employee who wishes to resign must provide formal written notice or pay salary in\u003c/p\u003e\n\u003cp\u003elieu of notice. The minimum notice periods are structured strictly as follows to ensure\u003c/p\u003e\n\u003cp\u003ebusiness continuity:\u003c/p\u003e\n\u003cp\u003e   •   Probationary Employees: One (1) month written notice.\u003c/p\u003e\n\u003cp\u003e   •   Confirmed Personnel (Continuous service BELOW five (5) years): One (1)\u003c/p\u003e\n\u003cp\u003e       month written notice.\u003c/p\u003e\n\u003cp\u003e   •   Confirmed Personnel (Continuous service of five (5) years and ABOVE): Two\u003c/p\u003e\n\u003cp\u003e       (2) months written notice.\u003c/p\u003e\n\u003cp\u003e\u003c/p\u003e\n\u003cp\u003e\u003c/p\u003e\n\u003ch6\u003e12.2 Offboarding Asset Clearance Timelines\u003c/h6\u003e\n\u003cp\u003eUpon submitting a resignation or receiving a notice of termination, all issued company\u003c/p\u003e\n\u003cp\u003eassets—laptops, specialized testing equipment, software tokens, and access cards—\u003c/p\u003e\n\u003cp\u003emust be returned in pristine operational condition to the IT and Operations Department\u003c/p\u003e\n\u003cp\u003ebefore their final working day.\u003c/p\u003e\n\u003cp\u003e\u003c/p\u003e\n\u003ch6\u003e12.3 Debt Recovery Mutual Consent Agreement\u003c/h6\u003e\n\u003cp\u003eIn accordance with Section 24 of the Employment Act 1955, the employee hereby\u003c/p\u003e\n\u003cp\u003eexplicitly provides prior and unconditional written consent that any unreturned\u003c/p\u003e\n\u003cp\u003ecompany asset value, outstanding company advanced funds, unauthorized expense\u003c/p\u003e\n\u003cp\u003ebalances, or pro-rated clawback items shall be treated as a lawful debt due to\u003c/p\u003e\n\u003cp\u003eAMIOSH. The Company is legally authorized to deduct and set off such certified debts\u003c/p\u003e\n\u003cp\u003edirectly from the employee’s final month’s salary, final payments, or any monetary\u003c/p\u003e\n\u003cp\u003esettlement due to the employee upon separation.\u003c/p\u003e\n\u003cp\u003e\u003c/p\u003e\n\u003cp\u003e\u003c/p\u003e"
                      }
-                 ]
+                 ],
+    "acknowledgement": {
+        "schemaVersion": 2,
+        "profileFields": [
+            "full_name",
+            "identity_number",
+            "employee_code",
+            "designation",
+            "department"
+        ],
+        "declarations": [
+            {
+                "id": "handbook_receipt",
+                "title": "Handbook Receipt",
+                "body": "I hereby declare that I have downloaded, read, and fully understood the terms, operational codes, rules, and guidelines stipulated within the AMIOSH Employee Handbook & Culture Guide (REV02 - 2026-07). I unconditionally accept and agree to abide by all internal corporate policies, including the dual-attendance tracking framework (Physical Office Thumbprint & Kijo Cloud Logging), data privacy rules, and progressive disciplinary codes.",
+                "required": true,
+                "order": 1
+            },
+            {
+                "id": "salary_deduction_consent",
+                "title": "Salary Deduction Consent",
+                "body": "I hereby provide my express, prior, and unconditional written consent to AMIOSH Management to make lawful deductions directly from my monthly salary, commissions, or final salary settlement, in strict accordance with Section 24 of the Employment Act 1955 (Malaysia). This consent specifically covers the recovery of pro-rated medical card clawbacks (Sec 8.3), negligent asset damage costs (Sec 6.4), undocumented corporate credit card spending (Sec 8.4), and outstanding exit clearance debts (Sec 12.3).",
+                "required": true,
+                "order": 2
+            },
+            {
+                "id": "confidentiality_ai_boundaries",
+                "title": "Confidentiality & AI Boundaries",
+                "body": "I hereby undertake to maintain absolute confidentiality regarding all AMIOSH proprietary workflows, client registries, and trade secrets. I explicitly agree to adhere to the strict prohibition against unauthorized digital/audio recordings of meetings (Sec 6.5), the absolute ban on uploading company data into public AI engines (Sec 6.6), and the 12-month post-employment Non-Compete restriction (Sec 10.4).",
+                "required": true,
+                "order": 3
+            },
+            {
+                "id": "electronic_signature_validation",
+                "title": "Electronic Signature Validation",
+                "body": "I hereby agree that checking these boxes, typing my legal name below, selecting my personal signature, and clicking the \"Submit Electronic Signature\" button constitutes my electronic signature. I acknowledge that this electronic submission is intended to carry the same validity and enforceability as a handwritten signature, pursuant to the Electronic Commerce Act 2006 (Malaysia).",
+                "required": true,
+                "order": 4
+            }
+        ]
+    }
 }

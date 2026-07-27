@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Services\Handbook\HandbookAcknowledgementService;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -73,6 +74,17 @@ class PublishHandbookRev02Seeder extends Seeder
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
+            if (Schema::hasColumn('hr_handbook_versions', 'content_sha256')) {
+                $decoded = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+                $acknowledgement = $decoded['acknowledgement'] ?? null;
+                $versionPayload['content_sha256'] = hash('sha256', $content);
+                $versionPayload['acknowledgement_schema_version'] = (int) (
+                    $acknowledgement['schemaVersion'] ?? 0
+                ) ?: null;
+                $versionPayload['acknowledgement_sha256'] = app(
+                    HandbookAcknowledgementService::class,
+                )->hash($acknowledgement);
+            }
             if (Schema::hasColumn('hr_handbook_versions', 'current_version_guard')) {
                 $versionPayload['current_version_guard'] = 1;
             }

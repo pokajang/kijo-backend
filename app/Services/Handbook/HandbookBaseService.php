@@ -108,7 +108,7 @@ abstract class HandbookBaseService
     protected function formatVersion(object $version): array
     {
         $content = json_decode((string) $version->content_json, true);
-        if (!is_array($content)) {
+        if (! is_array($content)) {
             $content = ['title' => 'AMIOSH Employee Handbook', 'chapters' => []];
         }
 
@@ -121,12 +121,21 @@ abstract class HandbookBaseService
             'published_by_name_code' => $version->published_by_name_code,
             'published_at' => $version->published_at,
             'is_current' => (bool) $version->is_current,
+            'content_sha256' => $version->content_sha256
+                ?? hash('sha256', (string) $version->content_json),
+            'acknowledgement_schema_version' => isset($version->acknowledgement_schema_version)
+                ? (int) $version->acknowledgement_schema_version
+                : (isset($content['acknowledgement']['schemaVersion'])
+                    ? (int) $content['acknowledgement']['schemaVersion']
+                    : null),
+            'acknowledgement_sha256' => $version->acknowledgement_sha256
+                ?? $this->acknowledgements()->hash($content['acknowledgement'] ?? null),
         ];
     }
 
     protected function activeDraft(int $baseVersionId, bool $lock = false): ?object
     {
-        if (!Schema::hasTable('hr_handbook_drafts')) {
+        if (! Schema::hasTable('hr_handbook_drafts')) {
             return null;
         }
 
@@ -145,12 +154,12 @@ abstract class HandbookBaseService
 
     protected function formatDraft(?object $draft): ?array
     {
-        if (!$draft || !Schema::hasTable('hr_handbook_draft_changes')) {
+        if (! $draft || ! Schema::hasTable('hr_handbook_draft_changes')) {
             return null;
         }
 
         $content = json_decode((string) $draft->content_json, true);
-        if (!is_array($content)) {
+        if (! is_array($content)) {
             $content = ['title' => 'AMIOSH Employee Handbook', 'chapters' => []];
         }
 
@@ -210,6 +219,22 @@ abstract class HandbookBaseService
         ));
     }
 
+    protected function canViewEvidence(Request $request): bool
+    {
+        $roles = (array) $request->session()->get('roles', []);
+
+        return collect($roles)->contains(fn ($role) => in_array(
+            strtolower(trim((string) $role)),
+            ['system admin', 'hr'],
+            true,
+        ));
+    }
+
+    protected function acknowledgements(): HandbookAcknowledgementService
+    {
+        return app(HandbookAcknowledgementService::class);
+    }
+
     protected function nextVersionLabel(): string
     {
         $max = 0;
@@ -219,7 +244,7 @@ abstract class HandbookBaseService
             }
         }
 
-        return 'V' . ($max + 1) . ' - ' . now()->toDateString();
+        return 'V'.($max + 1).' - '.now()->toDateString();
     }
 
     protected function contentValidator(Request $request): \Illuminate\Contracts\Validation\Validator
@@ -231,6 +256,15 @@ abstract class HandbookBaseService
             'content.chapters.*.id' => ['required', 'string', 'max:80'],
             'content.chapters.*.title' => ['required', 'string', 'max:255'],
             'content.chapters.*.bodyHtml' => ['required', 'string'],
+            'content.acknowledgement' => ['sometimes', 'array'],
+            'content.acknowledgement.schemaVersion' => ['required_with:content.acknowledgement', 'integer'],
+            'content.acknowledgement.profileFields' => ['required_with:content.acknowledgement', 'array'],
+            'content.acknowledgement.declarations' => ['required_with:content.acknowledgement', 'array'],
+            'content.acknowledgement.declarations.*.id' => ['required', 'string', 'max:80'],
+            'content.acknowledgement.declarations.*.title' => ['required', 'string', 'max:255'],
+            'content.acknowledgement.declarations.*.body' => ['required', 'string'],
+            'content.acknowledgement.declarations.*.required' => ['required', 'boolean'],
+            'content.acknowledgement.declarations.*.order' => ['required', 'integer', 'min:1'],
             'change_summary' => ['required', 'string', 'max:2000'],
             'section_id' => ['nullable', 'string', 'max:80'],
             'section_title' => ['nullable', 'string', 'max:255'],
@@ -250,6 +284,34 @@ abstract class HandbookBaseService
                 ->filter(fn ($chapter) => $chapter['id'] !== '' && $chapter['title'] !== '' && $chapter['bodyHtml'] !== '')
                 ->values()
                 ->all(),
+            'acknowledgement' => $this->acknowledgements()->sanitize(
+                $content['acknowledgement'] ?? null,
+                true,
+            ),
+        ];
+    }
+
+    protected function prepareContentForPublication(array $content, string $versionLabel): array
+    {
+        $content = $this->sanitizeContent($content);
+        $content['acknowledgement'] = $this->acknowledgements()->materialize(
+            $this->acknowledgements()->defaultDefinition(),
+            $versionLabel,
+        );
+
+        return $content;
+    }
+
+    protected function versionIntegrityPayload(array $content, string $encoded): array
+    {
+        return [
+            'content_sha256' => hash('sha256', $encoded),
+            'acknowledgement_schema_version' => (int) (
+                $content['acknowledgement']['schemaVersion'] ?? 0
+            ) ?: null,
+            'acknowledgement_sha256' => $this->acknowledgements()->hash(
+                $content['acknowledgement'] ?? null,
+            ),
         ];
     }
 
@@ -290,7 +352,7 @@ abstract class HandbookBaseService
                     }
                 }
 
-                if (!in_array($name, $allowedAttributes, true)) {
+                if (! in_array($name, $allowedAttributes, true)) {
                     continue;
                 }
 
@@ -318,7 +380,7 @@ abstract class HandbookBaseService
                 );
             }
 
-            return '<' . $tag . ($safeAttributes ? ' ' . implode(' ', $safeAttributes) : '') . '>';
+            return '<'.$tag.($safeAttributes ? ' '.implode(' ', $safeAttributes) : '').'>';
         }, $html) ?? $html;
     }
 
@@ -330,8 +392,7 @@ abstract class HandbookBaseService
         $changedAt,
         ?string $sectionId = null,
         ?string $sectionTitle = null,
-    ): void
-    {
+    ): void {
         DB::table('hr_handbook_change_logs')->insert([
             'handbook_version_id' => $versionId,
             'action' => $action,

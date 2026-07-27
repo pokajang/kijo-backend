@@ -3,11 +3,16 @@
 namespace Tests\Feature;
 
 use App\Http\Controllers\Api\HandbookController;
+use App\Services\Handbook\HandbookAcknowledgementService;
+use App\Services\Signatures\StaffSignatureService;
+use App\Support\AppFilePaths;
 use Database\Seeders\PublishHandbookRev02Seeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class HandbookControllerTest extends TestCase
@@ -20,13 +25,19 @@ class HandbookControllerTest extends TestCase
         Schema::dropIfExists('hr_handbook_draft_changes');
         Schema::dropIfExists('hr_handbook_drafts');
         Schema::dropIfExists('hr_handbook_change_logs');
+        Schema::dropIfExists('hr_handbook_sign_declarations');
         Schema::dropIfExists('hr_handbook_versions');
         Schema::dropIfExists('hr_handbook_sign');
+        Schema::dropIfExists('staff_profile');
+        Schema::dropIfExists('staff_general');
 
         Schema::create('hr_handbook_versions', function (Blueprint $table) {
             $table->increments('id');
             $table->string('version_label', 80);
             $table->longText('content_json');
+            $table->char('content_sha256', 64)->nullable();
+            $table->unsignedSmallInteger('acknowledgement_schema_version')->nullable();
+            $table->char('acknowledgement_sha256', 64)->nullable();
             $table->text('change_summary')->nullable();
             $table->unsignedInteger('published_by_staff_id')->nullable();
             $table->string('published_by_name_code', 50)->nullable();
@@ -60,6 +71,50 @@ class HandbookControllerTest extends TestCase
             $table->timestamp('signed_at')->nullable();
             $table->string('ip_address', 45)->nullable();
             $table->text('user_agent')->nullable();
+            $table->uuid('submission_uuid')->nullable()->unique();
+            $table->unsignedSmallInteger('evidence_schema_version')->nullable();
+            $table->string('employee_code_snapshot', 50)->nullable();
+            $table->string('designation_snapshot')->nullable();
+            $table->string('department_snapshot')->nullable();
+            $table->text('identity_number_encrypted')->nullable();
+            $table->string('signature_method', 50)->nullable();
+            $table->string('signature_snapshot_path', 500)->nullable();
+            $table->char('signature_sha256', 64)->nullable();
+            $table->char('handbook_content_sha256', 64)->nullable();
+            $table->char('acknowledgement_sha256', 64)->nullable();
+            $table->longText('evidence_payload_json')->nullable();
+            $table->char('signed_payload_sha256', 64)->nullable();
+            $table->char('evidence_hmac', 64)->nullable();
+            $table->string('evidence_key_id', 50)->nullable();
+            $table->unique(['staff_id', 'handbook_version_id']);
+        });
+
+        Schema::create('hr_handbook_sign_declarations', function (Blueprint $table) {
+            $table->bigIncrements('id');
+            $table->unsignedInteger('handbook_sign_id');
+            $table->string('declaration_id', 80);
+            $table->string('declaration_title_snapshot');
+            $table->longText('declaration_text_snapshot');
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamp('accepted_at');
+            $table->timestamps();
+            $table->unique(['handbook_sign_id', 'declaration_id']);
+        });
+
+        Schema::create('staff_general', function (Blueprint $table) {
+            $table->increments('staff_id');
+            $table->string('full_name');
+            $table->string('name_code', 50);
+            $table->string('position');
+            $table->string('department');
+            $table->timestamp('deleted_at')->nullable();
+        });
+
+        Schema::create('staff_profile', function (Blueprint $table) {
+            $table->increments('id');
+            $table->unsignedInteger('staff_id');
+            $table->string('nric', 50);
+            $table->timestamp('deleted_at')->nullable();
         });
 
         Schema::create('hr_handbook_drafts', function (Blueprint $table) {
@@ -229,7 +284,7 @@ class HandbookControllerTest extends TestCase
         $body = $response->getData(true);
 
         $this->assertTrue($body['success']);
-        $this->assertSame('V3 - ' . now()->toDateString(), $body['data']['version_label']);
+        $this->assertSame('V3 - '.now()->toDateString(), $body['data']['version_label']);
         $this->assertSame(2, DB::table('hr_handbook_versions')->count());
         $this->assertSame(1, DB::table('hr_handbook_versions')->where('is_current', true)->count());
         $this->assertSame(1, DB::table('hr_handbook_change_logs')->where('action', 'publish')->count());
@@ -245,6 +300,40 @@ class HandbookControllerTest extends TestCase
 
         $this->assertStringNotContainsString('onclick', $content['chapters'][0]['bodyHtml']);
         $this->assertStringNotContainsString('style=', $content['chapters'][0]['bodyHtml']);
+    }
+
+    public function test_republishing_uses_the_new_version_label_in_canonical_acknowledgement_text(): void
+    {
+        $controller = app(HandbookController::class);
+        $session = ['staff_id' => 22, 'name_code' => 'HR1', 'roles' => ['HR']];
+
+        $first = $controller->publish(
+            $this->makeRequest('POST', $session, $this->publishPayload('First refresh.')),
+        )->getData(true)['data'];
+        $second = $controller->publish(
+            $this->makeRequest('POST', $session, $this->publishPayload('Second refresh.')),
+        )->getData(true)['data'];
+
+        $this->assertNotSame($first['version_label'], $second['version_label']);
+        $receipt = collect($second['content']['acknowledgement']['declarations'])
+            ->firstWhere('id', 'handbook_receipt');
+        $this->assertStringContainsString(
+            "({$second['version_label']})",
+            $receipt['body'],
+        );
+        $this->assertStringNotContainsString(
+            "({$first['version_label']})",
+            $receipt['body'],
+        );
+
+        $stored = DB::table('hr_handbook_versions')->where('id', $second['id'])->first();
+        $this->assertSame(hash('sha256', $stored->content_json), $stored->content_sha256);
+        $this->assertSame(
+            app(HandbookAcknowledgementService::class)->hash(
+                $second['content']['acknowledgement'],
+            ),
+            $stored->acknowledgement_sha256,
+        );
     }
 
     public function test_save_draft_section_does_not_create_official_version(): void
@@ -300,7 +389,7 @@ class HandbookControllerTest extends TestCase
         $body = $response->getData(true);
 
         $this->assertTrue($body['success']);
-        $this->assertSame('V3 - ' . now()->toDateString(), $body['data']['version_label']);
+        $this->assertSame('V3 - '.now()->toDateString(), $body['data']['version_label']);
         $this->assertSame(2, DB::table('hr_handbook_versions')->count());
         $this->assertSame(1, DB::table('hr_handbook_versions')->where('is_current', true)->count());
         $this->assertSame(0, DB::table('hr_handbook_drafts')->where('status', 'active')->count());
@@ -322,7 +411,7 @@ class HandbookControllerTest extends TestCase
         $payload = $this->publishPayload();
         $payload['content']['chapters'][0]['bodyHtml'] =
             '<p onclick=evil style=color:red data-test="x">Updated<script>alert(1)</script></p>'
-            . '<table class="table shadow-sm" data-test="x"><tbody><tr><td colspan=2 onclick=evil>A</td></tr></tbody></table>';
+            .'<table class="table shadow-sm" data-test="x"><tbody><tr><td colspan=2 onclick=evil>A</td></tr></tbody></table>';
 
         $response = app(HandbookController::class)->publish(
             $this->makeRequest(
@@ -373,12 +462,14 @@ class HandbookControllerTest extends TestCase
         $this->assertTrue($publish['success']);
         $this->assertSame(2, (int) DB::table('hr_handbook_versions')->where('is_current', 1)->value('id'));
 
-        $third = $controller->sign(
-            $this->makeRequest('POST', ['staff_id' => 7, 'name_code' => 'ST7'], [
-                'full_name' => 'Jane Doe',
-                'ic_number' => '900101-01-1234',
-            ]),
-        )->getData(true);
+        $this->seedStaffProfileAndSignature();
+        $staffSession = ['staff_id' => 7, 'name_code' => 'ST7', 'roles' => ['Staff']];
+        $current = $controller->current($this->makeRequest('GET', $staffSession))->getData(true);
+        $third = $controller->sign($this->makeRequest(
+            'POST',
+            $staffSession,
+            $this->evidenceSignaturePayload($current, '51ec0f87-f815-4ed9-96fa-eab03731f65c'),
+        ))->getData(true);
         $this->assertTrue($third['success']);
         $this->assertSame(2, DB::table('hr_handbook_sign')->where('staff_id', 7)->count());
         $signedVersionIds = DB::table('hr_handbook_sign')
@@ -388,6 +479,278 @@ class HandbookControllerTest extends TestCase
             ->values();
 
         $this->assertCount(2, $signedVersionIds);
+    }
+
+    public function test_electronic_acknowledgement_preserves_all_declarations_and_signature_evidence(): void
+    {
+        Storage::fake('private');
+        Storage::fake('public');
+        DB::table('staff_general')->insert([
+            'staff_id' => 7,
+            'full_name' => 'Jane Doe',
+            'name_code' => 'ST7',
+            'position' => 'Safety Executive',
+            'department' => 'Operations',
+        ]);
+        DB::table('staff_profile')->insert([
+            'staff_id' => 7,
+            'nric' => '900101-01-1234',
+        ]);
+        Storage::disk('private')->put('signatures/7-ST7.png', 'test-signature-image');
+
+        $controller = app(HandbookController::class);
+        $published = $controller->publish(
+            $this->makeRequest(
+                'POST',
+                ['staff_id' => 22, 'name_code' => 'HR1', 'roles' => ['HR']],
+                $this->publishPayload('Published acknowledgement evidence requirements.'),
+            ),
+        )->getData(true);
+        $this->assertTrue($published['success']);
+
+        $staffSession = ['staff_id' => 7, 'name_code' => 'ST7', 'roles' => ['Staff']];
+        $current = $controller->current($this->makeRequest('GET', $staffSession))->getData(true);
+        $context = $current['signing_context'];
+        $signature = $context['personal_signature'];
+        $declarationIds = $context['required_declaration_ids'];
+
+        $this->assertTrue($context['available']);
+        $this->assertCount(4, $declarationIds);
+        $this->assertSame('900101-01-1234', $context['profile']['identity_number']);
+        $this->assertStringEndsWith('1234', $context['profile']['identity_number_masked']);
+        $this->assertStringNotContainsString('900101-01-1234', $context['profile']['identity_number_masked']);
+
+        $incomplete = $controller->sign($this->makeRequest('POST', $staffSession, [
+            'submission_uuid' => '70cb64e9-ea7e-4356-ac82-d704f99491cc',
+            'handbook_version_id' => $current['data']['id'],
+            'typed_legal_name' => 'Jane Doe',
+            'accepted_declaration_ids' => array_slice($declarationIds, 0, 3),
+            'acknowledgement_sha256' => $context['acknowledgement_sha256'],
+            'personal_signature_sha256' => $signature['sha256'],
+        ]));
+        $this->assertSame(422, $incomplete->getStatusCode());
+        $this->assertSame(0, DB::table('hr_handbook_sign')->count());
+
+        $payload = [
+            'submission_uuid' => '1f4861ea-d6b8-4f34-ac4a-f843b3f7d591',
+            'handbook_version_id' => $current['data']['id'],
+            'typed_legal_name' => 'Jane Doe',
+            'accepted_declaration_ids' => $declarationIds,
+            'acknowledgement_sha256' => $context['acknowledgement_sha256'],
+            'personal_signature_sha256' => $signature['sha256'],
+        ];
+        $response = $controller->sign($this->makeRequest('POST', $staffSession, $payload));
+        $body = $response->getData(true);
+
+        $this->assertTrue($body['success']);
+        $this->assertSame(4, $body['data']['declarations_accepted']);
+        $this->assertSame(3, $body['data']['evidence_schema_version']);
+
+        $record = DB::table('hr_handbook_sign')->where('id', $body['data']['id'])->first();
+        $this->assertSame('', $record->ic_number);
+        $this->assertNotSame('900101-01-1234', $record->identity_number_encrypted);
+        $this->assertSame('personal_signature_snapshot', $record->signature_method);
+        $sealedPayload = json_decode($record->evidence_payload_json, true);
+        $this->assertSame(3, $sealedPayload['evidence_schema_version']);
+        $this->assertSame('127.0.0.1', $sealedPayload['audit']['ip_address']);
+        $this->assertSame(4, DB::table('hr_handbook_sign_declarations')
+            ->where('handbook_sign_id', $record->id)
+            ->count());
+        Storage::disk('private')->assertExists($record->signature_snapshot_path);
+
+        $list = $controller->signatures(
+            $this->makeRequest('GET', ['staff_id' => 22, 'roles' => ['HR']]),
+        )->getData(true);
+        $this->assertSame('complete', $list['data'][0]['evidence_status']);
+        $this->assertSame(4, $list['data'][0]['declarations_accepted']);
+        $this->assertSame('electronically_signed', $list['data'][0]['signature_status']);
+
+        $managerList = $controller->signatures(
+            $this->makeRequest('GET', ['staff_id' => 30, 'roles' => ['Manager']]),
+        )->getData(true);
+        $this->assertNull($managerList['data'][0]['ip_address']);
+        $this->assertNull($managerList['data'][0]['user_agent']);
+        $this->assertNull($managerList['data'][0]['submission_uuid']);
+
+        $idempotent = $controller->sign(
+            $this->makeRequest('POST', $staffSession, $payload),
+        )->getData(true);
+        $this->assertTrue($idempotent['success']);
+        $this->assertTrue($idempotent['data']['idempotent']);
+        $this->assertSame(1, DB::table('hr_handbook_sign')->count());
+        $conflictingRetryPayload = $payload;
+        $conflictingRetryPayload['personal_signature_sha256'] = str_repeat('c', 64);
+        $conflictingRetry = $controller->sign(
+            $this->makeRequest('POST', $staffSession, $conflictingRetryPayload),
+        );
+        $this->assertSame(409, $conflictingRetry->getStatusCode());
+
+        $restricted = $controller->signatureEvidence(
+            $this->makeRequest('GET', ['staff_id' => 30, 'roles' => ['Manager']]),
+            (int) $record->id,
+        );
+        $this->assertSame(403, $restricted->getStatusCode());
+        $restrictedImage = $controller->signatureEvidenceImage(
+            $this->makeRequest('GET', ['staff_id' => 30, 'roles' => ['Manager']]),
+            (int) $record->id,
+        );
+        $this->assertSame(403, $restrictedImage->getStatusCode());
+
+        $detail = $controller->signatureEvidence(
+            $this->makeRequest('GET', ['staff_id' => 22, 'roles' => ['HR']]),
+            (int) $record->id,
+        )->getData(true);
+        $this->assertTrue($detail['data']['integrity_verified']);
+        $this->assertSame('full_evidence', $detail['data']['integrity_scope']);
+        $this->assertNotContains(false, $detail['data']['integrity_checks']);
+        $this->assertCount(4, $detail['data']['declarations']);
+        $this->assertStringEndsWith('1234', $detail['data']['profile']['identity_number_masked']);
+        $this->assertNotEmpty($detail['data']['signature']['preview_url']);
+
+        $originalKeyId = config('handbook.evidence_key_id');
+        $originalKey = config('handbook.evidence_key');
+        config([
+            'handbook.evidence_key_id' => 'rotated-key-v2',
+            'handbook.evidence_key' => str_repeat('r', 32),
+            'handbook.evidence_previous_keys' => [$originalKeyId => $originalKey],
+        ]);
+        $rotatedKeyDetail = $controller->signatureEvidence(
+            $this->makeRequest('GET', ['staff_id' => 22, 'roles' => ['HR']]),
+            (int) $record->id,
+        )->getData(true);
+        $this->assertTrue($rotatedKeyDetail['data']['integrity_verified']);
+
+        $image = $controller->signatureEvidenceImage(
+            $this->makeRequest('GET', ['staff_id' => 22, 'roles' => ['HR']]),
+            (int) $record->id,
+        );
+        $this->assertSame(200, $image->getStatusCode());
+
+        DB::table('hr_handbook_sign_declarations')
+            ->where('handbook_sign_id', $record->id)
+            ->where('declaration_id', $declarationIds[0])
+            ->update(['declaration_text_snapshot' => 'Tampered declaration text']);
+        $tamperedDetail = $controller->signatureEvidence(
+            $this->makeRequest('GET', ['staff_id' => 22, 'roles' => ['HR']]),
+            (int) $record->id,
+        )->getData(true);
+        $this->assertFalse($tamperedDetail['data']['integrity_verified']);
+        $this->assertFalse($tamperedDetail['data']['integrity_checks']['record_matches_payload']);
+    }
+
+    public function test_signing_is_blocked_when_the_published_handbook_content_is_tampered(): void
+    {
+        $this->seedStaffProfileAndSignature();
+        $controller = app(HandbookController::class);
+        $controller->publish(
+            $this->makeRequest(
+                'POST',
+                ['staff_id' => 22, 'name_code' => 'HR1', 'roles' => ['HR']],
+                $this->publishPayload('Integrity test version.'),
+            ),
+        );
+
+        $staffSession = ['staff_id' => 7, 'name_code' => 'ST7', 'roles' => ['Staff']];
+        $current = $controller->current($this->makeRequest('GET', $staffSession))->getData(true);
+        $payload = $this->evidenceSignaturePayload(
+            $current,
+            'cc51e56b-ee92-4a42-b4ba-e2781a62ad53',
+        );
+        $versionId = $current['data']['id'];
+        $tamperedJson = str_replace(
+            '<p>Updated</p>',
+            '<p>Tampered after publication</p>',
+            DB::table('hr_handbook_versions')->where('id', $versionId)->value('content_json'),
+        );
+        DB::table('hr_handbook_versions')->where('id', $versionId)->update([
+            'content_json' => $tamperedJson,
+        ]);
+
+        $tamperedCurrent = $controller->current(
+            $this->makeRequest('GET', $staffSession),
+        )->getData(true);
+        $this->assertFalse($tamperedCurrent['signing_context']['available']);
+        $this->assertStringContainsString(
+            'failed its integrity check',
+            $tamperedCurrent['signing_context']['reason'],
+        );
+
+        $response = $controller->sign(
+            $this->makeRequest('POST', $staffSession, $payload),
+        );
+        $this->assertSame(409, $response->getStatusCode());
+        $this->assertSame(0, DB::table('hr_handbook_sign')->count());
+    }
+
+    public function test_signature_snapshot_attempts_do_not_share_a_cleanup_path(): void
+    {
+        $this->seedStaffProfileAndSignature();
+        $service = app(StaffSignatureService::class);
+        $signature = $service->current(7, 'ST7');
+
+        $first = $service->snapshot($signature, '90bb0349-1021-4c4f-a208-145d856bb6a6');
+        $second = $service->snapshot($signature, '90bb0349-1021-4c4f-a208-145d856bb6a6');
+
+        $this->assertNotSame($first['path'], $second['path']);
+        AppFilePaths::deleteStoredPath($second['path']);
+        $this->assertTrue($service->verifySnapshot($first['path'], $first['sha256']));
+    }
+
+    public function test_personal_signature_is_migrated_to_private_storage_and_replaced_safely(): void
+    {
+        Storage::fake('private');
+        Storage::fake('public');
+        Storage::disk('public')->put('signatures/7-ST7.png', 'legacy-signature');
+        $service = app(StaffSignatureService::class);
+
+        $legacy = $service->current(7, 'ST7');
+        $this->assertNotNull($legacy);
+        Storage::disk('private')->assertExists('signatures/7-ST7.png');
+        Storage::disk('public')->assertMissing('signatures/7-ST7.png');
+        $this->assertStringContainsString('signature/file?v=', $legacy['url']);
+
+        $png = base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            true,
+        );
+        $replacement = UploadedFile::fake()->createWithContent('replacement.png', $png);
+        $stored = $service->store(7, 'ST7', $replacement);
+
+        $this->assertNotSame($legacy['sha256'], $stored['sha256']);
+        Storage::disk('private')->assertExists('signatures/7-ST7.png');
+        Storage::disk('public')->assertMissing('signatures/7-ST7.png');
+        $this->assertSame(
+            hash('sha256', $png),
+            hash_file(
+                'sha256',
+                Storage::disk('private')->path('signatures/7-ST7.png'),
+            ),
+        );
+    }
+
+    public function test_acknowledgement_schema_rejects_extra_declarations_or_missing_profile_fields(): void
+    {
+        $service = app(HandbookAcknowledgementService::class);
+        $extraDeclaration = $service->defaultDefinition();
+        $extraDeclaration['declarations'][] = [
+            'id' => 'unexpected_consent',
+            'title' => 'Unexpected',
+            'body' => 'Unexpected declaration.',
+            'required' => false,
+            'order' => 5,
+        ];
+
+        try {
+            $service->sanitize($extraDeclaration);
+            $this->fail('An extra declaration should invalidate acknowledgement schema v2.');
+        } catch (\InvalidArgumentException) {
+            $this->assertTrue(true);
+        }
+
+        $missingProfileField = $service->defaultDefinition();
+        array_pop($missingProfileField['profileFields']);
+        $this->expectException(\InvalidArgumentException::class);
+        $service->sanitize($missingProfileField);
     }
 
     public function test_signing_rejects_stale_handbook_version_id(): void
@@ -574,7 +937,7 @@ class HandbookControllerTest extends TestCase
         $this->assertSame(0, $body['data']['signature_count']);
     }
 
-    public function test_reactivate_previous_version_sets_only_that_version_current_and_preserves_signatures(): void
+    public function test_legacy_version_cannot_replace_an_evidence_enabled_current_version(): void
     {
         $controller = app(HandbookController::class);
         $oldVersionId = DB::table('hr_handbook_versions')->where('version_label', 'V2 - 2024-01-05')->value('id');
@@ -605,17 +968,18 @@ class HandbookControllerTest extends TestCase
         );
         $body = $response->getData(true);
 
-        $this->assertTrue($body['success']);
+        $this->assertFalse($body['success']);
+        $this->assertSame(422, $response->getStatusCode());
         $this->assertSame(1, DB::table('hr_handbook_versions')->where('is_current', true)->count());
-        $this->assertTrue((bool) DB::table('hr_handbook_versions')->where('id', $oldVersionId)->value('is_current'));
-        $this->assertFalse((bool) DB::table('hr_handbook_versions')->where('id', $newVersionId)->value('is_current'));
+        $this->assertFalse((bool) DB::table('hr_handbook_versions')->where('id', $oldVersionId)->value('is_current'));
+        $this->assertTrue((bool) DB::table('hr_handbook_versions')->where('id', $newVersionId)->value('is_current'));
         $this->assertSame(1, DB::table('hr_handbook_sign')->where('handbook_version_id', $oldVersionId)->count());
-        $this->assertSame(1, DB::table('hr_handbook_change_logs')->where('action', 'reactivate')->count());
+        $this->assertSame(0, DB::table('hr_handbook_change_logs')->where('action', 'reactivate')->count());
 
         $current = $controller->current(
             $this->makeRequest('GET', ['staff_id' => 7, 'name_code' => 'ST7']),
         )->getData(true);
-        $this->assertTrue($current['current_signature']['signed']);
+        $this->assertFalse($current['current_signature']['signed']);
     }
 
     public function test_reactivate_current_version_is_rejected(): void
@@ -675,26 +1039,35 @@ class HandbookControllerTest extends TestCase
     public function test_reactivate_records_previous_and_target_versions_in_audit_log(): void
     {
         $controller = app(HandbookController::class);
-        $oldVersionId = DB::table('hr_handbook_versions')->where('version_label', 'V2 - 2024-01-05')->value('id');
-        $newVersionId = $controller->publish(
+        $targetVersion = $controller->publish(
             $this->makeRequest(
                 'POST',
                 ['staff_id' => 22, 'name_code' => 'HR1', 'roles' => ['HR']],
                 $this->publishPayload('Policy refresh.'),
             ),
-        )->getData(true)['data']['id'];
+        )->getData(true)['data'];
+        $previousVersion = $controller->publish(
+            $this->makeRequest(
+                'POST',
+                ['staff_id' => 22, 'name_code' => 'HR1', 'roles' => ['HR']],
+                $this->publishPayload('Second policy refresh.'),
+            ),
+        )->getData(true)['data'];
 
         $response = $controller->reactivateVersion(
             $this->makeRequest('POST', ['staff_id' => 23, 'name_code' => 'HR2', 'roles' => ['HR']], [
                 'change_summary' => 'Rollback to previous policy version.',
             ]),
-            $oldVersionId,
+            $targetVersion['id'],
         );
 
         $this->assertTrue($response->getData(true)['success']);
         $action = DB::table('user_activities')->where('staff_id', 23)->value('action');
-        $this->assertStringContainsString("#{$oldVersionId} (V2 - 2024-01-05)", $action);
-        $this->assertStringContainsString("#{$newVersionId}", $action);
+        $this->assertStringContainsString(
+            "#{$targetVersion['id']} ({$targetVersion['version_label']})",
+            $action,
+        );
+        $this->assertStringContainsString("#{$previousVersion['id']}", $action);
     }
 
     public function test_version_history_endpoints_require_manager_role(): void
@@ -767,6 +1140,38 @@ class HandbookControllerTest extends TestCase
             'Cooking facilities are available. Please clean up after yourself to keep our shared space tidy.',
             $commonRules['bodyHtml'],
         );
+    }
+
+    private function seedStaffProfileAndSignature(): void
+    {
+        Storage::fake('private');
+        Storage::fake('public');
+        DB::table('staff_general')->insert([
+            'staff_id' => 7,
+            'full_name' => 'Jane Doe',
+            'name_code' => 'ST7',
+            'position' => 'Safety Executive',
+            'department' => 'Operations',
+        ]);
+        DB::table('staff_profile')->insert([
+            'staff_id' => 7,
+            'nric' => '900101-01-1234',
+        ]);
+        Storage::disk('private')->put('signatures/7-ST7.png', 'test-signature-image');
+    }
+
+    private function evidenceSignaturePayload(array $current, string $submissionUuid): array
+    {
+        $context = $current['signing_context'];
+
+        return [
+            'submission_uuid' => $submissionUuid,
+            'handbook_version_id' => $current['data']['id'],
+            'typed_legal_name' => 'Jane Doe',
+            'accepted_declaration_ids' => $context['required_declaration_ids'],
+            'acknowledgement_sha256' => $context['acknowledgement_sha256'],
+            'personal_signature_sha256' => $context['personal_signature']['sha256'],
+        ];
     }
 
     private function insertVersion(string $label, bool $current): int

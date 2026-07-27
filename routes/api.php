@@ -159,6 +159,8 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('legal-compliance-assessments/{id}', [LegalComplianceAssessmentController::class, 'destroy'])->whereNumber('id');
 
     // Batch 1 — Signature
+    Route::get('signature/file', [SignatureController::class, 'file'])
+        ->name('personal-signature.file');
     Route::get('signature', [SignatureController::class, 'show']);
     Route::post('signature', [SignatureController::class, 'store']);
 
@@ -486,6 +488,10 @@ Route::middleware('auth.session')->group(function () {
     Route::post('hr/handbook/versions/{id}/reactivate', [HandbookController::class, 'reactivateVersion'])->whereNumber('id');
     Route::post('hr/handbook/sign', [HandbookController::class, 'sign']);
     Route::get('hr/handbook/signatures', [HandbookController::class, 'signatures']);
+    Route::get('hr/handbook/signatures/{id}/signature', [HandbookController::class, 'signatureEvidenceImage'])
+        ->whereNumber('id')
+        ->name('handbook.signatures.signature');
+    Route::get('hr/handbook/signatures/{id}', [HandbookController::class, 'signatureEvidence'])->whereNumber('id');
 
     // ─── Batch 8 — HR: KPI ──────────────────────────────────────────────────────
 
