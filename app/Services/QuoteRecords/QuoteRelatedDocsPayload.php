@@ -20,6 +20,7 @@ final class QuoteRelatedDocsPayload
         $jd14Forms = [];
         $vendorLoas = [];
         $vendorPayments = [];
+        $supplierPos = [];
 
         if ($projectIds !== []) {
             if (Schema::hasTable('do_details')) {
@@ -99,6 +100,22 @@ final class QuoteRelatedDocsPayload
                     ->map(static fn ($row): array => (array) $row)
                     ->all();
             }
+
+            if (Schema::hasTable('supplier_po_main')) {
+                $supplierPos = DB::table('supplier_po_main')
+                    ->whereIn('project_id', $projectIds)
+                    ->orderBy('po_id')
+                    ->select([
+                        'po_id',
+                        'project_id',
+                        'po_ref_no',
+                        'supplier_name',
+                        'status',
+                    ])
+                    ->get()
+                    ->map(static fn ($row): array => (array) $row)
+                    ->all();
+            }
         }
 
         $receipts = array_values(array_filter(
@@ -114,6 +131,7 @@ final class QuoteRelatedDocsPayload
             'jd14' => $jd14Forms,
             'vendor_loas' => $vendorLoas,
             'vendor_payments' => $vendorPayments,
+            'supplier_pos' => $supplierPos,
         ];
     }
 

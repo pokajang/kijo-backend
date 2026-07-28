@@ -44,7 +44,6 @@ class TrainingQuotePdfService
         $isPerPaxPricing = $sessionCount <= 0 || $durationPerSession <= 0;
 
         $durationUnitRaw = trim((string) ($quote->duration_unit ?? 'day(s)'));
-        $durationUnitShort = trim(str_replace('(s)', '', strtolower($durationUnitRaw)));
         $trainingTypeText = (string) ($quote->training_type ?? '');
 
         $trainingTotalAmount = (float) ($quote->training_total ?? 0);
@@ -64,22 +63,8 @@ class TrainingQuotePdfService
         $sstRateLabel = ((float) (int) $sstRateValue === $sstRateValue) ? number_format($sstRateValue, 0) : number_format($sstRateValue, 2);
         $showNetSubtotal = $discountAmount > 0 && ($hasHrdCharge || $hasSstCharge);
 
-        $subtotalBasis = $isPerPaxPricing
-            ? "{$paxCount} pax x " . number_format($unitPrice, 2) . "/pax"
-            : "{$sessionCount} session(s) x {$durationPerSession} {$durationUnitShort} x " . number_format($unitPrice, 2) . "/{$durationUnitShort}";
-        $subtotalExtras = [];
-        if ($mealTotalAmount > 0) {
-            $subtotalExtras[] = 'meals';
-        }
-        if ($mobilizationAmount > 0) {
-            $subtotalExtras[] = 'travel';
-        }
-        if (!empty($subtotalExtras)) {
-            $subtotalBasis .= ' + ' . implode(' + ', $subtotalExtras);
-        }
-
         $trainingDetailsLine = $isPerPaxPricing
-            ? "Mode: {$trainingTypeText} - Pricing Basis: {$paxCount} pax x RM " . number_format($unitPrice, 2) . ' per pax'
+            ? "Mode: {$trainingTypeText}"
             : "Duration: {$durationPerSession} {$durationUnitRaw} x {$sessionCount} session(s) - Mode: {$trainingTypeText}";
         $unitPriceLine = $isPerPaxPricing
             ? number_format($unitPrice, 2) . ' per pax'
@@ -187,7 +172,6 @@ class TrainingQuotePdfService
             'showMealsRow' => in_array(strtolower(trim((string) ($quote->meals_provided ?? ''))), ['1', 'yes', 'true'], true) && (float) ($quote->meal_price ?? 0) > 0,
             'mealPrice' => (float) ($quote->meal_price ?? 0),
             'grossSubtotal' => $grossSubtotal,
-            'subtotalBasis' => $subtotalBasis,
             'discountAmount' => $discountAmount,
             'discountType' => (string) ($quote->discount_type ?? ''),
             'showNetSubtotal' => $showNetSubtotal,

@@ -160,7 +160,7 @@
     @foreach($orderedItems as $index => $itm)
         @php
             $descLabel = (string) ($itm->item_description ?? '');
-            $lineDesc  = trim((string) ($itm->description ?? ''));
+            $lineDesc  = \App\Support\InvoicePdfDescription::clientVisible($itm->description ?? '');
             $isDisc    = str_contains(strtolower($descLabel), 'discount') || str_contains(strtolower($descLabel), 'less');
             $rawSub    = (float) $itm->subtotal;
             if ($isDisc) { $rawSub = -abs($rawSub); }

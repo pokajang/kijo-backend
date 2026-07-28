@@ -11,6 +11,8 @@ class TrainingQuotePdfViewTest extends TestCase
         $html = view('pdf.training-quote', $this->viewData())->render();
 
         $this->assertStringNotContainsString('% HRD Charge (RM)', $html);
+        $this->assertStringNotContainsString('1 session x 1 day x 4,500.00/day', $html);
+        $this->assertStringContainsString('4,500.00', $html);
     }
 
     public function test_pdf_displays_the_saved_hrd_rate_and_amount(): void
@@ -26,6 +28,22 @@ class TrainingQuotePdfViewTest extends TestCase
         $this->assertStringContainsString('4% HRD Charge (RM)', $plain);
         $this->assertStringContainsString('168.00', $plain);
         $this->assertStringContainsString('4,368.00', $plain);
+    }
+
+    public function test_per_pax_pdf_shows_scope_and_unit_price_without_a_pricing_equation(): void
+    {
+        $html = view('pdf.training-quote', $this->viewData([
+            'trainingDetailsLine' => 'Mode: Virtual',
+            'unitPriceLine' => '180.00 per pax',
+            'grossSubtotal' => 4500,
+        ]))->render();
+        $plain = preg_replace('/\s+/', ' ', strip_tags(html_entity_decode($html)));
+
+        $this->assertStringContainsString('Mode: Virtual', $plain);
+        $this->assertStringContainsString('Safety Training for 25 pax', $plain);
+        $this->assertStringContainsString('180.00 per pax', $plain);
+        $this->assertStringNotContainsString('Pricing Basis', $plain);
+        $this->assertStringNotContainsString('25 pax x RM', $plain);
     }
 
     private function viewData(array $overrides = []): array
@@ -53,7 +71,6 @@ class TrainingQuotePdfViewTest extends TestCase
             'showMealsRow' => false,
             'mealPrice' => 0,
             'grossSubtotal' => 4500,
-            'subtotalBasis' => '1 session x 1 day x 4,500.00/day',
             'discountAmount' => 300,
             'discountType' => 'Introductory',
             'showNetSubtotal' => false,

@@ -155,7 +155,7 @@
     @foreach($orderedItems as $i => $itm)
         @php
             $descLabel  = (string) ($itm->item_description ?? '');
-            $lineDesc   = trim((string) ($itm->description ?? ''));
+            $lineDesc   = \App\Support\InvoicePdfDescription::clientVisible($itm->description ?? '');
             $isDiscount = str_contains(strtolower($descLabel), 'discount') || str_contains(strtolower($descLabel), 'less');
             $purposeNorm     = strtolower(trim($invoicePurpose));
             $basePurposeNorm = strtolower(trim($purposeDisplay));

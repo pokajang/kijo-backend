@@ -186,7 +186,7 @@
             @endif
             <tr>
                 <td class="label">{{ $L('amount_rm', 'Amount (RM)') }}</td>
-                <td class="value">{{ number_format($grossSubtotal, 2) }} <span class="muted">({{ $subtotalBasis }})</span></td>
+                <td class="value">{{ number_format($grossSubtotal, 2) }}</td>
             </tr>
             @if($discountAmount > 0)
                 <tr>

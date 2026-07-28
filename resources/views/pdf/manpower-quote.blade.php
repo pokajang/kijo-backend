@@ -122,7 +122,7 @@
             </tr>
             <tr>
                 <td class="label">{{ $L('amount_rm', 'Amount (RM)') }}</td>
-                <td class="value">RM {{ number_format($grossAmount, 2) }} <span class="muted">({{ $amountDetail }})</span></td>
+                <td class="value">RM {{ number_format($grossAmount, 2) }}</td>
             </tr>
             @if($discountAmount > 0)
                 <tr>

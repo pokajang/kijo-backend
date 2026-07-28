@@ -166,7 +166,9 @@ class EquipmentQuoteService
 
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         } finally {
-            DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            if (DB::getDriverName() === 'mysql') {
+                DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            }
         }
 
         $this->auditLog->log($request, "Created equipment quote {$refNo} (ID #{$quoteId})");

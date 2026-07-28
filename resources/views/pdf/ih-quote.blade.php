@@ -149,29 +149,7 @@
             </tr>
             <tr>
                 <td class="label">{{ $L('service_fee', 'Service Fee') }}</td>
-                <td class="value">
-                    RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}
-                    @if(!empty($isLegacyPricing) || empty($isHistoricalPricing))
-                        <span class="small-note">
-                            ({{ number_format((float) $sampleCount, 2) }} {{ $sampleUnit }}
-                            x {{ number_format((float) $workUnitsForCalc, 2) }} work unit(s)
-                            x RM {{ number_format((float) $unitPrice, 2) }}/unit
-                            @if((int) $complexityRating > 1)
-                                x complexity {{ $complexityRating }}
-                                ({{ number_format((float) $complexityMultiplier, 1) }}x)
-                            @endif)
-                        </span>
-                    @else
-                        <span class="small-note">
-                            Saved Unit Rate: RM {{ number_format((float) $unitPrice, 2) }}/unit.
-                            @if(!empty($serviceCalculationReconciles))
-                                Rate basis reconciles with the contractual service fee.
-                            @else
-                                Contractual service fee retained from the historical quotation.
-                            @endif
-                        </span>
-                    @endif
-                </td>
+                <td class="value">RM {{ number_format((float) ($serviceTotal ?? 0), 2) }}</td>
             </tr>
             @if((float) ($travelCharge ?? 0) > 0)
                 <tr>
@@ -197,9 +175,6 @@
                                     </td>
                                     <td class="inner-col-item">
                                         <strong>{{ $item->item_description ?? '-' }}</strong>
-                                        <span class="small-note">
-                                            ({{ number_format((float) ($item->quantity ?? 0), 2) }} {{ $item->unit ?? 'Lot' }} x RM {{ number_format((float) ($item->unit_price ?? 0), 2) }})
-                                        </span>
                                         @if(!empty($item->description))
                                             <span class="small-note">Notes: {{ $item->description }}</span>
                                         @endif

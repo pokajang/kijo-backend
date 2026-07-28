@@ -314,18 +314,19 @@ class DeliveryOrderController extends Controller
     private function nextDoNumber(string $nameCode): string
     {
         $yearTwo = date('y');
-        $prefix  = "DO{$yearTwo}-%";
+        $numbers = DB::table('do_details')
+            ->where('do_number', 'like', "DO{$yearTwo}-%")
+            ->lockForUpdate()
+            ->pluck('do_number');
 
-        // Locks the relevant rows within the current transaction, so numbering stays consistent.
-        $result = DB::selectOne(
-            "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(do_number, '-', -1), ?, 1) AS UNSIGNED)), 0) AS max_run
-             FROM do_details
-             WHERE do_number LIKE ?
-             FOR UPDATE",
-            [$nameCode, $prefix]
-        );
+        $pattern = '/^DO'.preg_quote($yearTwo, '/').'-(\d+)/i';
+        $maxRun = $numbers->reduce(static function (int $max, mixed $number) use ($pattern): int {
+            return preg_match($pattern, (string) $number, $matches)
+                ? max($max, (int) $matches[1])
+                : $max;
+        }, 0);
 
-        $next   = ((int) ($result->max_run ?? 0)) + 1;
+        $next = $maxRun + 1;
         return "DO{$yearTwo}-" . str_pad((string) $next, 3, '0', STR_PAD_LEFT) . $nameCode;
     }
 

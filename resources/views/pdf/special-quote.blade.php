@@ -137,9 +137,6 @@
                         <td class="col-amount">{{ number_format((float) $item->line_total, 2) }}</td>
                         <td class="col-item">
                             <strong>{{ $item->title }}</strong>
-                            <span class="small-note">
-                                ({{ number_format((float) $item->quantity, 2) }} {{ $item->unit }} x RM {{ number_format((float) $item->unit_price, 2) }})
-                            </span>
                             @if(!empty($item->description))
                                 <span class="small-note">Notes: {{ $item->description }}</span>
                             @endif

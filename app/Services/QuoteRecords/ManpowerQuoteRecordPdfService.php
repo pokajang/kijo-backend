@@ -66,8 +66,6 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
             : number_format($sstPercent, 2);
         $grossAmount    = $subTotalNet + $discountAmount;
         $showSubtotal   = $discountAmount > 0 && $sstAmount > 0;
-        $amountDetail   = $noOfPax . ' pax x ' . $durationDisplay . ' ' . $durationUnitLabel . ' x RM ' . number_format($unitCost, 2) . '/' . ($isHourly ? 'pax/hour' : 'pax/month');
-
         $createdAtRaw      = (string) ($quote->created_at ?? '');
         $updatedAtRaw      = (string) ($quote->updated_at ?? '');
         $createdDateLegacy = '';
@@ -148,7 +146,6 @@ class ManpowerQuoteRecordPdfService extends PdfRenderer
             'unitCost'           => $unitCost,
             'unitCostLabel'      => $unitCostLabel,
             'grossAmount'        => $grossAmount,
-            'amountDetail'       => $amountDetail,
             'discountAmount'     => $discountAmount,
             'showSubtotal'       => $showSubtotal,
             'subTotalNet'        => $subTotalNet,

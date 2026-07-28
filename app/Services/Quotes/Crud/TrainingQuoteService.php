@@ -150,7 +150,9 @@ class TrainingQuoteService
 
             return $this->databaseErrorResponse($e, $this->trainingQuoteFailureContext($data));
         } finally {
-            DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            if (DB::getDriverName() === 'mysql') {
+                DB::select('DO RELEASE_LOCK(?)', [$lockName]);
+            }
         }
 
         $this->auditLog->log($request, "Created training quote {$refNo} (ID #{$quoteId})");

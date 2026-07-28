@@ -96,12 +96,6 @@ class IhQuotePdfService
             $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;
             $subTotalNet = max(0, $grossSubtotal - $discountAmount);
         }
-        $calculatedServiceTotal = round(
-            $sampleCount * $workUnitsForCalc * $unitPrice * $complexityMultiplier,
-            2,
-        );
-        $serviceCalculationReconciles = abs($calculatedServiceTotal - $serviceTotal) <= 0.01;
-
         $appendProposal = (int) ($quote->attach_proposal ?? 0) === 1 && (int) ($quote->service_id ?? 0) > 0;
         $proposalTitle = '';
         $proposalSections = [];
@@ -191,11 +185,8 @@ class IhQuotePdfService
             'isLegacyPricing' => $isLegacyPricing,
             'isHistoricalPricing' => $isHistoricalPricing,
             'isUnknownPricing' => $isUnknownPricing,
-            'serviceCalculationReconciles' => $serviceCalculationReconciles,
             'complexityRating' => $complexityRating,
             'complexityMultiplier' => $complexityMultiplier,
-            'unitPrice' => $unitPrice,
-            'workUnitsForCalc' => $workUnitsForCalc,
             'travelCharge' => $travelCharge,
             'additionalItems' => $additionalItems,
             'additionalFeesTotal' => $additionalFeesTotal,

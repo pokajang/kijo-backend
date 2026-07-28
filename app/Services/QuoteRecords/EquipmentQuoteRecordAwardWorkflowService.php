@@ -348,6 +348,13 @@ class EquipmentQuoteRecordAwardWorkflowService
             throw new \Exception("Cannot un-award. Linked project #{$projectId} has vendor LOA records.");
         }
 
+        if (Schema::hasTable('supplier_po_main')) {
+            $supplierPos = DB::table('supplier_po_main')->where('project_id', $projectId)->count();
+            if ($supplierPos > 0) {
+                throw new \Exception("Cannot un-award. Linked project #{$projectId} has supplier PO records.");
+            }
+        }
+
         $vendorPayments = DB::table('vendor_payments')
             ->where('project_id', $projectId)
             ->whereNull('deleted_at')
