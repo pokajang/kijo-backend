@@ -2,6 +2,7 @@
 
 namespace App\Services\Stats;
 
+use App\Support\ManualPipelineServiceCategories;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -30,26 +31,6 @@ class AwardedDashboardStatsService
         'PROPOSAL',
         'NEGOTIATION',
         'CLOSED',
-    ];
-
-    private const MONITORING_STATUS_ROWS = [
-        'TRAINING',
-        'CONSULTANCY -ISO',
-        'CONSULTANCY - IHOH',
-        'MAN POWER',
-        'EQUIPMENT SUPPLY',
-        'ENGINEERING',
-        'INFRASTRUCTURE',
-    ];
-
-    private const MONITORING_MANUAL_SERVICE_CATEGORIES = [
-        'training' => 'TRAINING',
-        'consultancy_iso' => 'CONSULTANCY -ISO',
-        'consultancy_ihoh' => 'CONSULTANCY - IHOH',
-        'man_power' => 'MAN POWER',
-        'equipment_supply' => 'EQUIPMENT SUPPLY',
-        'engineering' => 'ENGINEERING',
-        'infrastructure' => 'INFRASTRUCTURE',
     ];
 
     private function realizedSalesProjectQuery(): RealizedSalesProjectQuery
@@ -361,7 +342,17 @@ class AwardedDashboardStatsService
         $query = DB::table('monitoring_manual_pipeline_entries')
             ->where('entry_type', 'closed')
             ->whereNotNull('service_category')
-            ->whereIn('service_category', array_keys(self::MONITORING_MANUAL_SERVICE_CATEGORIES))
+            ->whereIn('service_category', ManualPipelineServiceCategories::keys())
+            ->where(function ($serviceQuery) {
+                $serviceQuery
+                    ->where('service_category', '<>', 'other')
+                    ->orWhere(function ($otherQuery) {
+                        $otherQuery
+                            ->where('service_category', 'other')
+                            ->whereNotNull('custom_service_category')
+                            ->whereRaw("TRIM(custom_service_category) <> ''");
+                    });
+            })
             ->whereNotNull('estimated_rm')
             ->where('estimated_rm', '>', 0);
 
@@ -391,9 +382,7 @@ class AwardedDashboardStatsService
     {
         $serviceCategory = $this->normalizeMonitoringManualServiceCategory($serviceCategory);
 
-        return $serviceCategory !== null
-            ? self::MONITORING_MANUAL_SERVICE_CATEGORIES[$serviceCategory]
-            : null;
+        return ManualPipelineServiceCategories::statusLabel($serviceCategory);
     }
 
     private function monitoringManualPipelineEntriesReady(): bool
@@ -409,6 +398,7 @@ class AwardedDashboardStatsService
             'source',
             'segment_type',
             'service_category',
+            'custom_service_category',
             'estimated_rm',
             'notes',
             'photo_path',
@@ -432,10 +422,6 @@ class AwardedDashboardStatsService
 
     private function normalizeMonitoringManualServiceCategory($serviceCategory): ?string
     {
-        $serviceCategory = trim((string) ($serviceCategory ?? ''));
-
-        return array_key_exists($serviceCategory, self::MONITORING_MANUAL_SERVICE_CATEGORIES)
-            ? $serviceCategory
-            : null;
+        return ManualPipelineServiceCategories::normalize($serviceCategory);
     }
 }

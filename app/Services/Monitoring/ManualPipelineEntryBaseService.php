@@ -3,28 +3,17 @@
 namespace App\Services\Monitoring;
 
 use App\Support\AppFilePaths;
-use Illuminate\Http\JsonResponse;
+use App\Support\ManualPipelineServiceCategories;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 abstract class ManualPipelineEntryBaseService
 {
-    protected const SERVICE_CATEGORIES = [
-        'training' => 'TRAINING',
-        'consultancy_iso' => 'CONSULTANCY -ISO',
-        'consultancy_ihoh' => 'CONSULTANCY - IHOH',
-        'man_power' => 'MAN POWER',
-        'equipment_supply' => 'EQUIPMENT SUPPLY',
-        'engineering' => 'ENGINEERING',
-        'infrastructure' => 'INFRASTRUCTURE',
-    ];
     protected function entriesTableReady(): bool
     {
-        if (!Schema::hasTable('monitoring_manual_pipeline_entries')) {
+        if (! Schema::hasTable('monitoring_manual_pipeline_entries')) {
             return false;
         }
 
@@ -35,6 +24,7 @@ abstract class ManualPipelineEntryBaseService
             'source',
             'segment_type',
             'service_category',
+            'custom_service_category',
             'estimated_rm',
             'notes',
             'photo_path',
@@ -48,7 +38,7 @@ abstract class ManualPipelineEntryBaseService
         ];
 
         foreach ($requiredColumns as $column) {
-            if (!Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
+            if (! Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
                 return false;
             }
         }
@@ -64,6 +54,11 @@ abstract class ManualPipelineEntryBaseService
 
         if ($this->normalizeServiceCategory($entry['service_category'] ?? null) === null) {
             return 'Closed manual entries require a service category.';
+        }
+
+        $customServiceError = $this->validateCustomServiceCategory($entry);
+        if ($customServiceError !== null) {
+            return $customServiceError;
         }
 
         $estimatedRm = $this->normalizeEstimatedRm($entry['estimated_rm'] ?? null);
@@ -94,11 +89,33 @@ abstract class ManualPipelineEntryBaseService
 
     protected function normalizeServiceCategory($serviceCategory): ?string
     {
-        $serviceCategory = trim((string) ($serviceCategory ?? ''));
+        return ManualPipelineServiceCategories::normalize($serviceCategory);
+    }
 
-        return array_key_exists($serviceCategory, self::SERVICE_CATEGORIES)
-            ? $serviceCategory
-            : null;
+    protected function normalizeCustomServiceCategory($serviceCategory, $customServiceCategory): ?string
+    {
+        if (! ManualPipelineServiceCategories::requiresCustomDescription($serviceCategory)) {
+            return null;
+        }
+
+        $customServiceCategory = trim((string) ($customServiceCategory ?? ''));
+
+        return $customServiceCategory !== '' ? $customServiceCategory : null;
+    }
+
+    protected function validateCustomServiceCategory(array $entry): ?string
+    {
+        if (
+            ManualPipelineServiceCategories::requiresCustomDescription($entry['service_category'] ?? null)
+            && $this->normalizeCustomServiceCategory(
+                $entry['service_category'] ?? null,
+                $entry['custom_service_category'] ?? null
+            ) === null
+        ) {
+            return 'Specify the service category when Others is selected.';
+        }
+
+        return null;
     }
 
     protected function normalizeEstimatedRm($estimatedRm): ?float
@@ -113,7 +130,7 @@ abstract class ManualPipelineEntryBaseService
     protected function storePhoto(Request $request, int $index): array
     {
         $file = $request->file("photos.{$index}");
-        if (!$file || !$file->isValid()) {
+        if (! $file || ! $file->isValid()) {
             return [
                 'path' => null,
                 'originalName' => null,
@@ -122,12 +139,12 @@ abstract class ManualPipelineEntryBaseService
         }
 
         $extension = strtolower($file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'jpg');
-        $filename = (string) Str::uuid() . '.' . $extension;
-        $folder = 'monitoring-manual-entries/' . now()->format('Y/m');
+        $filename = (string) Str::uuid().'.'.$extension;
+        $folder = 'monitoring-manual-entries/'.now()->format('Y/m');
         AppFilePaths::storeFileAs($folder, $file, $filename);
 
         return [
-            'path' => $folder . '/' . $filename,
+            'path' => $folder.'/'.$filename,
             'originalName' => $file->getClientOriginalName(),
             'mimeType' => $file->getMimeType(),
         ];
@@ -135,7 +152,7 @@ abstract class ManualPipelineEntryBaseService
 
     protected function photoUrl(int $id): string
     {
-        return url('stats/monitoring-manual-pipeline-entry/' . $id . '/photo');
+        return url('stats/monitoring-manual-pipeline-entry/'.$id.'/photo');
     }
 
     protected function canViewEntry(Request $request, $entry): bool
@@ -177,7 +194,7 @@ abstract class ManualPipelineEntryBaseService
         $requestedStaffCode = $this->normalizeStaffCode($requestedCode);
         $sessionStaffCode = $this->sessionStaffCode($request);
 
-        if ($requestedStaffCode !== null && !$this->canViewOtherStaff($request)) {
+        if ($requestedStaffCode !== null && ! $this->canViewOtherStaff($request)) {
             if ($sessionStaffCode === null || $requestedStaffCode !== $sessionStaffCode) {
                 return ['forbidden' => true];
             }
@@ -259,12 +276,12 @@ abstract class ManualPipelineEntryBaseService
     protected function sessionRoles(Request $request): array
     {
         $roles = $request->session()->get('roles', []);
-        if (!is_array($roles)) {
+        if (! is_array($roles)) {
             $roles = $roles ? [$roles] : [];
         }
 
         return array_values(array_filter(array_map(
-            static fn($role) => trim((string) $role),
+            static fn ($role) => trim((string) $role),
             $roles
         )));
     }
@@ -287,7 +304,7 @@ abstract class ManualPipelineEntryBaseService
     protected function baseQuoteFactsQuery()
     {
         $base = DB::table('all_quotes')
-            ->selectRaw("
+            ->selectRaw('
                 service_group,
                 quote_id,
                 MAX(created_at) AS created_at,
@@ -300,7 +317,7 @@ abstract class ManualPipelineEntryBaseService
                 MAX(quote_status) AS quote_status,
                 MAX(value) AS value,
                 MAX(inquiry_source) AS inquiry_source
-            ")
+            ')
             ->groupBy('service_group', 'quote_id');
 
         return DB::query()->fromSub($base, 'quote_facts');

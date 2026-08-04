@@ -37,26 +37,6 @@ class MonitoringStaffPipelineMatrixService
         'CLOSED',
     ];
 
-    private const MONITORING_STATUS_ROWS = [
-        'TRAINING',
-        'CONSULTANCY -ISO',
-        'CONSULTANCY - IHOH',
-        'MAN POWER',
-        'EQUIPMENT SUPPLY',
-        'ENGINEERING',
-        'INFRASTRUCTURE',
-    ];
-
-    private const MONITORING_MANUAL_SERVICE_CATEGORIES = [
-        'training' => 'TRAINING',
-        'consultancy_iso' => 'CONSULTANCY -ISO',
-        'consultancy_ihoh' => 'CONSULTANCY - IHOH',
-        'man_power' => 'MAN POWER',
-        'equipment_supply' => 'EQUIPMENT SUPPLY',
-        'engineering' => 'ENGINEERING',
-        'infrastructure' => 'INFRASTRUCTURE',
-    ];
-
     public function monitoringStaffPipelineMatrix(Request $request): JsonResponse
     {
         try {

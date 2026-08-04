@@ -491,6 +491,13 @@ trait MonitoringStatsDetailHelpers
         // Workbook service rows are broader than the current CRM taxonomy.
         // Special-service quotes are bucketed heuristically until a formal
         // reporting category is added to the source data.
+        if (
+            preg_match('/\bOSH\b/', $normalizedTitle) === 1
+            || str_contains($normalizedTitle, 'OCCUPATIONAL SAFETY')
+        ) {
+            return 'CONSULTANCY - OSH';
+        }
+
         if (str_contains($normalizedTitle, 'ISO')) {
             return 'CONSULTANCY -ISO';
         }

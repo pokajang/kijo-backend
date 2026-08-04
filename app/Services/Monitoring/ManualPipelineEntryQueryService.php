@@ -2,17 +2,12 @@
 
 namespace App\Services\Monitoring;
 
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 
 class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
 {
-
     public function list(Request $request, ?string $start, ?string $end, array $staffFilter): array
     {
         $staffCode = $staffFilter['code'];
@@ -53,20 +48,21 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
         if ($search !== '') {
             $query->where(function ($nested) use ($search) {
                 $nested
-                    ->where('prospect_name', 'like', '%' . $search . '%')
-                    ->orWhere('notes', 'like', '%' . $search . '%')
-                    ->orWhere('owner_staff_code', 'like', '%' . $search . '%')
-                    ->orWhere('owner_staff_name', 'like', '%' . $search . '%');
+                    ->where('prospect_name', 'like', '%'.$search.'%')
+                    ->orWhere('notes', 'like', '%'.$search.'%')
+                    ->orWhere('custom_service_category', 'like', '%'.$search.'%')
+                    ->orWhere('owner_staff_code', 'like', '%'.$search.'%')
+                    ->orWhere('owner_staff_name', 'like', '%'.$search.'%');
             });
         }
 
-        return $query->limit(1000)->get()->map(fn($entry) => $this->mapEntry($request, $entry))->all();
+        return $query->limit(1000)->get()->map(fn ($entry) => $this->mapEntry($request, $entry))->all();
     }
 
     public function find(Request $request, int $id): ?array
     {
         $entry = DB::table('monitoring_manual_pipeline_entries')->where('id', $id)->first();
-        if (!$entry || !$this->canViewEntry($request, $entry)) {
+        if (! $entry || ! $this->canViewEntry($request, $entry)) {
             return null;
         }
 
@@ -87,9 +83,13 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
             'source' => (string) ($entry->source ?? ''),
             'segmentType' => (string) ($this->normalizeClassification($entry->segment_type) ?? ''),
             'serviceCategory' => (string) ($this->normalizeServiceCategory($entry->service_category) ?? ''),
+            'customServiceCategory' => (string) ($this->normalizeCustomServiceCategory(
+                $entry->service_category,
+                $entry->custom_service_category ?? null
+            ) ?? ''),
             'estimatedRm' => $entry->estimated_rm !== null ? (float) $entry->estimated_rm : null,
             'notes' => (string) ($entry->notes ?? ''),
-            'photoUrl' => !empty($entry->photo_path)
+            'photoUrl' => ! empty($entry->photo_path)
                 ? $this->photoUrl((int) $entry->id)
                 : null,
             'photoOriginalName' => (string) ($entry->photo_original_name ?? ''),
@@ -104,7 +104,7 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
 
     public function entriesTableReady(): bool
     {
-        if (!Schema::hasTable('monitoring_manual_pipeline_entries')) {
+        if (! Schema::hasTable('monitoring_manual_pipeline_entries')) {
             return false;
         }
 
@@ -115,6 +115,7 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
             'source',
             'segment_type',
             'service_category',
+            'custom_service_category',
             'estimated_rm',
             'notes',
             'photo_path',
@@ -128,7 +129,7 @@ class ManualPipelineEntryQueryService extends ManualPipelineEntryBaseService
         ];
 
         foreach ($requiredColumns as $column) {
-            if (!Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
+            if (! Schema::hasColumn('monitoring_manual_pipeline_entries', $column)) {
                 return false;
             }
         }

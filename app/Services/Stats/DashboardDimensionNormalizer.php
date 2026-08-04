@@ -26,6 +26,8 @@ class DashboardDimensionNormalizer
             'industrial_hygiene' => 'Industrial Hygiene',
             'equipment_supply' => 'Equipment Supply',
             'manpower_supply' => 'Manpower Supply',
+            'consultancy_osh' => 'Consultancy - OSH',
+            'others' => 'Others',
             'special_service' => 'Special Service',
             'unclassified' => 'Unclassified',
             default => $raw,
@@ -48,6 +50,8 @@ class DashboardDimensionNormalizer
             'ih', 'industrial hygiene' => 'industrial_hygiene',
             'equipment', 'equipment supply' => 'equipment_supply',
             'man power', 'manpower', 'manpower supply' => 'manpower_supply',
+            'consultancy osh' => 'consultancy_osh',
+            'other', 'others' => 'others',
             'special', 'special service' => 'special_service',
             default => null,
         };

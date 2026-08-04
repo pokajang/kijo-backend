@@ -35,26 +35,6 @@ class MonitoringManualStatsService
         'CLOSED',
     ];
 
-    private const MONITORING_STATUS_ROWS = [
-        'TRAINING',
-        'CONSULTANCY -ISO',
-        'CONSULTANCY - IHOH',
-        'MAN POWER',
-        'EQUIPMENT SUPPLY',
-        'ENGINEERING',
-        'INFRASTRUCTURE',
-    ];
-
-    private const MONITORING_MANUAL_SERVICE_CATEGORIES = [
-        'training' => 'TRAINING',
-        'consultancy_iso' => 'CONSULTANCY -ISO',
-        'consultancy_ihoh' => 'CONSULTANCY - IHOH',
-        'man_power' => 'MAN POWER',
-        'equipment_supply' => 'EQUIPMENT SUPPLY',
-        'engineering' => 'ENGINEERING',
-        'infrastructure' => 'INFRASTRUCTURE',
-    ];
-
     public function createMonitoringManualPipelineEntry(Request $request): JsonResponse
     {
         return $this->manualPipelineEntryService()->create($request);
@@ -363,6 +343,7 @@ class MonitoringManualStatsService
             'source',
             'segment_type',
             'service_category',
+            'custom_service_category',
             'estimated_rm',
             'notes',
             'photo_path',

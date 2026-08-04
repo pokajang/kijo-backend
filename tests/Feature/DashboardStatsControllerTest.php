@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Mail\MonthlyDashboardReportMail;
+use App\Services\Stats\MonthlyDashboardReportService;
 use App\Services\Stats\WorkloadSnapshotHealthService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
@@ -345,6 +346,162 @@ class DashboardStatsControllerTest extends TestCase
             'entry_type' => 'closed',
             'segment_type' => 'individual',
             'service_category' => 'training',
+        ]);
+    }
+
+    public function test_manual_other_and_consultancy_osh_categories_round_trip_and_feed_monitoring_status(): void
+    {
+        $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
+            'entry_type' => 'lead',
+            'entry_date' => '2026-05-09',
+            'source' => 'WhatsApp Personal',
+            'prospect_name' => 'Incomplete Other Service',
+            'service_category' => 'other',
+            'custom_service_category' => '   ',
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Specify the service category when Others is selected.');
+
+        $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
+            'entry_type' => 'closed',
+            'entry_date' => '2026-05-09',
+            'source' => 'WhatsApp Personal',
+            'prospect_name' => 'Environmental Monitoring Prospect',
+            'service_category' => 'other',
+            'custom_service_category' => '  Environmental Monitoring  ',
+            'estimated_rm' => '321.50',
+            'segment_type' => 'tender',
+        ])->assertOk()->assertJsonPath('status', 'success');
+
+        $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
+            'entry_type' => 'closed',
+            'entry_date' => '2026-05-09',
+            'source' => 'WhatsApp Personal',
+            'prospect_name' => 'OSH Consultancy Prospect',
+            'service_category' => 'consultancy_osh',
+            'custom_service_category' => 'Must be discarded',
+            'estimated_rm' => '678.50',
+            'segment_type' => 'special_project',
+        ])->assertOk()->assertJsonPath('status', 'success');
+
+        $otherId = (int) DB::table('monitoring_manual_pipeline_entries')
+            ->where('prospect_name', 'Environmental Monitoring Prospect')
+            ->value('id');
+        $oshId = (int) DB::table('monitoring_manual_pipeline_entries')
+            ->where('prospect_name', 'OSH Consultancy Prospect')
+            ->value('id');
+
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'id' => $otherId,
+            'service_category' => 'other',
+            'custom_service_category' => 'Environmental Monitoring',
+        ]);
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'id' => $oshId,
+            'service_category' => 'consultancy_osh',
+            'custom_service_category' => null,
+        ]);
+
+        $recordsResponse = $this->authenticatedPost('/stats/monitoring-manual-pipeline-entries', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+            'service_category' => 'other',
+            'q' => 'Environmental Monitoring',
+        ]);
+
+        $recordsResponse->assertOk()->assertJsonPath('status', 'success');
+        $this->assertSame([$otherId], collect($recordsResponse->json('entries'))->pluck('id')->all());
+        $recordsResponse
+            ->assertJsonPath('entries.0.serviceCategory', 'other')
+            ->assertJsonPath('entries.0.customServiceCategory', 'Environmental Monitoring');
+
+        $statusResponse = $this->authenticatedPost('/stats/monitoring-pipeline-status', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $statusResponse->assertOk()->assertJsonPath('status', 'success');
+        $other = collect($statusResponse->json('rows'))->firstWhere('label', 'OTHERS');
+        $osh = collect($statusResponse->json('rows'))->firstWhere('label', 'CONSULTANCY - OSH');
+
+        $this->assertNotNull($other);
+        $this->assertNotNull($osh);
+        $this->assertSame(1, (int) $other['totalQty']);
+        $this->assertSame(321.50, (float) $other['totalRm']);
+        $this->assertSame(1, (int) $other['tenderQty']);
+        $this->assertSame(1, (int) $osh['totalQty']);
+        $this->assertSame(678.50, (float) $osh['totalRm']);
+        $this->assertSame(1, (int) $osh['specialProjectQty']);
+        $this->assertSame(7200.0, (float) $statusResponse->json('companyTotalRm'));
+
+        $otherDetails = collect($other['details']['total']['qty']['items'] ?? []);
+        $this->assertSame('Environmental Monitoring', $otherDetails->first()['serviceType'] ?? null);
+
+        $awardedResponse = $this->authenticatedPost('/stats/awarded-value-by-service', [
+            'start_date' => '2026-05-01',
+            'end_date' => '2026-05-31',
+        ]);
+
+        $awardedResponse->assertOk()->assertJsonPath('status', 'success');
+        $awardedRows = collect($awardedResponse->json('awardValueByService'));
+        $this->assertSame(321.50, (float) $awardedRows->firstWhere('serviceGroup', 'Others')['manualAwarded']);
+        $this->assertSame(678.50, (float) $awardedRows->firstWhere('serviceGroup', 'Consultancy - OSH')['manualAwarded']);
+
+        $this->authenticatedPost("/stats/monitoring-manual-pipeline-entry/{$otherId}", [
+            'entry_type' => 'closed',
+            'entry_date' => '2026-05-09',
+            'source' => 'WhatsApp Personal',
+            'prospect_name' => 'Environmental Monitoring Prospect',
+            'service_category' => 'consultancy_osh',
+            'custom_service_category' => 'Stale custom value',
+            'estimated_rm' => '321.50',
+            'segment_type' => 'tender',
+        ])->assertOk()->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'id' => $otherId,
+            'service_category' => 'consultancy_osh',
+            'custom_service_category' => null,
+        ]);
+    }
+
+    public function test_manual_pipeline_bulk_create_validates_and_persists_custom_service_categories(): void
+    {
+        $response = $this->authenticatedPost('/stats/monitoring-manual-pipeline-entry', [
+            'owner_staff_code' => 'AZA',
+            'entries' => [
+                [
+                    'entry_type' => 'lead',
+                    'entry_date' => '2026-05-10',
+                    'source' => 'WhatsApp Personal',
+                    'prospect_name' => 'Bulk Other Prospect',
+                    'service_category' => 'other',
+                    'custom_service_category' => 'Ergonomic Risk Assessment',
+                ],
+                [
+                    'entry_type' => 'proposal',
+                    'entry_date' => '2026-05-10',
+                    'source' => 'Email Personal',
+                    'prospect_name' => 'Bulk OSH Prospect',
+                    'service_category' => 'consultancy_osh',
+                    'custom_service_category' => 'Discard this value',
+                    'estimated_rm' => 1000,
+                ],
+            ],
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('inserted', 2);
+
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'prospect_name' => 'Bulk Other Prospect',
+            'service_category' => 'other',
+            'custom_service_category' => 'Ergonomic Risk Assessment',
+        ]);
+        $this->assertDatabaseHas('monitoring_manual_pipeline_entries', [
+            'prospect_name' => 'Bulk OSH Prospect',
+            'service_category' => 'consultancy_osh',
+            'custom_service_category' => null,
         ]);
     }
 
@@ -2421,7 +2578,7 @@ class DashboardStatsControllerTest extends TestCase
         $this->assertTrue($lock->get());
 
         try {
-            $result = app(\App\Services\Stats\MonthlyDashboardReportService::class)->runScheduledSend();
+            $result = app(MonthlyDashboardReportService::class)->runScheduledSend();
         } finally {
             $lock->release();
         }
@@ -3925,6 +4082,7 @@ class DashboardStatsControllerTest extends TestCase
             $table->string('source')->nullable();
             $table->string('segment_type')->nullable();
             $table->string('service_category')->nullable();
+            $table->string('custom_service_category')->nullable();
             $table->decimal('estimated_rm', 15, 2)->nullable();
             $table->text('notes')->nullable();
             $table->string('photo_path')->nullable();

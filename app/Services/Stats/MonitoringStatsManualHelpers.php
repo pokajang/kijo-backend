@@ -2,6 +2,7 @@
 
 namespace App\Services\Stats;
 
+use App\Support\ManualPipelineServiceCategories;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -76,6 +77,7 @@ trait MonitoringStatsManualHelpers
                 'source' => (string) ($entry->source ?? ''),
                 'segmentType' => (string) ($classification ?? ''),
                 'serviceCategory' => (string) ($this->normalizeMonitoringManualServiceCategory($entry->service_category) ?? ''),
+                'customServiceCategory' => (string) ($this->monitoringManualCustomServiceCategory($entry) ?? ''),
                 'estimatedRm' => $estimatedRm,
                 'notes' => (string) ($entry->notes ?? ''),
                 'photoUrl' => ! empty($entry->photo_path)
@@ -108,6 +110,7 @@ trait MonitoringStatsManualHelpers
             'source',
             'segment_type',
             'service_category',
+            'custom_service_category',
             'estimated_rm',
             'notes',
             'photo_path',
@@ -134,6 +137,7 @@ trait MonitoringStatsManualHelpers
         return $this->validateMonitoringManualClosedRevenue([
             'entry_type' => (string) ($entry->entry_type ?? ''),
             'service_category' => $entry->service_category ?? null,
+            'custom_service_category' => $entry->custom_service_category ?? null,
             'estimated_rm' => $entry->estimated_rm ?? null,
         ]) === null;
     }
@@ -146,7 +150,11 @@ trait MonitoringStatsManualHelpers
             'eventType' => $label,
             'date' => (string) $entry->entry_date,
             'clientName' => $this->monitoringCleanText($entry->prospect_name ?? ''),
-            'serviceType' => $this->monitoringCleanText($this->normalizeMonitoringManualServiceCategory($entry->service_category) ?? ''),
+            'serviceType' => $this->monitoringCleanText(
+                $this->monitoringManualCustomServiceCategory($entry)
+                    ?? $this->normalizeMonitoringManualServiceCategory($entry->service_category)
+                    ?? ''
+            ),
             'subject' => '',
             'value' => $estimatedRm,
             'source' => $this->monitoringCleanText($entry->source ?? ''),
@@ -183,9 +191,7 @@ trait MonitoringStatsManualHelpers
     {
         $serviceCategory = $this->normalizeMonitoringManualServiceCategory($serviceCategory);
 
-        return $serviceCategory !== null
-            ? self::MONITORING_MANUAL_SERVICE_CATEGORIES[$serviceCategory]
-            : null;
+        return ManualPipelineServiceCategories::statusLabel($serviceCategory);
     }
 
     private function normalizeMonitoringManualClassification($segmentType): ?string
@@ -210,11 +216,18 @@ trait MonitoringStatsManualHelpers
 
     private function normalizeMonitoringManualServiceCategory($serviceCategory): ?string
     {
-        $serviceCategory = trim((string) ($serviceCategory ?? ''));
+        return ManualPipelineServiceCategories::normalize($serviceCategory);
+    }
 
-        return array_key_exists($serviceCategory, self::MONITORING_MANUAL_SERVICE_CATEGORIES)
-            ? $serviceCategory
-            : null;
+    private function monitoringManualCustomServiceCategory($entry): ?string
+    {
+        if (! ManualPipelineServiceCategories::requiresCustomDescription($entry->service_category ?? null)) {
+            return null;
+        }
+
+        $customServiceCategory = trim((string) ($entry->custom_service_category ?? ''));
+
+        return $customServiceCategory !== '' ? $customServiceCategory : null;
     }
 
     private function validateMonitoringManualClosedRevenue(array $entry): ?string
@@ -225,6 +238,13 @@ trait MonitoringStatsManualHelpers
 
         if ($this->normalizeMonitoringManualServiceCategory($entry['service_category'] ?? null) === null) {
             return 'Closed manual entries require a service category.';
+        }
+
+        if (
+            ManualPipelineServiceCategories::requiresCustomDescription($entry['service_category'] ?? null)
+            && trim((string) ($entry['custom_service_category'] ?? '')) === ''
+        ) {
+            return 'Specify the service category when Others is selected.';
         }
 
         $estimatedRm = $this->normalizeMonitoringManualEstimatedRm($entry['estimated_rm'] ?? null);

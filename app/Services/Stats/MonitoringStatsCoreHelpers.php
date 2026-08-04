@@ -2,6 +2,7 @@
 
 namespace App\Services\Stats;
 
+use App\Support\ManualPipelineServiceCategories;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -393,7 +394,17 @@ trait MonitoringStatsCoreHelpers
         $query = DB::table('monitoring_manual_pipeline_entries')
             ->where('entry_type', 'closed')
             ->whereNotNull('service_category')
-            ->whereIn('service_category', array_keys(self::MONITORING_MANUAL_SERVICE_CATEGORIES))
+            ->whereIn('service_category', ManualPipelineServiceCategories::keys())
+            ->where(function ($serviceQuery) {
+                $serviceQuery
+                    ->where('service_category', '<>', 'other')
+                    ->orWhere(function ($otherQuery) {
+                        $otherQuery
+                            ->where('service_category', 'other')
+                            ->whereNotNull('custom_service_category')
+                            ->whereRaw("TRIM(custom_service_category) <> ''");
+                    });
+            })
             ->whereNotNull('estimated_rm')
             ->where('estimated_rm', '>', 0)
             ->whereBetween('entry_date', [$start, $end]);

@@ -3,23 +3,21 @@
 namespace App\Services\Monitoring;
 
 use App\Support\AppFilePaths;
+use App\Support\ManualPipelineServiceCategories;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
 {
-
     public function create(Request $request): JsonResponse
     {
         $storedPhotoPaths = [];
 
         try {
-            if (!$this->entriesTableReady()) {
+            if (! $this->entriesTableReady()) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Manual monitoring entries table is not available.',
@@ -39,7 +37,8 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 'source' => ['required_without:entries', 'string', 'max:80'],
                 'owner_staff_code' => ['nullable', 'string', 'max:30'],
                 'segment_type' => ['nullable', 'in:individual,special_project,tender'],
-                'service_category' => ['nullable', 'in:' . implode(',', array_keys(self::SERVICE_CATEGORIES))],
+                'service_category' => ['nullable', 'in:'.implode(',', ManualPipelineServiceCategories::keys())],
+                'custom_service_category' => ['nullable', 'string', 'max:191'],
                 'estimated_rm' => ['nullable', 'numeric', 'min:0', 'max:999999999.99'],
                 'prospect_name' => ['nullable', 'string', 'max:191'],
                 'notes' => ['nullable', 'string', 'max:2000'],
@@ -50,7 +49,8 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 'entries.*.prospect_name' => ['required_with:entries', 'string', 'max:191'],
                 'entries.*.notes' => ['nullable', 'string', 'max:2000'],
                 'entries.*.segment_type' => ['nullable', 'in:individual,special_project,tender'],
-                'entries.*.service_category' => ['nullable', 'in:' . implode(',', array_keys(self::SERVICE_CATEGORIES))],
+                'entries.*.service_category' => ['nullable', 'in:'.implode(',', ManualPipelineServiceCategories::keys())],
+                'entries.*.custom_service_category' => ['nullable', 'string', 'max:191'],
                 'entries.*.estimated_rm' => ['nullable', 'numeric', 'min:0', 'max:999999999.99'],
                 'photos' => ['nullable', 'array', 'max:100'],
                 'photos.*' => ['nullable', 'image', 'max:500'],
@@ -64,11 +64,12 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 'notes' => $data['notes'] ?? '',
                 'segment_type' => $data['segment_type'] ?? null,
                 'service_category' => $data['service_category'] ?? null,
+                'custom_service_category' => $data['custom_service_category'] ?? null,
                 'estimated_rm' => $data['estimated_rm'] ?? null,
             ]];
 
             $entries = collect($entries)
-                ->map(fn($entry) => [
+                ->map(fn ($entry) => [
                     'entry_type' => $entry['entry_type'] ?? ($data['entry_type'] ?? null),
                     'entry_date' => $entry['entry_date'] ?? ($data['entry_date'] ?? null),
                     'source' => trim((string) ($entry['source'] ?? ($data['source'] ?? ''))),
@@ -76,9 +77,10 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                     'notes' => trim((string) ($entry['notes'] ?? '')),
                     'segment_type' => $entry['segment_type'] ?? ($data['segment_type'] ?? null),
                     'service_category' => $entry['service_category'] ?? ($data['service_category'] ?? null),
+                    'custom_service_category' => $entry['custom_service_category'] ?? ($data['custom_service_category'] ?? null),
                     'estimated_rm' => $entry['estimated_rm'] ?? ($data['estimated_rm'] ?? null),
                 ])
-                ->filter(fn($entry) => $entry['prospect_name'] !== '')
+                ->filter(fn ($entry) => $entry['prospect_name'] !== '')
                 ->values()
                 ->all();
 
@@ -97,6 +99,14 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                     ], 422);
                 }
 
+                $customServiceError = $this->validateCustomServiceCategory($entry);
+                if ($customServiceError !== null) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => $customServiceError,
+                    ], 422);
+                }
+
                 $closedRevenueError = $this->validateClosedRevenue($entry);
                 if ($closedRevenueError !== null) {
                     return response()->json([
@@ -108,14 +118,14 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
 
             $owner = $this->resolveOwner($request, $data['owner_staff_code'] ?? null);
 
-            if (!empty($owner['forbidden'])) {
+            if (! empty($owner['forbidden'])) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'You are not allowed to add manual entries for another staff member.',
                 ], 403);
             }
 
-            if (!empty($owner['invalid'])) {
+            if (! empty($owner['invalid'])) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Selected staff owner was not found.',
@@ -129,7 +139,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
 
             foreach ($entries as $index => $entry) {
                 $photo = $this->storePhoto($request, $index);
-                if (!empty($photo['path'])) {
+                if (! empty($photo['path'])) {
                     $storedPhotoPaths[] = $photo['path'];
                 }
 
@@ -143,6 +153,10 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                         $entry['segment_type'] ?? null
                     ),
                     'service_category' => $this->normalizeServiceCategory($entry['service_category'] ?? null),
+                    'custom_service_category' => $this->normalizeCustomServiceCategory(
+                        $entry['service_category'] ?? null,
+                        $entry['custom_service_category'] ?? null
+                    ),
                     'estimated_rm' => $this->normalizeEstimatedRm($entry['estimated_rm'] ?? null),
                     'notes' => $entry['notes'] ?: null,
                     'photo_path' => $photo['path'],
@@ -163,7 +177,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             });
 
             return response()->json(['status' => 'success', 'inserted' => count($rows)]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             return response()->json([
                 'status' => 'error',
                 'message' => $e->validator->errors()->first() ?: 'Invalid manual entry.',
@@ -178,6 +192,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             }
 
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -187,7 +202,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
         $storedPhotoPath = null;
 
         try {
-            if (!$this->entriesTableReady()) {
+            if (! $this->entriesTableReady()) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Manual monitoring entries table is not available.',
@@ -200,11 +215,11 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             }
 
             $entry = DB::table('monitoring_manual_pipeline_entries')->where('id', $id)->first();
-            if (!$entry) {
+            if (! $entry) {
                 return response()->json(['status' => 'error', 'message' => 'Manual entry not found.'], 404);
             }
 
-            if (!$this->canManageEntry($request, $entry)) {
+            if (! $this->canManageEntry($request, $entry)) {
                 return response()->json(['status' => 'error', 'message' => 'You are not allowed to update this manual entry.'], 403);
             }
 
@@ -213,7 +228,8 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 'entry_date' => ['required', 'date'],
                 'source' => ['required', 'string', 'max:80'],
                 'segment_type' => ['nullable', 'in:individual,special_project,tender'],
-                'service_category' => ['nullable', 'in:' . implode(',', array_keys(self::SERVICE_CATEGORIES))],
+                'service_category' => ['nullable', 'in:'.implode(',', ManualPipelineServiceCategories::keys())],
+                'custom_service_category' => ['nullable', 'string', 'max:191'],
                 'estimated_rm' => ['nullable', 'numeric', 'min:0', 'max:999999999.99'],
                 'prospect_name' => ['required', 'string', 'max:191'],
                 'notes' => ['nullable', 'string', 'max:2000'],
@@ -228,6 +244,14 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                 ], 422);
             }
 
+            $customServiceError = $this->validateCustomServiceCategory($data);
+            if ($customServiceError !== null) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => $customServiceError,
+                ], 422);
+            }
+
             $closedRevenueError = $this->validateClosedRevenue($data);
             if ($closedRevenueError !== null) {
                 return response()->json([
@@ -237,7 +261,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             }
 
             $photo = $this->storePhoto($request, 0);
-            if (!empty($photo['path'])) {
+            if (! empty($photo['path'])) {
                 $storedPhotoPath = $photo['path'];
             }
 
@@ -251,12 +275,16 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
                     $data['segment_type'] ?? null
                 ),
                 'service_category' => $this->normalizeServiceCategory($data['service_category'] ?? null),
+                'custom_service_category' => $this->normalizeCustomServiceCategory(
+                    $data['service_category'] ?? null,
+                    $data['custom_service_category'] ?? null
+                ),
                 'estimated_rm' => $this->normalizeEstimatedRm($data['estimated_rm'] ?? null),
                 'notes' => trim((string) ($data['notes'] ?? '')) ?: null,
                 'updated_at' => now(),
             ];
 
-            if (!empty($photo['path'])) {
+            if (! empty($photo['path'])) {
                 $updates['photo_path'] = $photo['path'];
                 $updates['photo_original_name'] = $photo['originalName'];
                 $updates['photo_mime_type'] = $photo['mimeType'];
@@ -264,7 +292,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
 
             DB::table('monitoring_manual_pipeline_entries')->where('id', $id)->update($updates);
 
-            if (!empty($photo['path']) && !empty($entry->photo_path)) {
+            if (! empty($photo['path']) && ! empty($entry->photo_path)) {
                 try {
                     AppFilePaths::deleteStoredPath((string) $entry->photo_path);
                 } catch (\Throwable) {
@@ -273,7 +301,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             }
 
             return response()->json(['status' => 'success']);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             if ($storedPhotoPath) {
                 try {
                     AppFilePaths::deleteStoredPath((string) $storedPhotoPath);
@@ -296,6 +324,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             }
 
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -303,7 +332,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
     public function delete(Request $request): JsonResponse
     {
         try {
-            if (!$this->entriesTableReady()) {
+            if (! $this->entriesTableReady()) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Manual monitoring entries table is not available.',
@@ -316,15 +345,15 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             }
 
             $entry = DB::table('monitoring_manual_pipeline_entries')->where('id', $id)->first();
-            if (!$entry) {
+            if (! $entry) {
                 return response()->json(['status' => 'error', 'message' => 'Manual entry not found.'], 404);
             }
 
-            if (!$this->canManageEntry($request, $entry)) {
+            if (! $this->canManageEntry($request, $entry)) {
                 return response()->json(['status' => 'error', 'message' => 'You are not allowed to delete this manual entry.'], 403);
             }
 
-            if (!empty($entry->photo_path)) {
+            if (! empty($entry->photo_path)) {
                 try {
                     AppFilePaths::deleteStoredPath((string) $entry->photo_path);
                 } catch (\Throwable) {
@@ -337,6 +366,7 @@ class ManualPipelineEntryMutationService extends ManualPipelineEntryBaseService
             return response()->json(['status' => 'success']);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
