@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Http\Middleware\RequireAuth;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -21,9 +24,9 @@ class ManualDebtorFeatureTest extends TestCase
         $this->registerSqliteDateFormat();
 
         $this->withoutMiddleware([
-            \App\Http\Middleware\RequireAuth::class,
-            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
-            \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+            RequireAuth::class,
+            ValidateCsrfToken::class,
+            VerifyCsrfToken::class,
         ]);
 
         $this->createTables();
@@ -39,12 +42,12 @@ class ManualDebtorFeatureTest extends TestCase
     private function registerSqliteDateFormat(): void
     {
         $pdo = DB::connection()->getPdo();
-        if (!method_exists($pdo, 'sqliteCreateFunction')) {
+        if (! method_exists($pdo, 'sqliteCreateFunction')) {
             return;
         }
 
         $pdo->sqliteCreateFunction('DATE_FORMAT', static function ($date, $format) {
-            if (!$date) {
+            if (! $date) {
                 return null;
             }
 
@@ -138,7 +141,7 @@ class ManualDebtorFeatureTest extends TestCase
         ]);
 
         $this->actingSession()
-            ->deleteJson("/debtors/manual/{$id}")
+            ->deleteJson("/debtors/manual/{$id}", ['reason' => 'Test lifecycle cleanup'])
             ->assertOk()
             ->assertJsonPath('status', 'success');
 
@@ -389,6 +392,64 @@ class ManualDebtorFeatureTest extends TestCase
         ]);
     }
 
+    public function test_manual_debtor_edit_cannot_conflict_with_existing_payments_or_reuse_reference(): void
+    {
+        $created = $this->actingSession()->postJson('/debtors/manual', [
+            'invoice_ref_no' => 'SAFE-EDIT-001',
+            'client_name' => 'Safe Edit Client',
+            'invoice_date' => '2026-05-01',
+            'grand_total' => 1000,
+        ])->assertCreated();
+        $id = (int) $created->json('id');
+
+        $this->actingSession()->postJson("/receivables/manual/{$id}/payments", [
+            'payment_type' => 'partial',
+            'amount' => 300,
+            'payment_date' => '2026-05-18',
+            'request_token' => '28bbf274-0db5-48ec-8961-6141a58fe5c0',
+        ])->assertOk();
+
+        $this->actingSession()->putJson("/debtors/manual/{$id}", [
+            'invoice_ref_no' => 'SAFE-EDIT-001',
+            'client_name' => 'Safe Edit Client',
+            'invoice_date' => '2026-05-01',
+            'grand_total' => 200,
+        ])->assertStatus(422)->assertJsonValidationErrors('grand_total');
+
+        $this->actingSession()->putJson("/debtors/manual/{$id}", [
+            'invoice_ref_no' => 'SAFE-EDIT-001',
+            'client_name' => 'Safe Edit Client',
+            'invoice_date' => '2026-05-19',
+            'grand_total' => 1000,
+        ])->assertStatus(422)->assertJsonValidationErrors('invoice_date');
+
+        $this->actingSession()->postJson("/receivables/manual/{$id}/payments", [
+            'payment_type' => 'full',
+            'payment_date' => '2026-05-18',
+            'request_token' => '45c8de4f-81ed-4646-90dc-45449d8897be',
+        ])->assertOk()->assertJsonPath('summary.paymentStatus', 'Paid');
+
+        $this->actingSession()->putJson("/debtors/manual/{$id}", [
+            'invoice_ref_no' => 'SAFE-EDIT-001',
+            'client_name' => 'Safe Edit Client',
+            'invoice_date' => '2026-05-01',
+            'grand_total' => 1200,
+        ])->assertOk();
+        $this->assertDatabaseHas('manual_debtors', [
+            'id' => $id,
+            'status' => 'Partially Paid',
+            'paid_amount' => 1000,
+            'grand_total' => 1200,
+        ]);
+
+        $this->actingSession()->postJson('/debtors/manual', [
+            'invoice_ref_no' => ' safe-edit-001 ',
+            'client_name' => 'Duplicate Client',
+            'invoice_date' => '2026-05-01',
+            'grand_total' => 100,
+        ])->assertStatus(422)->assertJsonValidationErrors('invoice_ref_no');
+    }
+
     public function test_consolidated_debtors_default_open_filter_and_stats_include_manual_rows(): void
     {
         DB::table('manual_debtors')->insert([
@@ -494,6 +555,8 @@ class ManualDebtorFeatureTest extends TestCase
     private function createTables(): void
     {
         foreach ([
+            'receivable_audit_events',
+            'receivable_payments',
             'user_activities',
             'manual_debtors',
             'invoices',
@@ -511,6 +574,39 @@ class ManualDebtorFeatureTest extends TestCase
             $table->string('name_code', 20);
             $table->string('action');
             $table->string('ip_address', 45)->nullable();
+            $table->timestamp('created_at')->nullable();
+        });
+
+        Schema::create('receivable_payments', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->string('source_type');
+            $table->unsignedInteger('source_id');
+            $table->decimal('amount', 15, 2);
+            $table->date('payment_date');
+            $table->string('payment_method')->nullable();
+            $table->string('transaction_reference')->nullable();
+            $table->text('remarks')->nullable();
+            $table->string('request_token')->unique();
+            $table->unsignedInteger('recorded_by_staff_id')->nullable();
+            $table->string('recorded_by_code')->nullable();
+            $table->timestamp('reversed_at')->nullable();
+            $table->unsignedInteger('reversed_by_staff_id')->nullable();
+            $table->string('reversed_by_code')->nullable();
+            $table->text('reversal_reason')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('receivable_audit_events', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->string('source_type');
+            $table->unsignedInteger('source_id')->nullable();
+            $table->string('invoice_ref_no')->nullable();
+            $table->string('event_type');
+            $table->unsignedInteger('actor_staff_id')->nullable();
+            $table->string('actor_code')->nullable();
+            $table->text('reason')->nullable();
+            $table->text('before_state')->nullable();
+            $table->text('after_state')->nullable();
             $table->timestamp('created_at')->nullable();
         });
 

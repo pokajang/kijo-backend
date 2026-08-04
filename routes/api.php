@@ -34,6 +34,7 @@ use App\Http\Controllers\Api\QuotePriceExceptionController;
 use App\Http\Controllers\Api\QuoteRecordController;
 use App\Http\Controllers\Api\QuoteRecordEmailController;
 use App\Http\Controllers\Api\QuoteRecordTrainingSpecialController;
+use App\Http\Controllers\Api\ReceivablePaymentController;
 use App\Http\Controllers\Api\SalaryController;
 use App\Http\Controllers\Api\SalesInquiryController;
 use App\Http\Controllers\Api\SignatureController;
@@ -186,6 +187,14 @@ Route::middleware('auth.session')->group(function () {
     Route::patch('debtors/manual/{id}/mark-open', [DebtorController::class, 'markManualOpen'])->whereNumber('id');
     Route::delete('debtors/manual/{id}', [DebtorController::class, 'destroyManual'])->whereNumber('id');
     Route::get('debtors/manual/{id}/attachment', [DebtorController::class, 'manualAttachment'])->whereNumber('id');
+    Route::get('receivables/{source}/{id}/payments', [ReceivablePaymentController::class, 'index'])
+        ->whereIn('source', ['invoice', 'manual'])
+        ->whereNumber('id');
+    Route::post('receivables/{source}/{id}/payments', [ReceivablePaymentController::class, 'store'])
+        ->whereIn('source', ['invoice', 'manual'])
+        ->whereNumber('id');
+    Route::post('receivable-payments/{paymentId}/reverse', [ReceivablePaymentController::class, 'reverse'])
+        ->whereNumber('paymentId');
     Route::get('delivery-orders/{id}/pdf', [DeliveryOrderController::class, 'pdf']);
 
     // Batch 2 — Staff (legacy-compatible paths)

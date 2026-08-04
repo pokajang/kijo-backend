@@ -3,6 +3,7 @@
 namespace App\Services\Debtors;
 
 use App\Services\AuditLogService;
+use App\Services\Receivables\ReceivablePaymentService;
 use App\Support\AppFilePaths;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -10,16 +11,17 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 class DebtorService
 {
     private const OPEN_STATUS = 'Open';
-    private const PAID_STATUS = 'Paid';
-    private const CANCELLED_STATUS = 'Cancelled';
 
-    public function __construct(private AuditLogService $auditLog)
-    {
-    }
+    public function __construct(
+        private AuditLogService $auditLog,
+        private ReceivablePaymentService $paymentService,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -53,6 +55,7 @@ class DebtorService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -75,6 +78,7 @@ class DebtorService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -107,20 +111,28 @@ class DebtorService
             $this->auditLog->log($request, "Created manual debtor {$data['invoice_ref_no']}");
 
             return response()->json(['status' => 'success', 'id' => $id], 201);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             if ($storedAttachment) {
                 AppFilePaths::deleteStoredPath($storedAttachment);
             }
+
             return response()->json([
                 'status' => 'error',
                 'message' => $e->validator->errors()->first() ?: 'Invalid manual debtor.',
                 'errors' => $e->validator->errors(),
             ], 422);
+        } catch (HttpExceptionInterface $e) {
+            if ($storedAttachment) {
+                AppFilePaths::deleteStoredPath($storedAttachment);
+            }
+
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Throwable $e) {
             if ($storedAttachment) {
                 AppFilePaths::deleteStoredPath($storedAttachment);
             }
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -142,110 +154,84 @@ class DebtorService
             $data = $this->validateManualPayload($request, $id);
             $attachment = $this->storeAttachment($request);
             $storedAttachment = $attachment['path'] ?? null;
-            $updates = [
-                ...$this->manualPayloadColumns($data, $existing),
-                'updated_at' => now(),
-            ];
+            $previousAttachmentPath = null;
+            DB::transaction(function () use ($id, $data, $attachment, &$previousAttachmentPath): void {
+                $lockedExisting = DB::table('manual_debtors')->where('id', $id)->lockForUpdate()->first();
+                if (! $lockedExisting) {
+                    abort(404, 'Manual debtor not found.');
+                }
+                $this->validateManualPaymentConsistency($id, $data);
 
-            if (! empty($attachment['path'])) {
-                $updates['attachment_path'] = $attachment['path'];
-                $updates['attachment_original_name'] = $attachment['originalName'];
-                $updates['attachment_mime_type'] = $attachment['mimeType'];
-            }
+                $updates = [
+                    ...$this->manualPayloadColumns($data, $lockedExisting),
+                    'updated_at' => now(),
+                ];
+                if (! empty($attachment['path'])) {
+                    $updates['attachment_path'] = $attachment['path'];
+                    $updates['attachment_original_name'] = $attachment['originalName'];
+                    $updates['attachment_mime_type'] = $attachment['mimeType'];
+                    $previousAttachmentPath = (string) ($lockedExisting->attachment_path ?? '');
+                }
 
-            DB::table('manual_debtors')->where('id', $id)->update($updates);
+                DB::table('manual_debtors')->where('id', $id)->update($updates);
+                $hasPaymentState = (float) ($lockedExisting->paid_amount ?? 0) > 0
+                    || (Schema::hasTable('receivable_payments')
+                        && DB::table('receivable_payments')
+                            ->where('source_type', 'manual')
+                            ->where('source_id', $id)
+                            ->exists());
+                if (! $this->isCancelledStatus((string) ($lockedExisting->status ?? '')) && $hasPaymentState) {
+                    $this->paymentService->synchronizeProjection('manual', $id);
+                }
+            });
 
-            if (! empty($attachment['path']) && ! empty($existing->attachment_path)) {
-                AppFilePaths::deleteStoredPath((string) $existing->attachment_path);
+            if (! empty($attachment['path']) && $previousAttachmentPath !== '') {
+                try {
+                    AppFilePaths::deleteStoredPath($previousAttachmentPath);
+                } catch (\Throwable $e) {
+                    report($e);
+                }
             }
 
             $this->auditLog->log($request, "Updated manual debtor {$data['invoice_ref_no']}");
 
             return response()->json(['status' => 'success']);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             if ($storedAttachment) {
                 AppFilePaths::deleteStoredPath($storedAttachment);
             }
+
             return response()->json([
                 'status' => 'error',
                 'message' => $e->validator->errors()->first() ?: 'Invalid manual debtor.',
                 'errors' => $e->validator->errors(),
             ], 422);
+        } catch (HttpExceptionInterface $e) {
+            if ($storedAttachment) {
+                AppFilePaths::deleteStoredPath($storedAttachment);
+            }
+
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Throwable $e) {
             if ($storedAttachment) {
                 AppFilePaths::deleteStoredPath($storedAttachment);
             }
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
 
     public function markManualPaid(Request $request, int $id): JsonResponse
     {
-        try {
-            if (! $this->manualDebtorsTableReady()) {
-                return $this->manualDebtorsNotReadyResponse();
-            }
-
-            $validated = $request->validate([
-                'paid_date' => ['required', 'date_format:Y-m-d'],
-                'paid_amount' => ['required', 'numeric', 'gt:0'],
-                'paid_remarks' => ['nullable', 'string', 'max:2000'],
-            ]);
-
-            $affected = DB::table('manual_debtors')->where('id', $id)->update([
-                'status' => self::PAID_STATUS,
-                'paid_date' => $validated['paid_date'],
-                'paid_amount' => $validated['paid_amount'],
-                'paid_remarks' => trim((string) ($validated['paid_remarks'] ?? '')) ?: null,
-                'updated_at' => now(),
-            ]);
-
-            if ($affected < 1) {
-                return response()->json(['status' => 'error', 'message' => 'Manual debtor not found.'], 404);
-            }
-
-            $this->auditLog->log($request, "Marked manual debtor ID {$id} as Paid");
-
-            return response()->json(['status' => 'success']);
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'status' => 'error',
-                'message' => $e->validator->errors()->first() ?: 'Invalid payment details.',
-                'errors' => $e->validator->errors(),
-            ], 422);
-        } catch (\Throwable $e) {
-            report($e);
-            return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
-        }
+        return $this->paymentService->recordPayment($request, 'manual', $id, true);
     }
 
     public function markManualOpen(Request $request, int $id): JsonResponse
     {
-        try {
-            if (! $this->manualDebtorsTableReady()) {
-                return $this->manualDebtorsNotReadyResponse();
-            }
+        $request->merge(['reason' => $request->input('reason', 'Reopened through legacy mark-open action')]);
 
-            $affected = DB::table('manual_debtors')->where('id', $id)->update([
-                'status' => self::OPEN_STATUS,
-                'paid_date' => null,
-                'paid_amount' => null,
-                'paid_remarks' => null,
-                'updated_at' => now(),
-            ]);
-
-            if ($affected < 1) {
-                return response()->json(['status' => 'error', 'message' => 'Manual debtor not found.'], 404);
-            }
-
-            $this->auditLog->log($request, "Marked manual debtor ID {$id} as Open");
-
-            return response()->json(['status' => 'success']);
-        } catch (\Throwable $e) {
-            report($e);
-            return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
-        }
+        return $this->paymentService->reverseAllPayments($request, 'manual', $id);
     }
 
     public function destroyManual(Request $request, int $id): JsonResponse
@@ -255,21 +241,50 @@ class DebtorService
                 return $this->manualDebtorsNotReadyResponse();
             }
 
-            $record = DB::table('manual_debtors')->where('id', $id)->first();
-            if (! $record) {
-                return response()->json(['status' => 'error', 'message' => 'Manual debtor not found.'], 404);
-            }
+            $validated = $request->validate([
+                'reason' => ['required', 'string', 'max:2000'],
+            ]);
+            $record = null;
+            DB::transaction(function () use ($request, $id, $validated, &$record): void {
+                $record = DB::table('manual_debtors')->where('id', $id)->lockForUpdate()->first();
+                if (! $record) {
+                    abort(404, 'Manual debtor not found.');
+                }
 
-            DB::table('manual_debtors')->where('id', $id)->delete();
+                $payments = $this->paymentService->deletePaymentsFor('manual', $id);
+                $this->paymentService->writeDeletionAudit(
+                    $request,
+                    'manual',
+                    $record,
+                    trim((string) $validated['reason']),
+                    $payments,
+                );
+                DB::table('manual_debtors')->where('id', $id)->delete();
+            });
+
             if (! empty($record->attachment_path)) {
-                AppFilePaths::deleteStoredPath((string) $record->attachment_path);
+                try {
+                    AppFilePaths::deleteStoredPath((string) $record->attachment_path);
+                } catch (\Throwable $e) {
+                    // The database deletion is already committed; report orphan cleanup separately.
+                    report($e);
+                }
             }
 
             $this->auditLog->log($request, "Deleted manual debtor {$record->invoice_ref_no}");
 
             return response()->json(['status' => 'success']);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->validator->errors()->first() ?: 'Deletion reason is required.',
+                'errors' => $e->validator->errors(),
+            ], 422);
+        } catch (HttpExceptionInterface $e) {
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
@@ -293,9 +308,11 @@ class DebtorService
 
     private function validateManualPayload(Request $request, ?int $ignoreId = null): array
     {
+        $normalizedReference = preg_replace('/\s+/', ' ', trim((string) $request->input('invoice_ref_no', '')));
+        $request->merge(['invoice_ref_no' => $normalizedReference]);
         $uniqueRule = 'unique:manual_debtors,invoice_ref_no';
         if ($ignoreId) {
-            $uniqueRule .= ',' . $ignoreId;
+            $uniqueRule .= ','.$ignoreId;
         }
 
         $data = $request->validate([
@@ -320,27 +337,15 @@ class DebtorService
             'payment_terms_changed' => ['nullable', 'boolean'],
             'payment_terms_days' => ['nullable', 'integer', 'min:0', 'max:365'],
             'grand_total' => ['required', 'numeric', 'gt:0'],
-            'status' => ['nullable', 'in:Open,Paid,Cancelled'],
-            'payment_method' => ['nullable', 'string', 'max:120'],
-            'paid_date' => ['nullable', 'date_format:Y-m-d'],
-            'paid_amount' => ['nullable', 'numeric', 'gt:0'],
-            'paid_remarks' => ['nullable', 'string', 'max:2000'],
             'attachment' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,webp', 'max:5120'],
         ]);
-
-        $status = $data['status'] ?? self::OPEN_STATUS;
-        if ($status === self::PAID_STATUS && (empty($data['paid_date']) || empty($data['paid_amount']))) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'paid_date' => 'Paid manual debtors require payment date and amount.',
-            ]);
-        }
 
         if (
             ! empty($data['service_start_date'])
             && ! empty($data['service_end_date'])
             && $data['service_end_date'] < $data['service_start_date']
         ) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'service_end_date' => 'Service end date must be on or after the start date.',
             ]);
         }
@@ -349,14 +354,78 @@ class DebtorService
             filter_var($data['override_payment_terms'] ?? false, FILTER_VALIDATE_BOOLEAN)
             && ! isset($data['payment_terms_days'])
         ) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'payment_terms_days' => 'Custom payment terms are required when overriding client terms.',
             ]);
         }
 
         $this->validateManualClientLink($data);
 
+        $duplicateManual = DB::table('manual_debtors')
+            ->whereRaw('LOWER(TRIM(invoice_ref_no)) = ?', [mb_strtolower($normalizedReference)])
+            ->when($ignoreId, fn ($query) => $query->where('id', '!=', $ignoreId))
+            ->exists();
+        if ($duplicateManual) {
+            throw ValidationException::withMessages([
+                'invoice_ref_no' => 'This manual invoice reference already exists.',
+            ]);
+        }
+
+        if (
+            Schema::hasTable('invoices')
+            && DB::table('invoices')
+                ->whereRaw('LOWER(TRIM(invoice_ref_no)) = ?', [mb_strtolower($normalizedReference)])
+                ->exists()
+        ) {
+            throw ValidationException::withMessages([
+                'invoice_ref_no' => 'This invoice reference already exists as a system invoice.',
+            ]);
+        }
+
+        if ($ignoreId) {
+            $this->validateManualPaymentConsistency($ignoreId, $data);
+        }
+
         return $data;
+    }
+
+    private function validateManualPaymentConsistency(int $id, array $data): void
+    {
+        $record = DB::table('manual_debtors')->where('id', $id)->first();
+        if (! $record) {
+            return;
+        }
+
+        $hasLedger = Schema::hasTable('receivable_payments')
+            && DB::table('receivable_payments')
+                ->where('source_type', 'manual')
+                ->where('source_id', $id)
+                ->exists();
+        $paidTotal = $hasLedger
+            ? (float) DB::table('receivable_payments')
+                ->where('source_type', 'manual')
+                ->where('source_id', $id)
+                ->whereNull('reversed_at')
+                ->sum('amount')
+            : (float) ($record->paid_amount ?? 0);
+        if ((float) $data['grand_total'] + 0.00001 < $paidTotal) {
+            throw ValidationException::withMessages([
+                'grand_total' => 'Invoice total cannot be less than the amount already paid.',
+            ]);
+        }
+
+        $earliestPaymentDate = $hasLedger
+            ? DB::table('receivable_payments')
+                ->where('source_type', 'manual')
+                ->where('source_id', $id)
+                ->whereNull('reversed_at')
+                ->min('payment_date')
+            : ($record->paid_date ?? null);
+        if ($earliestPaymentDate && (string) $data['invoice_date'] > (string) $earliestPaymentDate) {
+            throw ValidationException::withMessages([
+                'invoice_date' => 'Invoice date cannot be after an existing payment date.',
+            ]);
+        }
     }
 
     private function validateManualClientLink(array $data): void
@@ -366,7 +435,7 @@ class DebtorService
 
         if ($clientId > 0) {
             if (! Schema::hasTable('client_company')) {
-                throw \Illuminate\Validation\ValidationException::withMessages([
+                throw ValidationException::withMessages([
                     'client_id' => 'Client records are not available.',
                 ]);
             }
@@ -377,7 +446,7 @@ class DebtorService
                 ->exists();
 
             if (! $clientExists) {
-                throw \Illuminate\Validation\ValidationException::withMessages([
+                throw ValidationException::withMessages([
                     'client_id' => 'Selected client was not found.',
                 ]);
             }
@@ -388,13 +457,13 @@ class DebtorService
         }
 
         if ($clientId <= 0) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'pic_id' => 'Select a client before selecting a PIC.',
             ]);
         }
 
         if (! Schema::hasTable('client_pic')) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'pic_id' => 'Client PIC records are not available.',
             ]);
         }
@@ -406,7 +475,7 @@ class DebtorService
             ->exists();
 
         if (! $picExists) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'pic_id' => 'Selected PIC does not belong to the selected client.',
             ]);
         }
@@ -414,8 +483,7 @@ class DebtorService
 
     private function manualPayloadColumns(array $data, ?object $existing = null): array
     {
-        $status = $data['status'] ?? self::OPEN_STATUS;
-        $isPaid = $status === self::PAID_STATUS;
+        $status = $existing ? (string) ($existing->status ?? self::OPEN_STATUS) : self::OPEN_STATUS;
         $paymentTerms = $this->resolveManualPaymentTerms($data, $existing);
 
         $payload = [
@@ -434,11 +502,14 @@ class DebtorService
             'invoice_date' => Carbon::parse($data['invoice_date'])->format('Y-m-d'),
             'grand_total' => (float) $data['grand_total'],
             'status' => $status,
-            'payment_method' => trim((string) ($data['payment_method'] ?? '')) ?: null,
-            'paid_date' => $isPaid && ! empty($data['paid_date']) ? Carbon::parse($data['paid_date'])->format('Y-m-d') : null,
-            'paid_amount' => $isPaid && isset($data['paid_amount']) ? (float) $data['paid_amount'] : null,
-            'paid_remarks' => $isPaid ? (trim((string) ($data['paid_remarks'] ?? '')) ?: null) : null,
         ];
+
+        if (! $existing) {
+            $payload['payment_method'] = null;
+            $payload['paid_date'] = null;
+            $payload['paid_amount'] = null;
+            $payload['paid_remarks'] = null;
+        }
 
         if (Schema::hasColumn('manual_debtors', 'payment_terms_days')) {
             $payload['payment_terms_days'] = $paymentTerms['days'];
@@ -481,6 +552,7 @@ class DebtorService
 
         if ($override) {
             $days = $inputDays ?? 30;
+
             return [
                 'days' => $days,
                 'source' => 'manual_override',
@@ -540,7 +612,7 @@ class DebtorService
         $path = AppFilePaths::storeFileAs(
             'commercial-debtors/manual',
             $file,
-            Str::uuid()->toString() . '.' . $extension,
+            Str::uuid()->toString().'.'.$extension,
         );
 
         return [
@@ -582,7 +654,6 @@ class DebtorService
             $query->addSelect('i.paid_remarks');
         }
 
-        $this->applyStatusFilter($query, 'i.status', $status);
         $this->applySearchFilter($query, [
             'i.invoice_ref_no',
             'i.invoice_client_name',
@@ -593,14 +664,27 @@ class DebtorService
             'sg.name_code',
         ], $search);
 
-        return $query->limit(2000)->get()->map(fn ($row) => $this->normalizeInvoiceRecord($row, $asOfDate))->all();
+        $records = $query->get();
+        $summaries = $this->paymentService->summariesFor(
+            'invoice',
+            $records->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+            $asOfDate,
+        );
+
+        return $this->filterNormalizedRows(
+            $records->map(fn ($row) => $this->normalizeInvoiceRecord(
+                $row,
+                $asOfDate,
+                $summaries[(int) $row->id] ?? null,
+            ))->all(),
+            $status,
+        );
     }
 
     private function manualRows(string $asOfDate, string $status, string $search): array
     {
         $query = DB::table('manual_debtors')->whereDate('invoice_date', '<=', $asOfDate);
 
-        $this->applyStatusFilter($query, 'status', $status);
         $this->applySearchFilter($query, [
             'invoice_ref_no',
             'client_name',
@@ -610,14 +694,24 @@ class DebtorService
             'created_by_code',
         ], $search);
 
-        return $query
-            ->limit(2000)
-            ->get()
-            ->map(fn ($row) => $this->normalizeManualRecord($row, $asOfDate))
-            ->all();
+        $records = $query->get();
+        $summaries = $this->paymentService->summariesFor(
+            'manual',
+            $records->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+            $asOfDate,
+        );
+
+        return $this->filterNormalizedRows(
+            $records->map(fn ($row) => $this->normalizeManualRecord(
+                $row,
+                $asOfDate,
+                $summaries[(int) $row->id] ?? null,
+            ))->all(),
+            $status,
+        );
     }
 
-    private function normalizeInvoiceRecord(object $row, string $asOfDate): array
+    private function normalizeInvoiceRecord(object $row, string $asOfDate, ?array $ledgerSummary = null): array
     {
         $invoiceDate = (string) ($row->invoice_date ?? '');
         $paymentTermsDays = (int) ($row->payment_terms_days ?? 30);
@@ -630,19 +724,31 @@ class DebtorService
             }
         }
 
+        $paymentSummary = $this->paymentService->calculateSummary(
+            $row->grand_total ?? 0,
+            $row->paid_amount ?? null,
+            $row->paid_date ?? null,
+            $ledgerSummary,
+            $asOfDate,
+        );
+        $recordStatus = (string) ($row->status ?? '');
+        $displayStatus = $this->isCancelledStatus($recordStatus)
+            ? $recordStatus
+            : $paymentSummary['paymentStatus'];
+
         return [
             'sourceType' => 'invoice',
             'sourceId' => (int) $row->id,
             'invoiceRef' => (string) ($row->invoice_ref_no ?? "Invoice #{$row->id}"),
             'invoice_ref_no' => (string) ($row->invoice_ref_no ?? "Invoice #{$row->id}"),
-            'client' => (string) ($row->client_name ?? '') ?: 'Client #' . (string) ($row->client_id ?? ''),
-            'client_name' => (string) ($row->client_name ?? '') ?: 'Client #' . (string) ($row->client_id ?? ''),
+            'client' => (string) ($row->client_name ?? '') ?: 'Client #'.(string) ($row->client_id ?? ''),
+            'client_name' => (string) ($row->client_name ?? '') ?: 'Client #'.(string) ($row->client_id ?? ''),
             'pic' => (string) ($row->pic_name ?? '-'),
             'picPhone' => (string) ($row->pic_phone ?? ''),
             'picEmail' => (string) ($row->pic_email ?? ''),
             'serviceType' => (string) ($row->service_type ?? ''),
             'servicePeriod' => '',
-            'purpose' => (string) ($row->purpose ?? '') ?: 'Project #' . (string) ($row->project_id ?? ''),
+            'purpose' => (string) ($row->purpose ?? '') ?: 'Project #'.(string) ($row->project_id ?? ''),
             'invoiceDate' => $invoiceDate,
             'invoice_date' => $invoiceDate,
             'paymentTermsDays' => $paymentTermsDays,
@@ -655,20 +761,27 @@ class DebtorService
             'overdueDays' => $this->ageDays($dueDate, $asOfDate),
             'grandTotal' => (float) ($row->grand_total ?? 0),
             'grand_total' => (float) ($row->grand_total ?? 0),
-            'status' => (string) ($row->status ?? ''),
+            'status' => $displayStatus,
+            'paymentStatus' => $paymentSummary['paymentStatus'],
+            'paidTotal' => $paymentSummary['paidTotal'],
+            'outstandingAmount' => $paymentSummary['outstandingAmount'],
+            'paymentCount' => $paymentSummary['paymentCount'],
+            'lastPaymentDate' => $paymentSummary['lastPaymentDate'],
+            'hasPaymentHistory' => $paymentSummary['hasPaymentHistory'],
             'paymentMethod' => (string) ($row->payment_method ?? ''),
-            'paidDate' => (string) ($row->paid_date ?? ''),
-            'paidAmount' => $row->paid_amount !== null ? (float) $row->paid_amount : null,
+            'paidDate' => $paymentSummary['lastPaymentDate'],
+            'paidAmount' => $paymentSummary['paidTotal'],
             'paidRemarks' => (string) ($row->paid_remarks ?? ''),
             'internalPicCode' => (string) ($row->internal_pic_code ?? '-'),
             'attachmentUrl' => '',
             'canEdit' => false,
             'canDelete' => false,
-            'canMarkPaid' => ! $this->isClosedStatus((string) ($row->status ?? '')),
+            'canMarkPaid' => ! $this->isCancelledStatus($recordStatus)
+                && $paymentSummary['outstandingAmount'] > 0,
         ];
     }
 
-    private function normalizeManualRecord(object $row, string $asOfDate): array
+    private function normalizeManualRecord(object $row, string $asOfDate, ?array $ledgerSummary = null): array
     {
         $invoiceDate = (string) ($row->invoice_date ?? '');
         $hasPaymentTerms = property_exists($row, 'payment_terms_days') && $row->payment_terms_days !== null;
@@ -677,6 +790,18 @@ class DebtorService
             : 'legacy';
         $dueDate = property_exists($row, 'due_date') ? (string) ($row->due_date ?? '') : '';
         $id = (int) $row->id;
+
+        $paymentSummary = $this->paymentService->calculateSummary(
+            $row->grand_total ?? 0,
+            $row->paid_amount ?? null,
+            $row->paid_date ?? null,
+            $ledgerSummary,
+            $asOfDate,
+        );
+        $recordStatus = (string) ($row->status ?? self::OPEN_STATUS);
+        $displayStatus = $this->isCancelledStatus($recordStatus)
+            ? $recordStatus
+            : $paymentSummary['paymentStatus'];
 
         return [
             'sourceType' => 'manual',
@@ -711,10 +836,16 @@ class DebtorService
             'overdueDays' => $dueDate !== '' ? $this->ageDays($dueDate, $asOfDate) : null,
             'grandTotal' => (float) ($row->grand_total ?? 0),
             'grand_total' => (float) ($row->grand_total ?? 0),
-            'status' => (string) ($row->status ?? self::OPEN_STATUS),
+            'status' => $displayStatus,
+            'paymentStatus' => $paymentSummary['paymentStatus'],
+            'paidTotal' => $paymentSummary['paidTotal'],
+            'outstandingAmount' => $paymentSummary['outstandingAmount'],
+            'paymentCount' => $paymentSummary['paymentCount'],
+            'lastPaymentDate' => $paymentSummary['lastPaymentDate'],
+            'hasPaymentHistory' => $paymentSummary['hasPaymentHistory'],
             'paymentMethod' => (string) ($row->payment_method ?? ''),
-            'paidDate' => (string) ($row->paid_date ?? ''),
-            'paidAmount' => $row->paid_amount !== null ? (float) $row->paid_amount : null,
+            'paidDate' => $paymentSummary['lastPaymentDate'],
+            'paidAmount' => $paymentSummary['paidTotal'],
             'paidRemarks' => (string) ($row->paid_remarks ?? ''),
             'internalPicCode' => (string) ($row->created_by_code ?? ''),
             'attachmentUrl' => ! empty($row->attachment_path) ? url("debtors/manual/{$id}/attachment") : '',
@@ -722,27 +853,29 @@ class DebtorService
             'attachmentMimeType' => (string) ($row->attachment_mime_type ?? ''),
             'canEdit' => true,
             'canDelete' => true,
-            'canMarkPaid' => ! $this->isClosedStatus((string) ($row->status ?? '')),
+            'canMarkPaid' => ! $this->isCancelledStatus($recordStatus)
+                && $paymentSummary['outstandingAmount'] > 0,
         ];
     }
 
-    private function applyStatusFilter($query, string $column, string $status): void
+    private function filterNormalizedRows(array $rows, string $status): array
     {
+        $status = strtolower(trim($status));
         if ($status === '' || $status === 'open') {
-            $query->whereRaw("LOWER(TRIM(COALESCE({$column}, 'open'))) NOT IN ('paid', 'cancelled', 'canceled', 'void')");
-            return;
+            return array_values(array_filter($rows, fn (array $row): bool => ! $this->isClosedStatus((string) ($row['status'] ?? ''))
+                && (float) ($row['outstandingAmount'] ?? 0) > 0
+            ));
         }
-
         if ($status === 'all') {
-            return;
+            return array_values($rows);
         }
-
         if ($status === 'cancelled') {
-            $query->whereRaw("LOWER(TRIM(COALESCE({$column}, ''))) IN ('cancelled', 'canceled', 'void')");
-            return;
+            return array_values(array_filter($rows, fn (array $row): bool => in_array(strtolower(trim((string) ($row['status'] ?? ''))), ['cancelled', 'canceled', 'void'], true)
+            ));
         }
 
-        $query->whereRaw("LOWER(TRIM(COALESCE({$column}, ''))) = ?", [$status]);
+        return array_values(array_filter($rows, fn (array $row): bool => strtolower(trim((string) ($row['status'] ?? ''))) === $status
+        ));
     }
 
     private function applySearchFilter($query, array $columns, string $search): void
@@ -753,7 +886,7 @@ class DebtorService
 
         $query->where(function ($nested) use ($columns, $search): void {
             foreach ($columns as $column) {
-                $nested->orWhere($column, 'like', '%' . $search . '%');
+                $nested->orWhere($column, 'like', '%'.$search.'%');
             }
         });
     }
@@ -761,7 +894,13 @@ class DebtorService
     private function isClosedStatus(string $status): bool
     {
         $normalized = strtolower(trim($status));
+
         return in_array($normalized, ['paid', 'cancelled', 'canceled', 'void'], true);
+    }
+
+    private function isCancelledStatus(string $status): bool
+    {
+        return in_array(strtolower(trim($status)), ['cancelled', 'canceled', 'void'], true);
     }
 
     private function ageDays(string $invoiceDate, string $asOfDate): int

@@ -3,11 +3,13 @@
 namespace App\Services\Invoices;
 
 use App\Services\Projects\ProjectValueService;
+use App\Services\Receivables\ReceivablePaymentService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 class InvoiceMutationService extends InvoiceBaseService
 {
@@ -50,13 +52,13 @@ class InvoiceMutationService extends InvoiceBaseService
         $breakdownInput = (array) $request->input('breakdown', []);
         $closeProject = filter_var($request->input('close_project', false), FILTER_VALIDATE_BOOLEAN);
 
-        $isHrdLine = static fn(array $line): bool => (bool) preg_match(
+        $isHrdLine = static fn (array $line): bool => (bool) preg_match(
             '/^\s*(\d+(?:\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
             (string) ($line['item_description'] ?? '')
         );
         if ($isTrainingInvoice && ! $isHrdPayment) {
             $breakdownInput = array_values(
-                array_filter($breakdownInput, fn($line) => ! $isHrdLine((array) $line))
+                array_filter($breakdownInput, fn ($line) => ! $isHrdLine((array) $line))
             );
         }
 
@@ -243,7 +245,7 @@ class InvoiceMutationService extends InvoiceBaseService
         $paymentMethod = trim((string) $request->input('payment_method', ''));
         $isHrdPayment = strcasecmp($paymentMethod, 'hrd grant') === 0;
         $grantNoInput = trim((string) $request->input('grant_approval_no', ''));
-        $isHrdLine = static fn(array $line): bool => (bool) preg_match(
+        $isHrdLine = static fn (array $line): bool => (bool) preg_match(
             '/^\s*(\d+(?:\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
             (string) ($line['item_description'] ?? '')
         );
@@ -259,7 +261,18 @@ class InvoiceMutationService extends InvoiceBaseService
             return response()->json(['status' => 'error', 'message' => 'Missing required fields.'], 422);
         }
 
-        $existingInvoice = DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->first(['id', 'service_type', 'client_id', 'payment_terms_days', 'payment_terms_source']);
+        $existingInvoice = DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->first([
+            'id',
+            'service_type',
+            'client_id',
+            'payment_terms_days',
+            'payment_terms_source',
+            'grand_total',
+            'status',
+            'paid_date',
+            'paid_amount',
+            'paid_remarks',
+        ]);
         if (! $existingInvoice) {
             return response()->json(['status' => 'error', 'message' => 'Invoice not found.'], 404);
         }
@@ -291,7 +304,7 @@ class InvoiceMutationService extends InvoiceBaseService
 
         if ($isTrainingInvoice && ! $isHrdPayment) {
             $breakdownInput = array_values(
-                array_filter($breakdownInput, fn($line) => ! $isHrdLine((array) $line))
+                array_filter($breakdownInput, fn ($line) => ! $isHrdLine((array) $line))
             );
         }
 
@@ -306,10 +319,77 @@ class InvoiceMutationService extends InvoiceBaseService
             return response()->json(['status' => 'error', 'message' => $totalError], 422);
         }
 
+        $paymentService = app(ReceivablePaymentService::class);
+        $ledgerSummary = $paymentService->summariesFor('invoice', [(int) $existingInvoice->id]);
+        $paymentSummary = $paymentService->calculateSummary(
+            $existingInvoice->grand_total ?? 0,
+            $existingInvoice->paid_amount ?? null,
+            $existingInvoice->paid_date ?? null,
+            $ledgerSummary[(int) $existingInvoice->id] ?? null,
+        );
+        if ((float) $request->input('grand_total', 0) + self::MONEY_TOLERANCE < $paymentSummary['paidTotal']) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Invoice total cannot be less than the amount already paid.',
+            ], 422);
+        }
+        $hasPaymentLedger = Schema::hasTable('receivable_payments')
+            && DB::table('receivable_payments')
+                ->where('source_type', 'invoice')
+                ->where('source_id', (int) $existingInvoice->id)
+                ->exists();
+        $earliestPaymentDate = $hasPaymentLedger
+            ? DB::table('receivable_payments')
+                ->where('source_type', 'invoice')
+                ->where('source_id', (int) $existingInvoice->id)
+                ->whereNull('reversed_at')
+                ->min('payment_date')
+            : ($existingInvoice->paid_date ?? null);
+        if ($earliestPaymentDate && (string) $dateIssued > (string) $earliestPaymentDate) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Invoice date cannot be after an existing payment date.',
+            ], 422);
+        }
+
         $paymentTerms = $this->resolvePaymentTerms($request, $existingInvoice->client_id ?? null, $existingInvoice);
         $paymentTermsDays = $paymentTerms['days'];
 
         try {
+            DB::beginTransaction();
+            $existingInvoice = DB::table('invoices')
+                ->where('id', (int) $existingInvoice->id)
+                ->lockForUpdate()
+                ->first();
+            if (! $existingInvoice) {
+                abort(404, 'Invoice not found.');
+            }
+            $lockedLedgerSummary = $paymentService->summariesFor('invoice', [(int) $existingInvoice->id]);
+            $lockedPaymentSummary = $paymentService->calculateSummary(
+                $existingInvoice->grand_total ?? 0,
+                $existingInvoice->paid_amount ?? null,
+                $existingInvoice->paid_date ?? null,
+                $lockedLedgerSummary[(int) $existingInvoice->id] ?? null,
+            );
+            if ((float) $request->input('grand_total', 0) + self::MONEY_TOLERANCE < $lockedPaymentSummary['paidTotal']) {
+                abort(422, 'Invoice total cannot be less than the amount already paid.');
+            }
+            $lockedHasPaymentLedger = Schema::hasTable('receivable_payments')
+                && DB::table('receivable_payments')
+                    ->where('source_type', 'invoice')
+                    ->where('source_id', (int) $existingInvoice->id)
+                    ->exists();
+            $lockedEarliestPaymentDate = $lockedHasPaymentLedger
+                ? DB::table('receivable_payments')
+                    ->where('source_type', 'invoice')
+                    ->where('source_id', (int) $existingInvoice->id)
+                    ->whereNull('reversed_at')
+                    ->min('payment_date')
+                : ($existingInvoice->paid_date ?? null);
+            if ($lockedEarliestPaymentDate && (string) $dateIssued > (string) $lockedEarliestPaymentDate) {
+                abort(422, 'Invoice date cannot be after an existing payment date.');
+            }
+
             DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->limit(1)->update([
                 'invoice_loa_no' => $request->input('invoice_loa_no'),
                 'invoice_client_name' => $request->input('invoice_client_name'),
@@ -328,15 +408,15 @@ class InvoiceMutationService extends InvoiceBaseService
                 'payment_terms_days' => $paymentTermsDays,
                 'payment_terms_source' => $paymentTerms['source'],
                 'due_date' => $this->dueDateFor($dateIssued, $paymentTermsDays),
-                'status' => $status,
+                'status' => $existingInvoice->status,
                 'amount' => $request->input('amount', 0),
                 'sst_amount' => $request->input('sst_amount', 0),
                 'grand_total' => $request->input('grand_total', 0),
                 'payment_method' => $request->input('payment_method', ''),
                 'grant_approval_no' => $grantNo,
-                'paid_date' => $request->input('paid_date'),
-                'paid_amount' => $request->input('paid_amount'),
-                'paid_remarks' => $request->input('paid_remarks', ''),
+                'paid_date' => $existingInvoice->paid_date,
+                'paid_amount' => $existingInvoice->paid_amount,
+                'paid_remarks' => $existingInvoice->paid_remarks,
                 'remarks' => $request->input('remarks', ''),
                 'updated_at' => now(),
             ]);
@@ -364,10 +444,29 @@ class InvoiceMutationService extends InvoiceBaseService
                 }
             }
 
+            $isCancelled = in_array(
+                strtolower(trim((string) ($existingInvoice->status ?? ''))),
+                ['cancelled', 'canceled', 'void'],
+                true,
+            );
+            if (! $isCancelled && ($lockedHasPaymentLedger || $lockedPaymentSummary['paidTotal'] > 0)) {
+                $paymentService->synchronizeProjection('invoice', (int) $existingInvoice->id);
+            }
+
             $this->auditLog->log($request, "Updated invoice {$invoiceRef}");
+            DB::commit();
 
             return response()->json(['status' => 'success', 'message' => 'Invoice updated successfully.']);
+        } catch (HttpExceptionInterface $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
             report($e);
 
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
@@ -589,6 +688,9 @@ class InvoiceMutationService extends InvoiceBaseService
 
     public function destroy(Request $request): JsonResponse
     {
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:2000'],
+        ]);
         $invoiceRef = trim((string) $request->input('invoice_ref_no', ''));
         if ($invoiceRef === '') {
             return response()->json(['status' => 'error', 'message' => 'Missing invoice_ref_no'], 422);
@@ -596,7 +698,7 @@ class InvoiceMutationService extends InvoiceBaseService
 
         $invoice = DB::table('invoices')
             ->where('invoice_ref_no', $invoiceRef)
-            ->first(['id', 'status', 'project_id']);
+            ->first();
 
         if (! $invoice) {
             return response()->json(['status' => 'error', 'message' => 'Invoice not found'], 404);
@@ -606,8 +708,53 @@ class InvoiceMutationService extends InvoiceBaseService
             return response()->json(['status' => 'error', 'message' => 'Only invoices with status "Pending" can be deleted.'], 422);
         }
 
+        $paymentService = app(ReceivablePaymentService::class);
+        $ledgerSummary = $paymentService->summariesFor('invoice', [(int) $invoice->id]);
+        $paymentSummary = $paymentService->calculateSummary(
+            $invoice->grand_total ?? 0,
+            $invoice->paid_amount ?? null,
+            $invoice->paid_date ?? null,
+            $ledgerSummary[(int) $invoice->id] ?? null,
+        );
+        if ($paymentSummary['paidTotal'] > 0) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Reverse all payments before deleting this invoice.',
+            ], 422);
+        }
+        $reason = trim((string) ($validated['reason'] ?? '')) ?: 'Pending invoice deleted through invoice workflow.';
+
         try {
             DB::beginTransaction();
+            $invoice = DB::table('invoices')
+                ->where('invoice_ref_no', $invoiceRef)
+                ->lockForUpdate()
+                ->first();
+            if (! $invoice) {
+                abort(404, 'Invoice not found');
+            }
+            if (strtolower((string) $invoice->status) !== 'pending') {
+                abort(422, 'Only invoices with status "Pending" can be deleted.');
+            }
+            $lockedLedgerSummary = $paymentService->summariesFor('invoice', [(int) $invoice->id]);
+            $lockedPaymentSummary = $paymentService->calculateSummary(
+                $invoice->grand_total ?? 0,
+                $invoice->paid_amount ?? null,
+                $invoice->paid_date ?? null,
+                $lockedLedgerSummary[(int) $invoice->id] ?? null,
+            );
+            if ($lockedPaymentSummary['paidTotal'] > 0) {
+                abort(422, 'Reverse all payments before deleting this invoice.');
+            }
+
+            $payments = $paymentService->deletePaymentsFor('invoice', (int) $invoice->id);
+            $paymentService->writeDeletionAudit(
+                $request,
+                'invoice',
+                $invoice,
+                $reason,
+                $payments,
+            );
             DB::table('invoice_breakdown')->where('invoice_id', $invoice->id)->delete();
             DB::table('invoice_payment_reminder_logs')->where('invoice_id', $invoice->id)->delete();
             DB::table('invoices')->where('id', $invoice->id)->delete();
@@ -624,8 +771,16 @@ class InvoiceMutationService extends InvoiceBaseService
             DB::commit();
 
             return response()->json(['status' => 'success', 'message' => 'Invoice deleted successfully.']);
+        } catch (HttpExceptionInterface $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Throwable $e) {
-            DB::rollBack();
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
             report($e);
 
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
