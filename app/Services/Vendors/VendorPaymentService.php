@@ -12,6 +12,7 @@ use App\Http\Requests\Vendor\MarkVendorPaymentPaidRequest;
 use App\Http\Requests\Vendor\StoreVendorPaymentRequest;
 use App\Services\AppNotificationService;
 use App\Support\AppFilePaths;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -19,13 +20,15 @@ use Illuminate\Support\Str;
 
 class VendorPaymentService extends VendorBaseService
 {
+    private ?VendorPaymentWorkflowService $workflowService = null;
+
+    private ?VendorPaymentFlowPresenter $workflowFlowPresenter = null;
+
     private const NOTIFICATION_MODULE = 'vendor.payments';
 
     private const NOTIFICATION_ENTITY = 'vendor_payment';
 
     private const CHECK_APPROVE_ROLES = ['Manager', 'System Admin'];
-
-    private const PAID_ROLES = ['Manager', 'System Admin', 'Finance', 'Account', 'Bank'];
 
     private function notifications(): AppNotificationService
     {
@@ -34,7 +37,12 @@ class VendorPaymentService extends VendorBaseService
 
     private function workflow(): VendorPaymentWorkflowService
     {
-        return app(VendorPaymentWorkflowService::class);
+        return $this->workflowService ??= app(VendorPaymentWorkflowService::class);
+    }
+
+    private function workflowFlowPresenter(): VendorPaymentFlowPresenter
+    {
+        return $this->workflowFlowPresenter ??= app(VendorPaymentFlowPresenter::class);
     }
 
     private function vendorPaymentColumn(string $column)
@@ -146,17 +154,24 @@ class VendorPaymentService extends VendorBaseService
         $workflow = $this->workflow();
         $status = $this->normalizeStatus($payment->status ?? '');
 
-        if ($status === 'pending' && $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_REVIEW)) {
+        if ($status === 'pending' && $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_REVIEW)) {
             return [
                 'stage_type' => VendorPaymentWorkflowService::STAGE_REVIEW,
                 'level_no' => $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_REVIEW),
             ];
         }
 
-        if ($status === 'checked' && $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_APPROVAL)) {
+        if ($status === 'checked' && $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL)) {
             return [
                 'stage_type' => VendorPaymentWorkflowService::STAGE_APPROVAL,
                 'level_no' => $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_APPROVAL),
+            ];
+        }
+
+        if ($status === 'approved') {
+            return [
+                'stage_type' => VendorPaymentWorkflowService::STAGE_FINANCE,
+                'level_no' => 1,
             ];
         }
 
@@ -170,17 +185,17 @@ class VendorPaymentService extends VendorBaseService
             return $this->canRole($request, self::CHECK_APPROVE_ROLES);
         }
 
-        return $this->workflow()->canAct($request, $stage['stage_type'], $stage['level_no']);
+        return $this->workflow()->canActForPayment($request, $payment, $stage['stage_type'], $stage['level_no']);
     }
 
-    private function canMarkPaid(Request $request): bool
+    private function canMarkPaid(Request $request, object $payment): bool
     {
-        $workflow = $this->workflow();
-        if ($workflow->hasConfiguredRecipients(VendorPaymentWorkflowService::STAGE_FINANCE, 1)) {
-            return $workflow->canAct($request, VendorPaymentWorkflowService::STAGE_FINANCE, 1);
-        }
-
-        return $this->canRole($request, self::PAID_ROLES);
+        return $this->workflow()->canActForPayment(
+            $request,
+            $payment,
+            VendorPaymentWorkflowService::STAGE_FINANCE,
+            1,
+        );
     }
 
     private function paymentPermissions(Request $request, object $payment): array
@@ -191,21 +206,16 @@ class VendorPaymentService extends VendorBaseService
         $canReview = false;
         $canApprove = false;
 
-        if ($status === 'pending' && $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_REVIEW)) {
+        if ($status === 'pending' && $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_REVIEW)) {
             $reviewLevel = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_REVIEW);
             $canReview = $staffId > 0
-                && $workflow->canAct($request, VendorPaymentWorkflowService::STAGE_REVIEW, $reviewLevel)
-                && (int) ($payment->created_by ?? 0) !== $staffId;
+                && $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_REVIEW, $reviewLevel);
         }
 
-        if ($status === 'checked' && $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_APPROVAL)) {
+        if ($status === 'checked' && $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL)) {
             $approvalLevel = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_APPROVAL);
             $canApprove = $staffId > 0
-                && $workflow->canAct($request, VendorPaymentWorkflowService::STAGE_APPROVAL, $approvalLevel)
-                && (int) ($payment->created_by ?? 0) !== $staffId
-                && (int) ($payment->checked_by ?? 0) !== $staffId
-                && ! $workflow->actorAlreadyCompleted($payment, $staffId, VendorPaymentWorkflowService::STAGE_REVIEW)
-                && ! $workflow->actorAlreadyCompleted($payment, $staffId, VendorPaymentWorkflowService::STAGE_APPROVAL);
+                && $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_APPROVAL, $approvalLevel);
         }
 
         return [
@@ -213,7 +223,7 @@ class VendorPaymentService extends VendorBaseService
             'can_approve' => $canApprove,
             'can_return' => in_array($status, ['pending', 'checked'], true) && $this->canDecideCurrentStage($request, $payment),
             'can_reject' => in_array($status, ['pending', 'checked'], true) && $this->canDecideCurrentStage($request, $payment),
-            'can_mark_paid' => $status === 'approved' && $this->canMarkPaid($request),
+            'can_mark_paid' => $status === 'approved' && $this->canMarkPaid($request, $payment),
             'can_delete' => in_array($status, ['pending', 'checked'], true) && $this->canRole($request, self::CHECK_APPROVE_ROLES),
         ];
     }
@@ -221,10 +231,16 @@ class VendorPaymentService extends VendorBaseService
     private function normalizePaymentRowForRequest(array $row, Request $request): array
     {
         $payment = (object) $row;
+        $progress = $this->paymentWorkflowProgress($row);
+        $normalized = $this->normalizePaymentRow($row);
+        unset($normalized['workflow_settings_snapshot_json']);
 
         return array_merge(
-            $this->normalizePaymentRow($row),
-            ['workflow_progress' => $this->paymentWorkflowProgress($row)],
+            $normalized,
+            [
+                'workflow_progress' => $progress,
+                'workflow_flow' => $this->paymentWorkflowFlow($row, $progress),
+            ],
             $this->paymentPermissions($request, $payment),
         );
     }
@@ -284,6 +300,38 @@ class VendorPaymentService extends VendorBaseService
             })
             ->values()
             ->all();
+    }
+
+    private function paymentWorkflowFlow(array $row, array $progress): array
+    {
+        return $this->workflowFlowPresenter()->build($row, $progress);
+    }
+
+    private function applyWorkflowTransition(
+        int $paymentId,
+        string $expectedStatus,
+        array $updates,
+        ?string $levelColumn = null,
+        ?int $expectedLevel = null,
+    ): bool {
+        $query = DB::table('vendor_payments')
+            ->where('id', $paymentId)
+            ->whereNull('deleted_at')
+            ->whereRaw("LOWER(COALESCE(status, '')) = ?", [strtolower($expectedStatus)]);
+
+        if ($levelColumn !== null && $expectedLevel !== null && Schema::hasColumn('vendor_payments', $levelColumn)) {
+            $query->whereRaw("COALESCE({$levelColumn}, 1) = ?", [$expectedLevel]);
+        }
+
+        return $query->update($updates) === 1;
+    }
+
+    private function transitionConflictResponse(): JsonResponse
+    {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Payment changed before this action was completed. Please refresh and try again.',
+        ], 409);
     }
 
     public function vendorPayments(GetVendorPaymentsRequest $request)
@@ -404,6 +452,7 @@ class VendorPaymentService extends VendorBaseService
                 $this->vendorPaymentColumn('current_review_level'),
                 $this->vendorPaymentColumn('current_approval_level'),
                 $this->vendorPaymentColumn('workflow_progress_json'),
+                $this->vendorPaymentColumn('workflow_settings_snapshot_json'),
                 'vp.payment_type',
                 'vp.receipt_path',
                 'vp.created_by',
@@ -656,28 +705,24 @@ class VendorPaymentService extends VendorBaseService
         if ($staffId <= 0) {
             return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
         }
-        if (! $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_REVIEW)) {
-            return response()->json(['status' => 'error', 'message' => 'Review is not enabled for vendor payments.'], 409);
-        }
-
         $payment = DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->first();
         if (! $payment) {
             return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
         }
+        if (! $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_REVIEW)) {
+            return response()->json(['status' => 'error', 'message' => 'Review is not enabled for vendor payments.'], 409);
+        }
         $level = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_REVIEW);
-        if (! $workflow->canAct($request, VendorPaymentWorkflowService::STAGE_REVIEW, $level)) {
+        if (! $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_REVIEW, $level)) {
             return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
         }
         if ($this->normalizeStatus($payment->status ?? '') !== 'pending') {
-            return response()->json(['status' => 'error', 'message' => 'Only pending payments can be checked.'], 409);
-        }
-        if ((int) ($payment->created_by ?? 0) === $staffId) {
-            return response()->json(['status' => 'error', 'message' => 'Requester cannot check their own payment request.'], 409);
+            return response()->json(['status' => 'error', 'message' => 'Only pending payments can be reviewed.'], 409);
         }
 
         $remarks = trim((string) ($data['remarks'] ?? '')) ?: null;
-        $reviewLevels = $workflow->stageLevels(VendorPaymentWorkflowService::STAGE_REVIEW);
-        $approvalEnabled = $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_APPROVAL);
+        $reviewLevels = $workflow->stageLevelsForPayment($payment, VendorPaymentWorkflowService::STAGE_REVIEW);
+        $approvalEnabled = $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL);
         $isFinalReview = $level >= $reviewLevels;
 
         $baseUpdates = [
@@ -700,26 +745,28 @@ class VendorPaymentService extends VendorBaseService
             'workflow_progress_json' => $workflow->appendProgress($payment, VendorPaymentWorkflowService::STAGE_REVIEW, $level, $staffId, $remarks),
         ]));
 
-        DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->update($updates);
+        if (! $this->applyWorkflowTransition($paymentId, 'Pending', $updates, 'current_review_level', $level)) {
+            return $this->transitionConflictResponse();
+        }
 
         $this->resolvePaymentNotifications($paymentId);
 
         if (! $isFinalReview) {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_REVIEW, $level + 1, [
+            $workflow->notifyPaymentStage($request, $payment, $paymentId, VendorPaymentWorkflowService::STAGE_REVIEW, $level + 1, [
                 'type' => 'vendor_payment_review_requested',
                 'title' => 'Vendor payment requires review',
                 'message' => "Payment request #{$paymentId} is ready for review level ".($level + 1).'.',
                 'severity' => 'warning',
             ]);
         } elseif ($approvalEnabled) {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_APPROVAL, 1, [
+            $workflow->notifyPaymentStage($request, $payment, $paymentId, VendorPaymentWorkflowService::STAGE_APPROVAL, 1, [
                 'type' => 'vendor_payment_checked',
                 'title' => 'Vendor payment ready for approval',
                 'message' => "Payment request #{$paymentId} has completed review.",
                 'severity' => 'primary',
             ]);
         } else {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_FINANCE, 1, [
+            $workflow->notifyPaymentStage($request, $payment, $paymentId, VendorPaymentWorkflowService::STAGE_FINANCE, 1, [
                 'type' => 'vendor_payment_finance_requested',
                 'title' => 'Vendor payment ready for finance',
                 'message' => "Payment request #{$paymentId} is ready for finance payment.",
@@ -727,12 +774,12 @@ class VendorPaymentService extends VendorBaseService
             ]);
         }
 
-        $this->auditLog->log($request, "Checked payment ID #{$paymentId}");
+        $this->auditLog->log($request, "Reviewed payment ID #{$paymentId}");
 
         return response()->json([
             'status' => 'success',
             'message' => $isFinalReview
-                ? ($approvalEnabled ? 'Payment checked.' : 'Payment approved.')
+                ? ($approvalEnabled ? 'Payment reviewed.' : 'Payment approved.')
                 : 'Payment review level completed.',
         ]);
     }
@@ -755,36 +802,23 @@ class VendorPaymentService extends VendorBaseService
         if ($staffId <= 0) {
             return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
         }
-        if (! $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_APPROVAL)) {
-            return response()->json(['status' => 'error', 'message' => 'Approval is not enabled for vendor payments.'], 409);
-        }
-
         $payment = DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->first();
         if (! $payment) {
             return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
         }
+        if (! $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL)) {
+            return response()->json(['status' => 'error', 'message' => 'Approval is not enabled for vendor payments.'], 409);
+        }
         $level = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_APPROVAL);
-        if (! $workflow->canAct($request, VendorPaymentWorkflowService::STAGE_APPROVAL, $level)) {
+        if (! $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_APPROVAL, $level)) {
             return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
         }
         if ($this->normalizeStatus($payment->status ?? '') !== 'checked') {
             return response()->json(['status' => 'error', 'message' => 'Only checked payments can be approved.'], 409);
         }
-        if ((int) ($payment->created_by ?? 0) === $staffId) {
-            return response()->json(['status' => 'error', 'message' => 'Requester cannot approve their own payment request.'], 409);
-        }
-        if ((int) ($payment->checked_by ?? 0) === $staffId) {
-            return response()->json(['status' => 'error', 'message' => 'Checker and approver must be different users.'], 409);
-        }
-        if ($workflow->actorAlreadyCompleted($payment, $staffId, VendorPaymentWorkflowService::STAGE_REVIEW)) {
-            return response()->json(['status' => 'error', 'message' => 'Reviewer and approver must be different users.'], 409);
-        }
-        if ($workflow->actorAlreadyCompleted($payment, $staffId, VendorPaymentWorkflowService::STAGE_APPROVAL)) {
-            return response()->json(['status' => 'error', 'message' => 'Approver has already approved this payment request.'], 409);
-        }
 
         $remarks = trim((string) ($data['remarks'] ?? '')) ?: null;
-        $approvalLevels = $workflow->stageLevels(VendorPaymentWorkflowService::STAGE_APPROVAL);
+        $approvalLevels = $workflow->stageLevelsForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL);
         $isFinalApproval = $level >= $approvalLevels;
 
         $updates = array_merge([
@@ -798,18 +832,20 @@ class VendorPaymentService extends VendorBaseService
             'workflow_progress_json' => $workflow->appendProgress($payment, VendorPaymentWorkflowService::STAGE_APPROVAL, $level, $staffId, $remarks),
         ]));
 
-        DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->update($updates);
+        if (! $this->applyWorkflowTransition($paymentId, 'Checked', $updates, 'current_approval_level', $level)) {
+            return $this->transitionConflictResponse();
+        }
 
         $this->resolvePaymentNotifications($paymentId);
         if ($isFinalApproval) {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_FINANCE, 1, [
+            $workflow->notifyPaymentStage($request, $payment, $paymentId, VendorPaymentWorkflowService::STAGE_FINANCE, 1, [
                 'type' => 'vendor_payment_finance_requested',
                 'title' => 'Vendor payment ready for finance',
                 'message' => "Payment request #{$paymentId} is ready for finance payment.",
                 'severity' => 'primary',
             ]);
         } else {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_APPROVAL, $level + 1, [
+            $workflow->notifyPaymentStage($request, $payment, $paymentId, VendorPaymentWorkflowService::STAGE_APPROVAL, $level + 1, [
                 'type' => 'vendor_payment_approval_requested',
                 'title' => 'Vendor payment requires approval',
                 'message' => "Payment request #{$paymentId} is ready for approval level ".($level + 1).'.',
@@ -873,7 +909,9 @@ class VendorPaymentService extends VendorBaseService
             "{$prefix}_remarks" => trim((string) ($data['remarks'] ?? '')) ?: null,
         ]));
 
-        DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->update($updates);
+        if (! $this->applyWorkflowTransition($paymentId, $status, $updates)) {
+            return $this->transitionConflictResponse();
+        }
 
         $this->resolvePaymentNotifications($paymentId);
         $this->notifyRequester($request, $payment, [
@@ -901,13 +939,12 @@ class VendorPaymentService extends VendorBaseService
         if (! $paymentId) {
             return response()->json(['status' => 'error', 'message' => 'Missing or invalid payment ID'], 400);
         }
-        if ($staffId <= 0 || ! $this->canMarkPaid($request)) {
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
-        }
-
         $payment = DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->first();
         if (! $payment) {
             return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
+        }
+        if ($staffId <= 0 || ! $this->canMarkPaid($request, $payment)) {
+            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
         }
         if ($this->normalizeStatus($payment->status ?? '') !== 'approved') {
             return response()->json(['status' => 'error', 'message' => 'Only approved payments can be marked paid.'], 409);
@@ -923,7 +960,9 @@ class VendorPaymentService extends VendorBaseService
             'paid_remarks' => trim((string) ($data['remarks'] ?? '')) ?: null,
         ]));
 
-        DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->update($updates);
+        if (! $this->applyWorkflowTransition($paymentId, 'Approved', $updates)) {
+            return $this->transitionConflictResponse();
+        }
 
         $this->resolvePaymentNotifications($paymentId);
         $this->notifyRequester($request, $payment, [

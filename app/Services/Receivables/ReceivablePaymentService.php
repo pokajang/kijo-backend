@@ -447,6 +447,7 @@ class ReceivablePaymentService
             : ($legacyPaymentIsFuture ? 0 : max(0, $this->moneyToCents($legacyPaidAmount)));
         $paidTotalCents = min($grandTotalCents, $paidTotalCents);
         $outstandingCents = max(0, $grandTotalCents - $paidTotalCents);
+        $hasLedgerHistory = (bool) ($ledgerSummary['hasLedger'] ?? false);
 
         return [
             'grandTotal' => (float) $this->centsToDecimal($grandTotalCents),
@@ -459,7 +460,8 @@ class ReceivablePaymentService
             'lastPaymentDate' => $legacyPaymentIsFuture
                 ? ''
                 : (string) ($ledgerSummary['lastPaymentDate'] ?? $legacyPaidDate ?? ''),
-            'hasPaymentHistory' => (int) ($ledgerSummary['paymentCount'] ?? ($paidTotalCents > 0 ? 1 : 0)) > 0,
+            'hasPaymentHistory' => $hasLedgerHistory
+                || (int) ($ledgerSummary['paymentCount'] ?? ($paidTotalCents > 0 ? 1 : 0)) > 0,
         ];
     }
 

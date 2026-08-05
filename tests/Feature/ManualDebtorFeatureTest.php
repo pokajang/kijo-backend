@@ -552,6 +552,81 @@ class ManualDebtorFeatureTest extends TestCase
         $this->assertSame(1, (int) $previousPeriodTotals->json('outstandingCount'));
     }
 
+    public function test_consolidated_debtors_supports_paid_partial_and_cancelled_lifecycle_filters(): void
+    {
+        DB::table('manual_debtors')->insert([
+            [
+                'invoice_ref_no' => 'FILTER-PARTIAL-001',
+                'client_name' => 'Partially Paid Client',
+                'invoice_date' => '2026-05-01',
+                'grand_total' => 1000,
+                'status' => 'Partially Paid',
+                'paid_date' => '2026-05-10',
+                'paid_amount' => 250,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'invoice_ref_no' => 'FILTER-PAID-001',
+                'client_name' => 'Paid Client',
+                'invoice_date' => '2026-05-01',
+                'grand_total' => 800,
+                'status' => 'Paid',
+                'paid_date' => '2026-05-12',
+                'paid_amount' => 800,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'invoice_ref_no' => 'FILTER-CANCELLED-001',
+                'client_name' => 'Cancelled Client',
+                'invoice_date' => '2026-05-01',
+                'grand_total' => 1000,
+                'status' => 'Cancelled',
+                'paid_date' => '2026-05-08',
+                'paid_amount' => 200,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $paidDebtors = $this->actingSession()
+            ->getJson('/debtors?status=paid&as_of_date=2026-05-18')
+            ->assertOk()
+            ->json('debtors');
+
+        $this->assertSame(
+            ['FILTER-PAID-001', 'INV-PAID-001'],
+            collect($paidDebtors)->pluck('invoiceRef')->sort()->values()->all(),
+        );
+        $manualPaidDebtor = collect($paidDebtors)->firstWhere('invoiceRef', 'FILTER-PAID-001');
+        $this->assertSame(0.0, (float) $manualPaidDebtor['outstandingAmount']);
+        $this->assertSame('2026-05-12', $manualPaidDebtor['lastPaymentDate']);
+
+        $partialDebtors = $this->actingSession()
+            ->getJson('/debtors?status=Partially%20Paid&as_of_date=2026-05-18')
+            ->assertOk()
+            ->json('debtors');
+
+        $this->assertSame(
+            ['FILTER-PARTIAL-001'],
+            collect($partialDebtors)->pluck('invoiceRef')->all(),
+        );
+        $this->assertSame(750.0, (float) $partialDebtors[0]['outstandingAmount']);
+
+        $cancelledDebtors = $this->actingSession()
+            ->getJson('/debtors?status=cancelled&as_of_date=2026-05-18')
+            ->assertOk()
+            ->json('debtors');
+        $manualCancelledDebtor = collect($cancelledDebtors)
+            ->firstWhere('invoiceRef', 'FILTER-CANCELLED-001');
+
+        $this->assertNotNull($manualCancelledDebtor);
+        $this->assertSame('Cancelled', $manualCancelledDebtor['status']);
+        $this->assertTrue($manualCancelledDebtor['hasPaymentHistory']);
+        $this->assertSame(800.0, (float) $manualCancelledDebtor['outstandingAmount']);
+    }
+
     private function createTables(): void
     {
         foreach ([

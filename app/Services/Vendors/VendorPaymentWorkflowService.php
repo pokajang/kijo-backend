@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Schema;
 
 class VendorPaymentWorkflowService
 {
+    private ?array $serializedStagesCache = null;
+
     public const STAGE_REVIEW = 'review';
 
     public const STAGE_APPROVAL = 'approval';
@@ -134,24 +136,49 @@ class VendorPaymentWorkflowService
         return $this->hasFallbackRole($request, $this->fallbackRolesForStage($stageType));
     }
 
-    public function hasConfiguredRecipients(string $stageType, int $level): bool
+    public function canActForPayment(Request $request, object $payment, string $stageType, int $level): bool
     {
-        return ! empty($this->configuredStaffIds($stageType, $level));
-    }
-
-    public function actorAlreadyCompleted(object $payment, int $staffId, string $stageType): bool
-    {
-        $progress = $this->progress($payment);
-        foreach ($progress as $entry) {
-            if (
-                ($entry['stage_type'] ?? '') === $stageType
-                && (int) ($entry['staff_id'] ?? 0) === $staffId
-            ) {
-                return true;
-            }
+        $actorId = (int) $request->session()->get('staff_id', 0);
+        if ($actorId <= 0) {
+            return false;
+        }
+        if ($this->hasFallbackRole($request, ['System Admin'])) {
+            return true;
         }
 
-        return false;
+        $snapshotStages = $this->snapshotStages($payment);
+        if ($snapshotStages === null) {
+            return $this->canAct($request, $stageType, $level);
+        }
+
+        $staffIds = $this->staffIdsFromStages($snapshotStages, $stageType, $level);
+        if (! empty($staffIds)) {
+            return in_array($actorId, $staffIds, true);
+        }
+
+        return $this->hasFallbackRole($request, $this->fallbackRolesForStage($stageType));
+    }
+
+    public function stageEnabledForPayment(object $payment, string $stageType): bool
+    {
+        return $this->stageLevelsForPayment($payment, $stageType) > 0;
+    }
+
+    public function stageLevelsForPayment(object $payment, string $stageType): int
+    {
+        $snapshotStages = $this->snapshotStages($payment);
+        if ($snapshotStages === null) {
+            return $this->stageLevels($stageType);
+        }
+
+        return collect($snapshotStages)
+            ->filter(fn ($stage): bool => (string) ($stage['stage_type'] ?? '') === $stageType)
+            ->max(fn ($stage): int => max(1, (int) ($stage['level_no'] ?? 1))) ?: 0;
+    }
+
+    public function stagesForPayment(object $payment): array
+    {
+        return $this->snapshotStages($payment) ?? $this->serializedStages();
     }
 
     public function appendProgress(object $payment, string $stageType, int $level, int $staffId, ?string $remarks): string
@@ -170,8 +197,39 @@ class VendorPaymentWorkflowService
 
     public function notifyStage(Request $request, int $paymentId, string $stageType, int $level, array $payload): void
     {
+        $this->notifyStaffIds(
+            $request,
+            $paymentId,
+            $this->staffIdsForStage($stageType, $level),
+            $payload,
+        );
+    }
+
+    public function notifyPaymentStage(
+        Request $request,
+        object $payment,
+        int $paymentId,
+        string $stageType,
+        int $level,
+        array $payload,
+    ): void {
+        $snapshotStages = $this->snapshotStages($payment);
+        $staffIds = $snapshotStages === null
+            ? $this->staffIdsForStage($stageType, $level)
+            : $this->staffIdsFromStages($snapshotStages, $stageType, $level);
+
+        if (empty($staffIds)) {
+            $staffIds = app(AppNotificationService::class)
+                ->staffIdsForRoles($this->fallbackRolesForStage($stageType));
+        }
+
+        $this->notifyStaffIds($request, $paymentId, $staffIds, $payload);
+    }
+
+    private function notifyStaffIds(Request $request, int $paymentId, array $staffIds, array $payload): void
+    {
         $actorId = (int) $request->session()->get('staff_id', 0);
-        $staffIds = array_values(array_diff($this->staffIdsForStage($stageType, $level), [$actorId]));
+        $staffIds = array_values(array_unique(array_filter(array_map('intval', $staffIds))));
         if (empty($staffIds)) {
             return;
         }
@@ -200,10 +258,14 @@ class VendorPaymentWorkflowService
 
     private function serializedStages(): array
     {
+        if ($this->serializedStagesCache !== null) {
+            return $this->serializedStagesCache;
+        }
+
         $settings = $this->settings();
         $recipients = $this->configuredRecipientsByStage();
 
-        return array_map(function (array $stage) use ($recipients): array {
+        return $this->serializedStagesCache = array_map(function (array $stage) use ($recipients, $settings): array {
             $key = $stage['stage_type'].'.'.$stage['level_no'];
             $configured = $recipients[$key] ?? [];
             $fallback = $this->activeStaffForRoles($this->fallbackRolesForStage($stage['stage_type']));
@@ -212,12 +274,48 @@ class VendorPaymentWorkflowService
                 'key' => $key,
                 'stage_type' => $stage['stage_type'],
                 'level_no' => $stage['level_no'],
-                'label' => $this->stageLabel($stage['stage_type'], (int) $stage['level_no']),
+                'label' => $this->snapshotStageLabel($stage, $settings),
                 'recipients' => $configured,
                 'effective_recipients' => ! empty($configured) ? $configured : $fallback,
                 'using_default' => empty($configured),
             ];
         }, $this->stageDefinitions($settings));
+    }
+
+    private function snapshotStages(object $payment): ?array
+    {
+        $raw = $payment->workflow_settings_snapshot_json ?? null;
+        $snapshot = is_string($raw) ? json_decode($raw, true) : (is_array($raw) ? $raw : null);
+        $stages = is_array($snapshot) ? ($snapshot['stages'] ?? null) : null;
+
+        return is_array($stages) && ! empty($stages) ? array_values($stages) : null;
+    }
+
+    private function staffIdsFromStages(array $stages, string $stageType, int $level): array
+    {
+        $normalizedLevel = $stageType === self::STAGE_FINANCE ? 1 : $level;
+
+        foreach ($stages as $stage) {
+            if (
+                (string) ($stage['stage_type'] ?? '') !== $stageType
+                || (int) ($stage['level_no'] ?? 1) !== $normalizedLevel
+            ) {
+                continue;
+            }
+
+            $recipients = $stage['effective_recipients'] ?? $stage['recipients'] ?? [];
+
+            return collect(is_array($recipients) ? $recipients : [])
+                ->map(fn ($recipient): int => (int) (is_array($recipient)
+                    ? ($recipient['staff_id'] ?? 0)
+                    : (is_object($recipient) ? ($recipient->staff_id ?? 0) : $recipient)))
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+        }
+
+        return [];
     }
 
     private function stageDefinitions(array $settings): array
@@ -236,6 +334,23 @@ class VendorPaymentWorkflowService
         $stages[] = ['stage_type' => self::STAGE_FINANCE, 'level_no' => 1];
 
         return $stages;
+    }
+
+    private function snapshotStageLabel(array $stage, array $settings): string
+    {
+        $stageType = (string) $stage['stage_type'];
+        if ($stageType === self::STAGE_FINANCE) {
+            return 'Finance';
+        }
+
+        $levelCount = $stageType === self::STAGE_REVIEW
+            ? (int) $settings['review_levels']
+            : (int) $settings['approval_levels'];
+        if ($levelCount <= 1) {
+            return $stageType === self::STAGE_REVIEW ? 'Review' : 'Approval';
+        }
+
+        return $this->stageLabel($stageType, (int) $stage['level_no']);
     }
 
     private function configuredStaffIds(string $stageType, int $level): array
@@ -307,6 +422,7 @@ class VendorPaymentWorkflowService
             ->groupBy(fn ($row) => $row->stage_type.'.'.$row->level_no)
             ->map(fn ($rows) => $rows->map(fn ($row) => $this->formatStaff($row))->values()->all())
             ->all();
+
         return $central;
     }
 

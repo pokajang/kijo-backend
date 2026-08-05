@@ -150,6 +150,32 @@ class ReceivablePaymentFeatureTest extends TestCase
             ->assertJsonValidationErrors('as_of_date');
     }
 
+    public function test_reversed_only_ledger_remains_discoverable_after_receivable_is_cancelled(): void
+    {
+        $payment = $this->actingSession()->postJson('/receivables/manual/1/payments', [
+            'payment_type' => 'partial',
+            'amount' => '300.00',
+            'payment_date' => '2026-08-04',
+            'request_token' => 'f791c9ac-2b57-4ef7-9232-1b0293820c3f',
+        ])->assertOk()->json('payment');
+
+        $this->actingSession()->postJson("/receivable-payments/{$payment['id']}/reverse", [
+            'reason' => 'Wrong receivable selected',
+        ])->assertOk();
+        DB::table('manual_debtors')->where('id', 1)->update(['status' => 'Cancelled']);
+
+        $cancelledDebtor = $this->actingSession()
+            ->getJson('/debtors?source=manual&status=cancelled&as_of_date=2026-08-10')
+            ->assertOk()
+            ->assertJsonCount(1, 'debtors')
+            ->json('debtors.0');
+
+        $this->assertSame('Cancelled', $cancelledDebtor['status']);
+        $this->assertTrue($cancelledDebtor['hasPaymentHistory']);
+        $this->assertSame(0, $cancelledDebtor['paymentCount']);
+        $this->assertSame(1000.0, (float) $cancelledDebtor['outstandingAmount']);
+    }
+
     public function test_legacy_reopen_reverses_all_payments_in_one_audited_operation(): void
     {
         foreach ([['100.00', 'aa90bc66-1d6d-41dd-b2b1-38fd14f31f80'], ['200.00', '44f7af0e-14f5-443a-be30-c39d88b0df89']] as [$amount, $token]) {

@@ -23,6 +23,7 @@ class VendorPaymentWorkflowTest extends TestCase
         ]);
 
         foreach ([
+            'user_activities',
             'in_app_notifications',
             'staff_general',
             'system_users',
@@ -37,6 +38,15 @@ class VendorPaymentWorkflowTest extends TestCase
         ] as $table) {
             Schema::dropIfExists($table);
         }
+
+        Schema::create('user_activities', function (Blueprint $table): void {
+            $table->increments('id');
+            $table->unsignedInteger('staff_id');
+            $table->string('name_code', 20);
+            $table->string('action');
+            $table->string('ip_address', 45)->nullable();
+            $table->timestamp('created_at')->nullable();
+        });
 
         Schema::create('system_users', function (Blueprint $table): void {
             $table->id();
@@ -201,22 +211,59 @@ class VendorPaymentWorkflowTest extends TestCase
         DB::table('projects_main')->insert(['id' => 501, 'project_name' => 'Project A']);
     }
 
-    public function test_requester_cannot_check_or_approve_own_request(): void
+    public function test_configured_requester_can_review_and_approve_own_request(): void
     {
+        $this->actingSession(30, ['System Admin'])
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
+                'review_enabled' => true,
+                'review_levels' => 1,
+                'approval_enabled' => true,
+                'approval_levels' => 1,
+                'stages' => [
+                    ['stage_type' => 'review', 'level_no' => 1, 'recipient_staff_ids' => [20]],
+                    ['stage_type' => 'approval', 'level_no' => 1, 'recipient_staff_ids' => [20]],
+                ],
+            ]))
+            ->assertOk();
+
         $paymentId = $this->insertPayment(['created_by' => 20]);
 
         $this->actingSession(20, ['Manager'])
             ->patchJson("/vendor-payments/{$paymentId}/check")
-            ->assertStatus(409);
+            ->assertOk()
+            ->assertJsonPath('message', 'Payment reviewed.');
 
-        DB::table('vendor_payments')->where('id', $paymentId)->update([
-            'status' => 'Checked',
-            'checked_by' => 30,
+        $this->actingSession(20, ['Manager'])
+            ->getJson('/vendor-payments')
+            ->assertOk()
+            ->assertJsonPath('history.0.id', $paymentId)
+            ->assertJsonPath('history.0.can_approve', true);
+
+        $this->assertDatabaseHas('in_app_notifications', [
+            'entity_id' => $paymentId,
+            'type' => 'vendor_payment_checked',
+            'recipient_staff_id' => 20,
+            'actor_staff_id' => 20,
         ]);
 
         $this->actingSession(20, ['Manager'])
             ->patchJson("/vendor-payments/{$paymentId}/approve")
-            ->assertStatus(409);
+            ->assertOk();
+
+        $this->assertDatabaseHas('vendor_payments', [
+            'id' => $paymentId,
+            'status' => 'Approved',
+            'checked_by' => 20,
+            'approved_by' => 20,
+        ]);
+        $this->assertDatabaseHas('user_activities', [
+            'staff_id' => 20,
+            'action' => "Reviewed payment ID #{$paymentId}",
+        ]);
+        $this->assertDatabaseHas('user_activities', [
+            'staff_id' => 20,
+            'action' => "Approved payment ID #{$paymentId}",
+        ]);
     }
 
     public function test_payment_moves_pending_checked_approved_paid(): void
@@ -246,18 +293,14 @@ class VendorPaymentWorkflowTest extends TestCase
 
         $this->actingSession(20, ['Manager'])
             ->patchJson("/vendor-payments/{$paymentId}/approve", ['remarks' => 'Same checker'])
-            ->assertStatus(409);
-
-        $this->actingSession(30, ['System Admin'])
-            ->patchJson("/vendor-payments/{$paymentId}/approve", ['remarks' => 'Approved'])
             ->assertOk()
             ->assertJsonPath('status', 'success');
 
         $this->assertDatabaseHas('vendor_payments', [
             'id' => $paymentId,
             'status' => 'Approved',
-            'approved_by' => 30,
-            'approval_remarks' => 'Approved',
+            'approved_by' => 20,
+            'approval_remarks' => 'Same checker',
         ]);
 
         $this->actingSession(40, ['Finance'])
@@ -283,6 +326,15 @@ class VendorPaymentWorkflowTest extends TestCase
             'type' => 'vendor_payment_paid',
             'recipient_staff_id' => 10,
         ]);
+
+        $this->actingSession(10, ['Staff'])
+            ->getJson('/vendor-payments')
+            ->assertOk()
+            ->assertJsonPath('history.0.id', $paymentId)
+            ->assertJsonPath('history.0.workflow_flow.currentStage', null)
+            ->assertJsonPath('history.0.workflow_flow.stages.0.status', 'Reviewed')
+            ->assertJsonPath('history.0.workflow_flow.stages.1.status', 'Approved')
+            ->assertJsonPath('history.0.workflow_flow.stages.2.status', 'Paid');
     }
 
     public function test_invalid_transitions_and_approved_delete_are_rejected(): void
@@ -741,6 +793,147 @@ class VendorPaymentWorkflowTest extends TestCase
             ->getJson('/vendor-payments')
             ->assertOk()
             ->assertJsonPath('history.0.can_mark_paid', false);
+    }
+
+    public function test_payment_flow_and_authorization_remain_bound_to_submission_snapshot(): void
+    {
+        $this->actingSession(30, ['System Admin'])
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
+                'review_enabled' => true,
+                'review_levels' => 1,
+                'approval_enabled' => true,
+                'approval_levels' => 1,
+                'stages' => [
+                    ['stage_type' => 'review', 'level_no' => 1, 'recipient_staff_ids' => [50]],
+                    ['stage_type' => 'approval', 'level_no' => 1, 'recipient_staff_ids' => [60]],
+                    ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [40]],
+                ],
+            ]))
+            ->assertOk();
+
+        $paymentId = (int) $this->actingSession(10, ['Staff'])
+            ->postJson('/vendor-payments', [
+                'vendor_id' => 7,
+                'payment_context' => 'Snapshot flow',
+                'payment_type' => 'Deposit',
+                'amount' => 125,
+                'method' => 'Online Transfer',
+            ])
+            ->assertOk()
+            ->json('id');
+
+        $this->actingSession(30, ['System Admin'])
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
+                'review_enabled' => true,
+                'review_levels' => 1,
+                'approval_enabled' => true,
+                'approval_levels' => 1,
+                'stages' => [
+                    ['stage_type' => 'review', 'level_no' => 1, 'recipient_staff_ids' => [20]],
+                    ['stage_type' => 'approval', 'level_no' => 1, 'recipient_staff_ids' => [30]],
+                    ['stage_type' => 'finance', 'level_no' => 1, 'recipient_staff_ids' => [30]],
+                ],
+            ]))
+            ->assertOk();
+
+        $this->actingSession(10, ['Staff'])
+            ->getJson('/vendor-payments')
+            ->assertOk()
+            ->assertJsonPath('history.0.id', $paymentId)
+            ->assertJsonPath('history.0.workflow_flow.currentStage.label', 'Review')
+            ->assertJsonPath('history.0.workflow_flow.stages.0.state', 'current')
+            ->assertJsonPath('history.0.workflow_flow.stages.0.recipients.0.staffId', 50)
+            ->assertJsonPath('history.0.workflow_flow.stages.1.state', 'waiting')
+            ->assertJsonPath('history.0.workflow_flow.stages.1.recipients.0.staffId', 60)
+            ->assertJsonPath('history.0.workflow_flow.stages.2.state', 'waiting')
+            ->assertJsonPath('history.0.can_check', false);
+
+        $this->actingSession(20, ['Manager'])
+            ->patchJson("/vendor-payments/{$paymentId}/check")
+            ->assertStatus(403);
+
+        $this->actingSession(50, ['Staff'])
+            ->patchJson("/vendor-payments/{$paymentId}/check", ['remarks' => 'Snapshot reviewer'])
+            ->assertOk();
+
+        $this->actingSession(60, ['Staff'])
+            ->patchJson("/vendor-payments/{$paymentId}/approve", ['remarks' => 'Snapshot approver'])
+            ->assertOk();
+    }
+
+    public function test_legacy_payment_without_snapshot_uses_current_workflow(): void
+    {
+        $this->actingSession(30, ['System Admin'])
+            ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
+                'review_enabled' => true,
+                'review_levels' => 1,
+                'approval_enabled' => true,
+                'approval_levels' => 1,
+                'stages' => [
+                    ['stage_type' => 'review', 'level_no' => 1, 'recipient_staff_ids' => [50]],
+                    ['stage_type' => 'approval', 'level_no' => 1, 'recipient_staff_ids' => [60]],
+                ],
+            ]))
+            ->assertOk();
+
+        $paymentId = $this->insertPayment(['workflow_settings_snapshot_json' => null]);
+
+        $this->actingSession(50, ['Staff'])
+            ->getJson('/vendor-payments')
+            ->assertOk()
+            ->assertJsonPath('history.0.id', $paymentId)
+            ->assertJsonPath('history.0.can_check', true)
+            ->assertJsonPath('history.0.workflow_flow.stages.0.recipients.0.staffId', 50)
+            ->assertJsonPath('history.0.workflow_flow.stages.0.state', 'current');
+    }
+
+    public function test_returned_payment_flow_is_terminal_and_has_no_stage_actions(): void
+    {
+        $paymentId = $this->insertPayment([
+            'status' => 'Returned',
+            'returned_by' => 20,
+            'returned_at' => now(),
+            'returned_remarks' => 'Please correct the invoice.',
+        ]);
+
+        $this->actingSession(20, ['Manager'])
+            ->getJson('/vendor-payments')
+            ->assertOk()
+            ->assertJsonPath('history.0.id', $paymentId)
+            ->assertJsonPath('history.0.workflow_flow.currentStage', null)
+            ->assertJsonPath('history.0.workflow_flow.stages.0.state', 'returned')
+            ->assertJsonPath('history.0.workflow_flow.stages.0.remarks', 'Please correct the invoice.')
+            ->assertJsonPath('history.0.can_check', false)
+            ->assertJsonPath('history.0.can_approve', false)
+            ->assertJsonPath('history.0.can_return', false)
+            ->assertJsonPath('history.0.can_reject', false);
+    }
+
+    public function test_legacy_returned_payment_after_review_shows_approval_as_terminal_stage(): void
+    {
+        $paymentId = $this->insertPayment([
+            'status' => 'Returned',
+            'checked_by' => 20,
+            'checked_at' => now()->subMinute(),
+            'checker_remarks' => 'Review complete.',
+            'returned_by' => 30,
+            'returned_at' => now(),
+            'returned_remarks' => 'Approval needs more information.',
+            'workflow_progress_json' => null,
+            'workflow_settings_snapshot_json' => null,
+        ]);
+
+        $this->actingSession(10, ['Staff'])
+            ->getJson('/vendor-payments')
+            ->assertOk()
+            ->assertJsonPath('history.0.id', $paymentId)
+            ->assertJsonPath('history.0.workflow_flow.currentStage', null)
+            ->assertJsonPath('history.0.workflow_flow.stages.0.state', 'completed')
+            ->assertJsonPath('history.0.workflow_flow.stages.0.status', 'Reviewed')
+            ->assertJsonPath('history.0.workflow_flow.stages.1.state', 'returned')
+            ->assertJsonPath('history.0.workflow_flow.stages.1.status', 'Returned')
+            ->assertJsonPath('history.0.workflow_flow.stages.1.actor.staffId', 30)
+            ->assertJsonPath('history.0.workflow_flow.stages.1.remarks', 'Approval needs more information.');
     }
 
     private function insertPayment(array $overrides = []): int
