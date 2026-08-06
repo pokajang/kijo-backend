@@ -92,6 +92,7 @@ class QuoteRecordDetailContextBuilder
             'id',
             'quote_id',
             'item_id',
+            'item_remarks',
             'quantity',
             'unit_price',
             'marked_up_price',

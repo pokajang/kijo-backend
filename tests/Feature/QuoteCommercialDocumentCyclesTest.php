@@ -18,6 +18,37 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
         IhCommercialCycleDatabase::create();
     }
 
+    public function test_equipment_remarks_are_optional_validated_and_pricing_neutral(): void
+    {
+        CommercialCycleQuoteSchemas::replace('equipment');
+
+        $create = $this->authenticated()->postJson(
+            '/quotes/equipment',
+            CommercialCyclePayloads::quote('equipment'),
+        );
+
+        $create->assertOk()->assertJsonPath('status', 'success');
+        $quoteId = (int) $create->json('quote_id');
+        $this->assertDatabaseHas('quotes_equipment', [
+            'id' => $quoteId,
+            'grand_total' => 1000,
+        ]);
+
+        $this->authenticated()->postJson('/quotes/equipment', CommercialCyclePayloads::quote(
+            'equipment',
+            ['quotation_remarks' => str_repeat('x', 2001)],
+        ))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('quotation_remarks');
+
+        $this->authenticated()->postJson('/quotes/equipment', CommercialCyclePayloads::quote(
+            'equipment',
+            ['items' => [['item_remarks' => str_repeat('x', 2001)]]],
+        ))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('items.0.item_remarks');
+    }
+
     #[DataProvider('quoteServices')]
     public function test_quote_runs_through_edit_revision_award_project_and_commercial_documents(
         string $service,
@@ -29,6 +60,21 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
         $create = $this->authenticated()->postJson("/quotes/{$service}", CommercialCyclePayloads::quote($service));
         $create->assertOk()->assertJsonPath('status', 'success');
         $quoteId = (int) $create->json('quote_id');
+
+        if ($service === 'equipment') {
+            $this->assertDatabaseHas('quotes_equipment', [
+                'id' => $quoteId,
+                'quotation_remarks' => 'All supplied equipment must use the approved client colour scheme.',
+            ]);
+            $this->assertDatabaseHas('quotes_equipment_items', [
+                'quote_id' => $quoteId,
+                'item_remarks' => 'Colour: navy blue; enclosure size: compact.',
+            ]);
+            $this->authenticated()->getJson("/quotes/equipment/{$quoteId}")
+                ->assertOk()
+                ->assertJsonPath('data.quotation_remarks', 'All supplied equipment must use the approved client colour scheme.')
+                ->assertJsonPath('data.items.0.item_remarks', 'Colour: navy blue; enclosure size: compact.');
+        }
 
         $this->authenticated()->putJson(
             "/quotes/{$service}/{$quoteId}",
@@ -62,14 +108,26 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
             'project_type' => $projectType,
             'status' => 'Active',
         ]);
-        $this->authenticated()->getJson("/projects/{$projectId}")
+        $projectResponse = $this->authenticated()->getJson("/projects/{$projectId}")
             ->assertOk()
             ->assertJsonPath('status', 'success')
             ->assertJsonPath('data.id', $projectId)
             ->assertJsonPath('data.project_type', $projectType);
-        $this->authenticated()->getJson("/invoices/quote/{$service}/{$quoteId}")
+        $invoiceQuoteResponse = $this->authenticated()->getJson("/invoices/quote/{$service}/{$quoteId}")
             ->assertOk()
             ->assertJsonPath('id', $quoteId);
+        if ($service === 'equipment') {
+            $projectResponse->assertJsonPath(
+                'data.equipment_items.0.item_remarks',
+                'Client-approved colour scheme for this revision.',
+            );
+            $invoiceQuoteResponse
+                ->assertJsonPath('quotation_remarks', 'Formal revision requirements.')
+                ->assertJsonPath(
+                    'equipment_items.0.item_remarks',
+                    'Client-approved colour scheme for this revision.',
+                );
+        }
 
         $jd14Id = null;
         if ($service === 'training') {
@@ -96,9 +154,13 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
         $deliveryOrder->assertOk()->assertJsonPath('status', 'success');
         $deliveryOrderId = (int) $deliveryOrder->json('do_id');
 
+        $vendorPayload = CommercialCyclePayloads::vendorLoa();
+        if ($service === 'equipment') {
+            unset($vendorPayload['remarks'], $vendorPayload['services_description']);
+        }
         $this->authenticated()->postJson(
             "/projects/{$projectId}/vendors",
-            CommercialCyclePayloads::vendorLoa(),
+            $vendorPayload,
         )
             ->assertOk()
             ->assertJsonPath('status', 'success');
@@ -110,6 +172,48 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
         );
         $supplierPo->assertOk()->assertJsonPath('status', 'success');
         $supplierPoId = (int) $supplierPo->json('po_id');
+
+        if ($service === 'equipment') {
+            $expectedQuotationRemarks = 'Formal revision requirements.';
+            $expectedItemRemarks = 'Client-approved colour scheme for this revision.';
+
+            $this->assertDatabaseHas('invoices', [
+                'id' => $invoiceId,
+                'quotation_remarks' => $expectedQuotationRemarks,
+            ]);
+            $this->assertDatabaseHas('invoice_breakdown', [
+                'invoice_id' => $invoiceId,
+                'item_description' => 'Gas detector',
+                'item_remarks' => $expectedItemRemarks,
+            ]);
+            $this->assertDatabaseHas('do_details', [
+                'id' => $deliveryOrderId,
+                'quotation_remarks' => $expectedQuotationRemarks,
+            ]);
+            $this->assertDatabaseHas('do_breakdown', [
+                'do_id' => $deliveryOrderId,
+                'item_name' => 'Gas detector',
+                'item_remarks' => $expectedItemRemarks,
+            ]);
+            $this->assertDatabaseHas('supplier_po_main', [
+                'po_id' => $supplierPoId,
+                'quotation_remarks' => $expectedQuotationRemarks,
+            ]);
+            $this->assertDatabaseHas('supplier_po_items', [
+                'po_id' => $supplierPoId,
+                'item_id' => 701,
+                'item_remarks' => $expectedItemRemarks,
+            ]);
+            $this->assertDatabaseHas('project_vendors', [
+                'id' => $vendorLoaId,
+                'remarks' => $expectedQuotationRemarks,
+            ]);
+            $loaServices = (string) DB::table('project_vendors')
+                ->where('id', $vendorLoaId)
+                ->value('services_description');
+            $this->assertStringContainsString('Portable calibrated gas detector.', $loaServices);
+            $this->assertStringContainsString($expectedItemRemarks, $loaServices);
+        }
 
         $related = $this->authenticated()->getJson("/quote-records/{$service}/{$quoteId}/related-docs");
         $related->assertOk()
@@ -129,6 +233,21 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
         )
             ->assertOk()
             ->assertJsonPath('data.revision_no', 2);
+
+        if ($service === 'equipment') {
+            $this->assertSame(
+                'Formal revision requirements.',
+                DB::table('invoices')->where('id', $invoiceId)->value('quotation_remarks'),
+            );
+            $this->assertSame(
+                'Client-approved colour scheme for this revision.',
+                DB::table('do_breakdown')->where('do_id', $deliveryOrderId)->value('item_remarks'),
+            );
+            $this->assertSame(
+                'Client-approved colour scheme for this revision.',
+                DB::table('supplier_po_items')->where('po_id', $supplierPoId)->value('item_remarks'),
+            );
+        }
 
         $this->removeCommercialDocumentsExceptSupplierPo(
             $invoiceId,
@@ -168,7 +287,17 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
     {
         $change = match ($service) {
             'training' => ['remarks' => $revision ? 'Formal revision.' : 'Edited quote.'],
-            'equipment' => ['delivery_charge' => $revision ? 25 : 10],
+            'equipment' => [
+                'delivery_charge' => $revision ? 25 : 10,
+                'quotation_remarks' => $revision
+                    ? 'Formal revision requirements.'
+                    : 'Edited quotation requirements.',
+                'items' => [[
+                    'item_remarks' => $revision
+                        ? 'Client-approved colour scheme for this revision.'
+                        : 'Draft colour specification.',
+                ]],
+            ],
             'manpower' => ['inquiry_remarks' => $revision ? 'Formal revision.' : 'Edited quote.'],
             'special' => ['general_remarks' => $revision ? 'Formal revision.' : 'Edited quote.'],
         };

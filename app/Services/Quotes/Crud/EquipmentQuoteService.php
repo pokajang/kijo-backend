@@ -30,6 +30,7 @@ class EquipmentQuoteService
             ->where('qei.quote_id', $id)
             ->select([
                 'qei.item_id',
+                'qei.item_remarks',
                 'qei.unit_price',
                 'qei.quantity',
                 'qei.marked_up_price',
@@ -111,6 +112,7 @@ class EquipmentQuoteService
                 'pic_email' => $data['pic_email'],
                 'pic_phone' => $data['pic_phone'],
                 'pic_position' => $data['pic_position'],
+                'quotation_remarks' => $data['quotation_remarks'] ?? null,
                 'delivery_charge' => $deliveryCharge,
                 'misc_charge' => $miscCharge,
                 'discount' => $discount,
@@ -145,6 +147,7 @@ class EquipmentQuoteService
                 $lineInserts[] = [
                     'quote_id' => $quoteId,
                     'item_id' => (int) $item['item_id'],
+                    'item_remarks' => $item['item_remarks'],
                     'quantity' => (int) $item['quantity'],
                     'unit_price' => (float) $item['unit_price'],
                     'marked_up_price' => (float) $item['marked_up_price'],
@@ -225,6 +228,7 @@ class EquipmentQuoteService
             'pic_email' => $data['pic_email'],
             'pic_phone' => $data['pic_phone'],
             'pic_position' => $data['pic_position'],
+            'quotation_remarks' => $data['quotation_remarks'] ?? null,
             'delivery_charge' => $deliveryCharge,
             'misc_charge' => $miscCharge,
             'discount' => $discount,
@@ -278,6 +282,7 @@ class EquipmentQuoteService
                 $lineInserts[] = [
                     'quote_id' => $id,
                     'item_id' => (int) $item['item_id'],
+                    'item_remarks' => $item['item_remarks'],
                     'quantity' => (int) $item['quantity'],
                     'unit_price' => (float) $item['unit_price'],
                     'marked_up_price' => (float) $item['marked_up_price'],
@@ -323,6 +328,7 @@ class EquipmentQuoteService
 
             return [
                 'item_id' => $itemId,
+                'item_remarks' => $item['item_remarks'] ?? null,
                 'quantity' => $qty,
                 'unit_price' => $unitPrice,
                 'marked_up_price' => $markedUp,

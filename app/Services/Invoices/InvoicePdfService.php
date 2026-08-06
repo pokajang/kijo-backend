@@ -2,17 +2,15 @@
 
 namespace App\Services\Invoices;
 
-use App\Services\Pdf\PdfRenderer;
 use App\Services\AuditLogService;
+use App\Services\Pdf\PdfRenderer;
 use App\Support\AppFilePaths;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class InvoicePdfService extends PdfRenderer
 {
-    public function __construct(private AuditLogService $auditLog)
-    {
-    }
+    public function __construct(private AuditLogService $auditLog) {}
 
     public function invoicePdf(Request $request, int $id = 0)
     {
@@ -23,7 +21,7 @@ class InvoicePdfService extends PdfRenderer
 
         try {
             $inv = DB::table('invoices')->where('id', $invoiceId)->first();
-            if (!$inv) {
+            if (! $inv) {
                 return response()->json(['status' => 'error', 'message' => 'Invoice not found'], 404);
             }
 
@@ -35,7 +33,7 @@ class InvoicePdfService extends PdfRenderer
             $preTax = [];
             $taxItems = [];
             $isTrainingInvoice = strcasecmp((string) ($inv->service_type ?? ''), 'Training') === 0;
-            $isHrdLine = static fn(object $itm): bool => (bool) preg_match(
+            $isHrdLine = static fn (object $itm): bool => (bool) preg_match(
                 '/^\s*(\d+(\.\d+)?\s*%\s*)?hrd\s*charge\b/i',
                 (string) ($itm->item_description ?? '')
             );
@@ -58,9 +56,9 @@ class InvoicePdfService extends PdfRenderer
                 ->first(['full_name', 'name_code', 'position', 'crm_position', 'department']);
 
             if ($creator) {
-                $creator->signOffTitle = !empty($creator->crm_position)
+                $creator->signOffTitle = ! empty($creator->crm_position)
                     ? $creator->crm_position
-                    : ($creator->position . ' (' . $creator->department . ')');
+                    : ($creator->position.' ('.$creator->department.')');
             }
 
             $project = DB::table('projects_main as p')
@@ -100,6 +98,7 @@ class InvoicePdfService extends PdfRenderer
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }
@@ -115,8 +114,9 @@ class InvoicePdfService extends PdfRenderer
             DB::beginTransaction();
             $inv = DB::table('invoices')->where('id', $invoiceId)->lockForUpdate()->first();
 
-            if (!$inv) {
+            if (! $inv) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Invoice not found'], 404);
             }
 
@@ -125,8 +125,9 @@ class InvoicePdfService extends PdfRenderer
             $paidAmount = $inv->paid_amount;
             $isPaidValid = $paidAmount !== null && is_numeric($paidAmount) && (float) $paidAmount > 0;
 
-            if ($status !== 'paid' || $paidDate === '' || !$isPaidValid) {
+            if ($status !== 'paid' || $paidDate === '' || ! $isPaidValid) {
                 DB::rollBack();
+
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Only paid invoices with payment date and amount can generate receipt PDF.',
@@ -150,7 +151,7 @@ class InvoicePdfService extends PdfRenderer
             $items = DB::table('invoice_breakdown')
                 ->where('invoice_id', $invoiceId)
                 ->orderBy('sort_order')
-                ->get(['item_description', 'description', 'unit', 'quantity', 'unit_price', 'subtotal']);
+                ->get(['item_description', 'description', 'item_remarks', 'unit', 'quantity', 'unit_price', 'subtotal']);
 
             $generatedAt = now();
             $generatorId = (string) $request->session()->get('staff_id', 'Unknown');
@@ -178,6 +179,7 @@ class InvoicePdfService extends PdfRenderer
                 DB::rollBack();
             }
             report($e);
+
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
     }
@@ -185,6 +187,7 @@ class InvoicePdfService extends PdfRenderer
     private function normalizeDocumentLanguage(mixed $language): string
     {
         $value = strtolower(trim((string) $language));
+
         return match ($value) {
             'bm', 'ms', 'ms-my', 'ms_my', 'bahasa', 'bahasa melayu' => 'ms-MY',
             default => 'en',
@@ -193,7 +196,8 @@ class InvoicePdfService extends PdfRenderer
 
     public function pdfView(string $baseView, mixed $language): string
     {
-        $bmView = $baseView . '-bm';
+        $bmView = $baseView.'-bm';
+
         return $this->normalizeDocumentLanguage($language) === 'ms-MY' && view()->exists($bmView)
             ? $bmView
             : $baseView;
@@ -209,8 +213,10 @@ class InvoicePdfService extends PdfRenderer
             'jpg', 'jpeg' => 'image/jpeg',
             default => 'image/png',
         };
-        return "data:{$mime};base64," . base64_encode($bytes);
+
+        return "data:{$mime};base64,".base64_encode($bytes);
     }
+
     private function invoiceSignatureAndStampDataUris(Request $request, object $inv, ?object $creator): array
     {
         $candidates = [];
@@ -229,7 +235,7 @@ class InvoicePdfService extends PdfRenderer
             $stampPaths[$ext] = "invoice-assets/stamp.{$ext}";
         }
         foreach (['png', 'jpg', 'jpeg'] as $ext) {
-            $stampPaths[$ext . '-signature'] = "signatures/stamp.{$ext}";
+            $stampPaths[$ext.'-signature'] = "signatures/stamp.{$ext}";
         }
 
         return [
@@ -252,7 +258,7 @@ class InvoicePdfService extends PdfRenderer
                 $paths[$ext] = "signatures/{$sid}-{$code}.{$ext}";
             }
             foreach (['png', 'jpg', 'jpeg'] as $ext) {
-                $paths[$ext . '-invoice'] = "invoice-assets/{$sid}-{$code}.{$ext}";
+                $paths[$ext.'-invoice'] = "invoice-assets/{$sid}-{$code}.{$ext}";
             }
 
             $dataUri = $this->publicDiskImageDataUri($paths);

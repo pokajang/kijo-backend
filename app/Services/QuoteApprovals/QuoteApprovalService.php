@@ -403,6 +403,10 @@ class QuoteApprovalService
             'rule_version' => config('quote_approval.rule_version'),
             'line_items' => $this->commercialLineItems($service, (int) $quote->id),
         ];
+        $quotationRemarks = trim((string) ($quote->quotation_remarks ?? ''));
+        if ($quotationRemarks !== '') {
+            $commercial['quotation_remarks'] = $quotationRemarks;
+        }
         foreach ([
             'sub_total', 'subtotal', 'sst_percent', 'sst_rate', 'sst_amount', 'hrd_charge',
             'discount_amount', 'training_total', 'meal_total',
@@ -500,6 +504,9 @@ class QuoteApprovalService
             ->map(function (object $row): array {
                 $item = (array) $row;
                 unset($item['id'], $item['quote_id'], $item['created_at'], $item['updated_at']);
+                if (trim((string) ($item['item_remarks'] ?? '')) === '') {
+                    unset($item['item_remarks']);
+                }
 
                 return $item;
             })

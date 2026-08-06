@@ -104,6 +104,11 @@
         .items-table th {
             background: #f2f2f2;
         }
+        .items-table .detail-row td {
+            background: #fcfcfc;
+            font-size: 9pt;
+            white-space: pre-wrap;
+        }
         .text-right {
             text-align: right;
         }
@@ -193,15 +198,24 @@
                     <td class="text-center">{{ $index + 1 }}</td>
                     <td>
                         {{ $item->item_name ?? '-' }}
-                        @if(!empty($item->description))
-                            <br><small>{{ $item->description }}</small>
-                        @endif
                     </td>
                     <td class="text-center">{{ $item->unit ?? '-' }}</td>
                     <td class="text-center">{{ number_format((float) ($item->quantity ?? 0), 0) }}</td>
                     <td class="text-center">{{ number_format((float) ($item->unit_price ?? 0), 2) }}</td>
                     <td class="text-center">{{ number_format((float) ($item->line_total ?? 0), 2) }}</td>
                 </tr>
+                @foreach(\App\Support\PdfText::chunks($item->description ?? '') as $descriptionChunk)
+                    <tr class="detail-row">
+                        <td></td>
+                        <td colspan="5"><strong>Description:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
+                    </tr>
+                @endforeach
+                @foreach(\App\Support\PdfText::chunks($item->item_remarks ?? '') as $remarkChunk)
+                    <tr class="detail-row">
+                        <td></td>
+                        <td colspan="5"><strong>Specifications / Remarks:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+                    </tr>
+                @endforeach
             @empty
                 <tr>
                     <td colspan="6">No PO items found.</td>
@@ -232,6 +246,10 @@
             </tr>
         </tbody>
     </table>
+
+    @if(trim((string) ($po->quotation_remarks ?? '')) !== '')
+        <p style="margin:3mm 0;white-space:pre-wrap;"><strong>Quotation Remarks:</strong><br>{!! nl2br(e($po->quotation_remarks), false) !!}</p>
+    @endif
 
     <p>
         Please review the terms and conditions on the next page and return us a signed copy of this Purchase Order.

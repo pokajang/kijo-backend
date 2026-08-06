@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\DeliveryOrder\StoreDeliveryOrderRequest;
 use App\Http\Requests\DeliveryOrder\UpdateDeliveryOrderRequest;
 use App\Services\AuditLogService;
+use App\Services\Equipment\EquipmentCommercialSnapshotService;
 use App\Support\AppFilePaths;
 use Dompdf\Dompdf;
 use Dompdf\Options;
@@ -30,13 +31,13 @@ class DeliveryOrderController extends Controller
         }
 
         $paginator = $query->paginate($perPage);
-        $orders    = $paginator->items();
+        $orders = $paginator->items();
 
-        if (!empty($orders)) {
-            $doIds        = array_column($orders, 'id');
+        if (! empty($orders)) {
+            $doIds = array_column($orders, 'id');
             $placeholders = implode(',', array_fill(0, count($doIds), '?'));
-            $items        = DB::select(
-                "SELECT do_id, id, item_name, description, quantity, unit
+            $items = DB::select(
+                "SELECT do_id, id, item_name, description, item_remarks, quantity, unit
                  FROM do_breakdown WHERE do_id IN ({$placeholders}) ORDER BY id ASC",
                 $doIds
             );
@@ -52,28 +53,32 @@ class DeliveryOrderController extends Controller
         }
 
         return response()->json([
-            'status'     => 'success',
-            'orders'     => $orders,
+            'status' => 'success',
+            'orders' => $orders,
             'pagination' => [
                 'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'per_page'     => $paginator->perPage(),
-                'total'        => $paginator->total(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
             ],
         ]);
     }
 
     public function store(StoreDeliveryOrderRequest $request)
     {
-        $data        = $request->validated();
-        $details     = $data['details'];
-        $breakdown   = $data['breakdown'];
+        $data = $request->validated();
+        $details = $data['details'];
+        $breakdown = $data['breakdown'];
+        $snapshot = app(EquipmentCommercialSnapshotService::class)->forProject(
+            isset($details['project_id']) ? (int) $details['project_id'] : null
+        );
+        $breakdown = app(EquipmentCommercialSnapshotService::class)->enrichItems($breakdown, $snapshot);
         $forceCreate = (bool) $request->input('forceCreate', false);
 
-        $staffId  = $request->session()->get('staff_id');
+        $staffId = $request->session()->get('staff_id');
         $nameCode = $request->session()->get('name_code', 'XXX');
 
-        if (!$forceCreate) {
+        if (! $forceCreate) {
             $existing = DB::table('do_details')
                 ->where('project_name', $details['project_name'])
                 ->where('project_code', $details['project_code'])
@@ -82,8 +87,8 @@ class DeliveryOrderController extends Controller
 
             if ($existing) {
                 return response()->json([
-                    'status'             => 'exists',
-                    'message'            => 'A Delivery Order already exists for this project.',
+                    'status' => 'exists',
+                    'message' => 'A Delivery Order already exists for this project.',
                     'existing_do_number' => $existing,
                 ]);
             }
@@ -95,120 +100,130 @@ class DeliveryOrderController extends Controller
             $documentLanguage = $this->documentLanguageForProject($details['project_id'] ?? null);
 
             $insert = [
-                'do_number'               => $doNumber,
-                'client_name'             => $details['client_name'],
-                'client_address'          => $details['client_address'],
-                'client_contact_name'     => $details['client_contact_name'],
+                'do_number' => $doNumber,
+                'client_name' => $details['client_name'],
+                'client_address' => $details['client_address'],
+                'client_contact_name' => $details['client_contact_name'],
                 'client_contact_position' => $details['client_contact_position'],
-                'client_contact_email'    => $details['client_contact_email'],
-                'client_contact_phone'    => $details['client_contact_phone'],
-                'company_contact_name'    => $details['company_contact_name'],
-                'company_contact_email'   => $details['company_contact_email'] ?? null,
-                'company_contact_phone'   => $details['company_contact_phone'] ?? null,
-                'project_id'              => $details['project_id'] ?? null,
-                'project_name'            => $details['project_name'],
-                'project_code'            => $details['project_code'],
-                'project_award_date'      => $details['project_award_date'],
-                'project_type'            => $details['project_type'] ?? null,
-                'project_description'     => $details['project_description'] ?? null,
-                'project_service_period'  => $details['project_service_period'] ?? null,
-                'created_by'              => $staffId,
+                'client_contact_email' => $details['client_contact_email'],
+                'client_contact_phone' => $details['client_contact_phone'],
+                'company_contact_name' => $details['company_contact_name'],
+                'company_contact_email' => $details['company_contact_email'] ?? null,
+                'company_contact_phone' => $details['company_contact_phone'] ?? null,
+                'project_id' => $details['project_id'] ?? null,
+                'project_name' => $details['project_name'],
+                'project_code' => $details['project_code'],
+                'project_award_date' => $details['project_award_date'],
+                'project_type' => $details['project_type'] ?? null,
+                'project_description' => $details['project_description'] ?? null,
+                'project_service_period' => $details['project_service_period'] ?? null,
+                'created_by' => $staffId,
             ];
             if (Schema::hasColumn('do_details', 'document_language')) {
                 $insert['document_language'] = $documentLanguage;
             }
+            if (Schema::hasColumn('do_details', 'quotation_remarks')) {
+                $insert['quotation_remarks'] = array_key_exists('quotation_remarks', $details)
+                    ? $details['quotation_remarks']
+                    : ($snapshot['quotation_remarks'] ?? null);
+            }
 
             $doId = DB::table('do_details')->insertGetId($insert);
 
-            DB::table('do_breakdown')->insert(array_map(fn ($item) => [
-                'do_id'       => $doId,
-                'item_name'   => $item['item_name'],
-                'description' => $item['description'],
-                'quantity'    => $item['quantity'],
-                'unit'        => $item['unit'] ?? 'pcs',
-            ], $breakdown));
+            DB::table('do_breakdown')->insert($this->breakdownRows($doId, $breakdown));
 
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 
         $this->auditLog->log($request, "Created delivery order {$doNumber}");
+
         return response()->json([
-            'status'    => 'success',
-            'message'   => 'Delivery Order created.',
+            'status' => 'success',
+            'message' => 'Delivery Order created.',
             'do_number' => $doNumber,
-            'do_id'     => $doId,
+            'do_id' => $doId,
         ]);
     }
 
     public function update(UpdateDeliveryOrderRequest $request, int $id)
     {
-        $data      = $request->validated();
-        $details   = $data['details'];
+        $data = $request->validated();
+        $details = $data['details'];
         $breakdown = $data['breakdown'] ?? [];
-        $staffId   = $request->session()->get('staff_id');
+        $staffId = $request->session()->get('staff_id');
 
         DB::beginTransaction();
         try {
             $order = DB::table('do_details')->where('id', $id)->lockForUpdate()->first();
-            if (!$order) {
+            if (! $order) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Delivery Order not found.'], 404);
             }
             if ((int) $order->created_by !== (int) $staffId) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'You are not allowed to edit this Delivery Order.'], 403);
             }
 
             $projectId = array_key_exists('project_id', $details) ? $details['project_id'] : $order->project_id;
 
             $updates = [
-                'client_name'             => $details['client_name'],
-                'client_address'          => $details['client_address'],
-                'client_contact_name'     => $details['client_contact_name'],
+                'client_name' => $details['client_name'],
+                'client_address' => $details['client_address'],
+                'client_contact_name' => $details['client_contact_name'],
                 'client_contact_position' => $details['client_contact_position'],
-                'client_contact_email'    => $details['client_contact_email'],
-                'client_contact_phone'    => $details['client_contact_phone'],
-                'company_contact_name'    => $details['company_contact_name'],
-                'company_contact_email'   => $details['company_contact_email'] ?? null,
-                'company_contact_phone'   => $details['company_contact_phone'] ?? null,
-                'project_id'              => $projectId,
-                'project_name'            => $details['project_name'],
-                'project_code'            => $details['project_code'],
-                'project_award_date'      => $details['project_award_date'],
-                'project_type'            => $details['project_type'] ?? null,
-                'project_description'     => $details['project_description'] ?? null,
-                'project_service_period'  => $details['project_service_period'] ?? null,
-                'updated_at'              => now(),
+                'client_contact_email' => $details['client_contact_email'],
+                'client_contact_phone' => $details['client_contact_phone'],
+                'company_contact_name' => $details['company_contact_name'],
+                'company_contact_email' => $details['company_contact_email'] ?? null,
+                'company_contact_phone' => $details['company_contact_phone'] ?? null,
+                'project_id' => $projectId,
+                'project_name' => $details['project_name'],
+                'project_code' => $details['project_code'],
+                'project_award_date' => $details['project_award_date'],
+                'project_type' => $details['project_type'] ?? null,
+                'project_description' => $details['project_description'] ?? null,
+                'project_service_period' => $details['project_service_period'] ?? null,
+                'updated_at' => now(),
             ];
             if (Schema::hasColumn('do_details', 'document_language')) {
                 $updates['document_language'] = $order->document_language ?? $this->documentLanguageForProject($projectId);
             }
+            if (Schema::hasColumn('do_details', 'quotation_remarks') && array_key_exists('quotation_remarks', $details)) {
+                $updates['quotation_remarks'] = $details['quotation_remarks'];
+            }
 
             DB::table('do_details')->where('id', $id)->update($updates);
 
-            if (!empty($breakdown)) {
+            if (! empty($breakdown)) {
+                if (Schema::hasColumn('do_breakdown', 'item_remarks')) {
+                    $existingItems = DB::table('do_breakdown')
+                        ->where('do_id', $id)
+                        ->orderBy('id')
+                        ->get(['item_name', 'item_remarks']);
+                    $breakdown = app(EquipmentCommercialSnapshotService::class)
+                        ->preserveMissingItemRemarks($breakdown, $existingItems);
+                }
                 DB::table('do_breakdown')->where('do_id', $id)->delete();
-                DB::table('do_breakdown')->insert(array_map(fn ($item) => [
-                    'do_id'       => $id,
-                    'item_name'   => $item['item_name'],
-                    'description' => $item['description'],
-                    'quantity'    => $item['quantity'],
-                    'unit'        => $item['unit'] ?? 'pcs',
-                ], $breakdown));
+                DB::table('do_breakdown')->insert($this->breakdownRows($id, $breakdown));
             }
 
             DB::commit();
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 
         $this->auditLog->log($request, "Updated delivery order #{$id}");
+
         return response()->json(['status' => 'success', 'message' => 'Delivery Order updated.']);
     }
 
@@ -219,12 +234,14 @@ class DeliveryOrderController extends Controller
         DB::beginTransaction();
         try {
             $order = DB::table('do_details')->where('id', $id)->lockForUpdate()->first();
-            if (!$order) {
+            if (! $order) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'Delivery Order not found.'], 404);
             }
             if ((int) $order->created_by !== (int) $staffId) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'You are not allowed to delete this Delivery Order.'], 403);
             }
 
@@ -234,22 +251,24 @@ class DeliveryOrderController extends Controller
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
 
         $this->auditLog->log($request, "Deleted delivery order #{$id}");
+
         return response()->json(['status' => 'success', 'message' => 'Delivery Order deleted.']);
     }
 
     public function pdf(Request $request, int $id)
     {
         $order = DB::table('do_details')->where('id', $id)->first();
-        if (!$order) {
+        if (! $order) {
             return response()->json(['status' => 'error', 'message' => 'Delivery Order not found.'], 404);
         }
 
         $items = DB::table('do_breakdown')
-            ->select(['item_name', 'description', 'quantity', 'unit'])
+            ->select(['item_name', 'description', 'item_remarks', 'quantity', 'unit'])
             ->where('do_id', $id)
             ->orderBy('id')
             ->get();
@@ -274,7 +293,7 @@ class DeliveryOrderController extends Controller
             'logoDataUri' => $logoDataUri,
         ])->render();
 
-        $options = new Options();
+        $options = new Options;
         $options->set('isRemoteEnabled', false);
         $options->set('isHtml5ParserEnabled', true);
 
@@ -286,7 +305,7 @@ class DeliveryOrderController extends Controller
         $canvas = $dompdf->getCanvas();
         $metrics = $dompdf->getFontMetrics();
         $font = $metrics->getFont('Helvetica', 'italic');
-        if (!$font) {
+        if (! $font) {
             $font = $metrics->getFont('Times-Roman', 'italic');
         }
         $fontSize = 8;
@@ -296,17 +315,39 @@ class DeliveryOrderController extends Controller
 
         $canvas->page_text(20, $y, 'Page {PAGE_NUM} of {PAGE_COUNT}', $font, $fontSize, $muted);
 
-        $stamp = 'Computer generated on: ' . $generatedAt->format('d M Y, h:i A')
-            . ' by: ' . ($generatorCode !== '' ? $generatorCode : '-')
-            . ' (' . $generatorId . ')';
+        $stamp = 'Computer generated on: '.$generatedAt->format('d M Y, h:i A')
+            .' by: '.($generatorCode !== '' ? $generatorCode : '-')
+            .' ('.$generatorId.')';
         $stampWidth = $metrics->getTextWidth($stamp, $font, $fontSize);
         $canvas->page_text($canvas->get_width() - 20 - $stampWidth, $y, $stamp, $font, $fontSize, $muted);
 
         $safeDoNumber = preg_replace('/[^A-Za-z0-9_-]+/', '-', (string) ($order->do_number ?? "do-{$id}"));
+
         return response($dompdf->output(), 200, [
-            'Content-Type'        => 'application/pdf',
+            'Content-Type' => 'application/pdf',
             'Content-Disposition' => "inline; filename=\"delivery-order-{$safeDoNumber}.pdf\"",
         ]);
+    }
+
+    /** @param array<int, array<string, mixed>> $breakdown */
+    private function breakdownRows(int $doId, array $breakdown): array
+    {
+        $hasItemRemarks = Schema::hasColumn('do_breakdown', 'item_remarks');
+
+        return array_map(static function (array $item) use ($doId, $hasItemRemarks): array {
+            $row = [
+                'do_id' => $doId,
+                'item_name' => $item['item_name'],
+                'description' => $item['description'],
+                'quantity' => $item['quantity'],
+                'unit' => $item['unit'] ?? 'pcs',
+            ];
+            if ($hasItemRemarks) {
+                $row['item_remarks'] = $item['item_remarks'] ?? null;
+            }
+
+            return $row;
+        }, $breakdown);
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -327,7 +368,8 @@ class DeliveryOrderController extends Controller
         }, 0);
 
         $next = $maxRun + 1;
-        return "DO{$yearTwo}-" . str_pad((string) $next, 3, '0', STR_PAD_LEFT) . $nameCode;
+
+        return "DO{$yearTwo}-".str_pad((string) $next, 3, '0', STR_PAD_LEFT).$nameCode;
     }
 
     private function documentLanguageForProject(mixed $projectId): string
@@ -337,17 +379,19 @@ class DeliveryOrderController extends Controller
             return 'en';
         }
 
-        if (!Schema::hasColumn('projects_main', 'proposal_language')) {
+        if (! Schema::hasColumn('projects_main', 'proposal_language')) {
             return 'en';
         }
 
         $language = DB::table('projects_main')->where('id', $id)->value('proposal_language');
+
         return $this->normalizeDocumentLanguage($language);
     }
 
     private function normalizeDocumentLanguage(mixed $language): string
     {
         $value = strtolower(trim((string) $language));
+
         return match ($value) {
             'bm', 'ms', 'ms-my', 'ms_my', 'bahasa', 'bahasa melayu' => 'ms-MY',
             default => 'en',
@@ -356,7 +400,8 @@ class DeliveryOrderController extends Controller
 
     private function pdfView(string $baseView, mixed $language): string
     {
-        $bmView = $baseView . '-bm';
+        $bmView = $baseView.'-bm';
+
         return $this->normalizeDocumentLanguage($language) === 'ms-MY' && view()->exists($bmView)
             ? $bmView
             : $baseView;
@@ -365,14 +410,15 @@ class DeliveryOrderController extends Controller
     private function companyLogoDataUri(): ?string
     {
         $logoPath = AppFilePaths::tcpdfTemplatePath('logo.png');
-        if (!is_file($logoPath) || !is_readable($logoPath)) {
+        if (! is_file($logoPath) || ! is_readable($logoPath)) {
             return null;
         }
         $bytes = file_get_contents($logoPath);
         if ($bytes === false) {
             return null;
         }
-        return 'data:image/png;base64,' . base64_encode($bytes);
+
+        return 'data:image/png;base64,'.base64_encode($bytes);
     }
 
     private function ensureDompdfAutoloaded(): void
@@ -381,24 +427,24 @@ class DeliveryOrderController extends Controller
             return;
         }
 
-        if (!self::$dompdfAutoloaderRegistered) {
+        if (! self::$dompdfAutoloaderRegistered) {
             $prefixes = [
-                'Dompdf\\'         => base_path('vendor/dompdf/dompdf/src/'),
-                'FontLib\\'        => base_path('vendor/dompdf/php-font-lib/src/FontLib/'),
-                'Svg\\'            => base_path('vendor/dompdf/php-svg-lib/src/Svg/'),
-                'Masterminds\\'    => base_path('vendor/masterminds/html5/src/'),
+                'Dompdf\\' => base_path('vendor/dompdf/dompdf/src/'),
+                'FontLib\\' => base_path('vendor/dompdf/php-font-lib/src/FontLib/'),
+                'Svg\\' => base_path('vendor/dompdf/php-svg-lib/src/Svg/'),
+                'Masterminds\\' => base_path('vendor/masterminds/html5/src/'),
                 'Sabberworm\\CSS\\' => base_path('vendor/sabberworm/php-css-parser/src/'),
                 'Barryvdh\\DomPDF\\' => base_path('vendor/barryvdh/laravel-dompdf/src/'),
             ];
 
             spl_autoload_register(static function (string $class) use ($prefixes): void {
                 foreach ($prefixes as $prefix => $baseDir) {
-                    if (!str_starts_with($class, $prefix)) {
+                    if (! str_starts_with($class, $prefix)) {
                         continue;
                     }
 
                     $relative = str_replace('\\', '/', substr($class, strlen($prefix)));
-                    $file     = rtrim($baseDir, '/\\') . '/' . $relative . '.php';
+                    $file = rtrim($baseDir, '/\\').'/'.$relative.'.php';
                     if (is_file($file)) {
                         require_once $file;
                     }
@@ -431,7 +477,7 @@ class DeliveryOrderController extends Controller
             }
         }
 
-        if (!interface_exists('Safe\\Exceptions\\SafeExceptionInterface', false)) {
+        if (! interface_exists('Safe\\Exceptions\\SafeExceptionInterface', false)) {
             $safeInterface = base_path('vendor/thecodingmachine/safe/lib/Exceptions/SafeExceptionInterface.php');
             if (is_file($safeInterface) && is_readable($safeInterface)) {
                 require_once $safeInterface;

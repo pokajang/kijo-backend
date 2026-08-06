@@ -29,6 +29,7 @@ final class CommercialCyclePayloads
     public static function invoice(int $projectId, int $quoteId, string $projectType, float $total): array
     {
         $isTraining = $projectType === 'Training';
+        $isEquipment = $projectType === 'Equipment Supply';
 
         return [
             'project_id' => $projectId,
@@ -54,8 +55,9 @@ final class CommercialCyclePayloads
             'grand_total' => $isTraining ? $total * 1.1 : $total,
             'breakdown' => array_values(array_filter([
                 [
-                    'item_description' => $projectType.' services',
-                    'description' => 'Awarded quotation scope.',
+                    'item_id' => $isEquipment ? 701 : null,
+                    'item_description' => $isEquipment ? 'Gas detector' : $projectType.' services',
+                    'description' => $isEquipment ? 'Portable multi-gas detector.' : 'Awarded quotation scope.',
                     'unit' => 'Lot',
                     'quantity' => 1,
                     'unit_price' => $total,
@@ -95,8 +97,10 @@ final class CommercialCyclePayloads
                 'project_service_period' => 'July 2026',
             ],
             'breakdown' => [[
-                'item_name' => $projectType.' deliverable',
-                'description' => 'Final contracted deliverable.',
+                'item_name' => $projectType === 'Equipment Supply' ? 'Gas detector' : $projectType.' deliverable',
+                'description' => $projectType === 'Equipment Supply'
+                    ? 'Portable multi-gas detector.'
+                    : 'Final contracted deliverable.',
                 'quantity' => 1,
                 'unit' => 'Lot',
             ]],
@@ -200,9 +204,11 @@ final class CommercialCyclePayloads
     private static function equipmentQuote(): array
     {
         return self::flatClient() + [
+            'quotation_remarks' => 'All supplied equipment must use the approved client colour scheme.',
             'items' => [[
                 'catalog_item_id' => 701,
                 'item_name' => 'Gas detector',
+                'item_remarks' => 'Colour: navy blue; enclosure size: compact.',
                 'unit_price' => 700,
                 'marked_up_price' => 1000,
                 'quantity' => 1,

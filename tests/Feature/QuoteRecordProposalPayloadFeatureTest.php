@@ -214,7 +214,7 @@ class QuoteRecordProposalPayloadFeatureTest extends TestCase
             'created_by_id', 'created_by_name', 'created_by_code', 'client_id',
             'client_name', 'client_ssm', 'client_address', 'client_city', 'client_state',
             'client_zip', 'pic_name', 'pic_email', 'pic_phone', 'pic_position',
-            'inquiry_remarks', 'discount', 'delivery_charge', 'misc_charge', 'sst_percent',
+            'inquiry_remarks', 'quotation_remarks', 'discount', 'delivery_charge', 'misc_charge', 'sst_percent',
             'sst_amount', 'sub_total', 'grand_total', 'attach_proposal', 'service_group',
             'estimated_total_cost', 'traffic_light_rule_version',
         ]);
@@ -285,6 +285,7 @@ class QuoteRecordProposalPayloadFeatureTest extends TestCase
             $table->id();
             $table->unsignedBigInteger('quote_id')->nullable();
             $table->unsignedBigInteger('item_id')->nullable();
+            $table->text('item_remarks')->nullable();
             $table->integer('quantity')->nullable();
             $table->decimal('unit_price', 12, 2)->nullable();
             $table->decimal('marked_up_price', 12, 2)->nullable();

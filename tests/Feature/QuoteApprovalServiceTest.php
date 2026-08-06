@@ -28,6 +28,8 @@ class QuoteApprovalServiceTest extends TestCase
         Schema::dropIfExists('system_users');
         Schema::dropIfExists('staff_general');
         Schema::dropIfExists('quotes_ih');
+        Schema::dropIfExists('quotes_equipment_items');
+        Schema::dropIfExists('quotes_equipment');
         Schema::dropIfExists('quotes_training');
 
         Schema::create('quotes_training', function (Blueprint $table): void {
@@ -66,6 +68,35 @@ class QuoteApprovalServiceTest extends TestCase
             $table->string('approval_zone')->nullable();
             $table->string('approval_status')->nullable();
             $table->string('approval_fingerprint', 64)->nullable();
+        });
+
+        Schema::create('quotes_equipment', function (Blueprint $table): void {
+            $table->id();
+            $table->string('quote_ref_no')->nullable();
+            $table->unsignedInteger('revision_no')->default(0);
+            $table->decimal('grand_total', 15, 2);
+            $table->decimal('estimated_total_cost', 15, 2)->nullable();
+            $table->text('quotation_remarks')->nullable();
+            $table->unsignedBigInteger('created_by_id')->nullable();
+            $table->string('created_by_code')->nullable();
+            $table->string('status')->default('Open');
+            $table->unsignedBigInteger('approval_request_id')->nullable();
+            $table->string('approval_zone')->nullable();
+            $table->string('approval_status')->nullable();
+            $table->string('approval_fingerprint', 64)->nullable();
+        });
+
+        Schema::create('quotes_equipment_items', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('quote_id');
+            $table->unsignedBigInteger('item_id');
+            $table->text('item_remarks')->nullable();
+            $table->decimal('quantity', 12, 2);
+            $table->decimal('unit_price', 15, 2);
+            $table->decimal('marked_up_price', 15, 2);
+            $table->decimal('line_total', 15, 2);
+            $table->unsignedBigInteger('created_by')->nullable();
+            $table->timestamps();
         });
 
         Schema::create('quote_approval_requests', function (Blueprint $table): void {
@@ -147,6 +178,8 @@ class QuoteApprovalServiceTest extends TestCase
     protected function tearDown(): void
     {
         Schema::dropIfExists('quote_approval_requests');
+        Schema::dropIfExists('quotes_equipment_items');
+        Schema::dropIfExists('quotes_equipment');
         Schema::dropIfExists('quotes_ih');
         Schema::dropIfExists('in_app_notifications');
         Schema::dropIfExists('system_users');
@@ -169,6 +202,45 @@ class QuoteApprovalServiceTest extends TestCase
         $this->assertSame('approved', $approval->status);
         $this->assertNull($approval->required_step);
         $this->assertNull(app(QuoteApprovalService::class)->issuanceDenial('training', $quoteId));
+    }
+
+    public function test_equipment_remarks_preserve_legacy_fingerprints_but_substantive_changes_supersede_them(): void
+    {
+        $quoteId = DB::table('quotes_equipment')->insertGetId([
+            'quote_ref_no' => 'QES-REMARKS',
+            'grand_total' => 120,
+            'estimated_total_cost' => 100,
+            'created_by_id' => 33,
+        ]);
+        DB::table('quotes_equipment_items')->insert([
+            'quote_id' => $quoteId,
+            'item_id' => 701,
+            'item_remarks' => null,
+            'quantity' => 1,
+            'unit_price' => 100,
+            'marked_up_price' => 120,
+            'line_total' => 120,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $service = app(QuoteApprovalService::class);
+        $legacy = $service->current('equipment', $quoteId, false);
+
+        DB::table('quotes_equipment')->where('id', $quoteId)->update(['quotation_remarks' => '']);
+        DB::table('quotes_equipment_items')->where('quote_id', $quoteId)->update(['item_remarks' => '']);
+        $blank = $service->current('equipment', $quoteId, false);
+
+        $this->assertSame($legacy->id, $blank->id);
+        $this->assertSame($legacy->commercial_fingerprint, $blank->commercial_fingerprint);
+
+        DB::table('quotes_equipment_items')->where('quote_id', $quoteId)->update([
+            'item_remarks' => 'Colour: navy blue',
+        ]);
+        $specified = $service->current('equipment', $quoteId, false);
+
+        $this->assertNotSame($blank->id, $specified->id);
+        $this->assertNotSame($blank->commercial_fingerprint, $specified->commercial_fingerprint);
     }
 
     public function test_legacy_ih_quote_without_estimated_cost_keeps_its_original_approval_basis(): void

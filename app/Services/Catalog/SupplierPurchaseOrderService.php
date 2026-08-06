@@ -3,25 +3,18 @@
 namespace App\Services\Catalog;
 
 use App\Http\Requests\Catalog\MarkSupplierPoPaidRequest;
-use App\Http\Requests\Catalog\StoreCatalogItemRequest;
 use App\Http\Requests\Catalog\StoreSupplierPoRequest;
-use App\Http\Requests\Catalog\UpdateCatalogItemRequest;
-use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
+use App\Services\Equipment\EquipmentCommercialSnapshotService;
 use Illuminate\Http\Request;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Schema;
 
 class SupplierPurchaseOrderService extends CatalogBaseService
 {
-
     public function listPurchaseOrders(Request $request)
     {
         $perPage = max(1, min(100, (int) $request->query('per_page', 25)));
-        $q       = trim((string) $request->query('q', ''));
+        $q = trim((string) $request->query('q', ''));
 
         $query = DB::table('supplier_po_main as pm')
             ->leftJoin('staff_general as sg', 'sg.staff_id', '=', 'pm.created_by')
@@ -42,6 +35,7 @@ class SupplierPurchaseOrderService extends CatalogBaseService
                 'pm.po_ref_no',
                 'pm.status',
                 'pm.status_remarks',
+                'pm.quotation_remarks',
                 'pm.created_by',
                 'pm.created_at',
                 'pm.updated_at',
@@ -64,16 +58,17 @@ class SupplierPurchaseOrderService extends CatalogBaseService
         }
 
         $paginator = $query->paginate($perPage);
-        $pos       = $paginator->items();
+        $pos = $paginator->items();
 
-        if (!empty($pos)) {
+        if (! empty($pos)) {
             $poIds = array_map(fn ($po) => (int) $po->po_id, $pos);
-            $rows  = DB::table('supplier_po_items')
+            $rows = DB::table('supplier_po_items')
                 ->select([
                     'po_id',
                     'item_id',
                     'item_name',
                     'description',
+                    'item_remarks',
                     'unit',
                     'quantity',
                     'unit_price',
@@ -94,32 +89,34 @@ class SupplierPurchaseOrderService extends CatalogBaseService
         }
 
         return response()->json([
-            'status'     => 'success',
-            'data'       => $pos,
+            'status' => 'success',
+            'data' => $pos,
             'pagination' => [
                 'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'per_page'     => $paginator->perPage(),
-                'total'        => $paginator->total(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
             ],
         ]);
     }
 
     public function storePurchaseOrder(StoreSupplierPoRequest $request)
     {
-        $staffId    = (int) $request->session()->get('staff_id', 0);
+        $staffId = (int) $request->session()->get('staff_id', 0);
         $creatorCode = trim((string) $request->session()->get('name_code', ''));
 
         if ($staffId <= 0 || $creatorCode === '') {
             return response()->json(['status' => 'error', 'message' => 'Unauthorized.'], 403);
         }
 
-        $data      = $request->validated();
+        $data = $request->validated();
         $projectId = $data['project_id'] ?? null;
-        $supplier  = $data['supplier'];
-        $items     = $data['items'];
+        $supplier = $data['supplier'];
+        $snapshotService = app(EquipmentCommercialSnapshotService::class);
+        $snapshot = $snapshotService->forProject($projectId ? (int) $projectId : null);
+        $items = $snapshotService->enrichItems($data['items'], $snapshot);
 
-        $lockName     = 'supplier_po_' . date('Y');
+        $lockName = 'supplier_po_'.date('Y');
         $lockAcquired = false;
 
         try {
@@ -127,12 +124,12 @@ class SupplierPurchaseOrderService extends CatalogBaseService
 
             $lockRow = DB::selectOne('SELECT GET_LOCK(?, 10) AS lock_status', [$lockName]);
             $lockAcquired = isset($lockRow->lock_status) && (int) $lockRow->lock_status === 1;
-            if (!$lockAcquired) {
+            if (! $lockAcquired) {
                 throw new \RuntimeException('Unable to acquire supplier PO lock.');
             }
 
             $yearFull = (int) date('Y');
-            $yearTwo  = date('y');
+            $yearTwo = date('y');
 
             $maxNo = DB::table('supplier_po_main')
                 ->whereYear('created_at', $yearFull)
@@ -141,39 +138,52 @@ class SupplierPurchaseOrderService extends CatalogBaseService
                 ->max('po_running_no');
 
             $runningNo = ((int) $maxNo) + 1;
-            $padded    = str_pad((string) $runningNo, 4, '0', STR_PAD_LEFT);
-            $refNo     = "POES{$yearTwo}-{$padded}{$creatorCode}";
+            $padded = str_pad((string) $runningNo, 4, '0', STR_PAD_LEFT);
+            $refNo = "POES{$yearTwo}-{$padded}{$creatorCode}";
 
-            $poId = DB::table('supplier_po_main')->insertGetId([
-                'project_id'              => $projectId,
-                'supplier_id'             => $supplier['id'] ?? null,
-                'supplier_name'           => $supplier['company_name'] ?? '',
-                'supplier_address'        => $supplier['full_address'] ?? '',
-                'supplier_contact_name'   => $supplier['contact_name'] ?? '',
+            $poInsert = [
+                'project_id' => $projectId,
+                'supplier_id' => $supplier['id'] ?? null,
+                'supplier_name' => $supplier['company_name'] ?? '',
+                'supplier_address' => $supplier['full_address'] ?? '',
+                'supplier_contact_name' => $supplier['contact_name'] ?? '',
                 'supplier_contact_number' => $supplier['contact_number'] ?? '',
-                'discount'                => $data['discount'] ?? 0,
-                'delivery_charge'         => $data['delivery_charge'] ?? 0,
-                'sst_percent'             => $data['sst_percent'] ?? 0,
-                'sst_amount'              => $data['sst_amount'] ?? 0,
-                'grand_total'             => $data['grand_total'] ?? 0,
-                'po_running_no'           => $runningNo,
-                'po_ref_no'               => $refNo,
-                'created_by'              => $staffId,
-                'created_at'              => now(),
-            ]);
+                'discount' => $data['discount'] ?? 0,
+                'delivery_charge' => $data['delivery_charge'] ?? 0,
+                'sst_percent' => $data['sst_percent'] ?? 0,
+                'sst_amount' => $data['sst_amount'] ?? 0,
+                'grand_total' => $data['grand_total'] ?? 0,
+                'po_running_no' => $runningNo,
+                'po_ref_no' => $refNo,
+                'created_by' => $staffId,
+                'created_at' => now(),
+            ];
+            if (Schema::hasColumn('supplier_po_main', 'quotation_remarks')) {
+                $poInsert['quotation_remarks'] = array_key_exists('quotation_remarks', $data)
+                    ? $data['quotation_remarks']
+                    : ($snapshot['quotation_remarks'] ?? null);
+            }
+            $poId = DB::table('supplier_po_main')->insertGetId($poInsert);
 
             DB::table('supplier_po_items')->insert(array_map(
-                fn (array $item) => [
-                    'po_id'       => $poId,
-                    'item_id'     => $item['item_id'] ?? null,
-                    'item_name'   => $item['item_name'],
-                    'description' => $item['description'] ?? '',
-                    'unit'        => $item['unit'] ?? '',
-                    'quantity'    => $item['quantity'] ?? 0,
-                    'unit_price'  => $item['unit_price'] ?? 0,
-                    'line_total'  => $item['line_total'] ?? 0,
-                    'created_at'  => now(),
-                ],
+                function (array $item) use ($poId): array {
+                    $row = [
+                        'po_id' => $poId,
+                        'item_id' => $item['item_id'] ?? null,
+                        'item_name' => $item['item_name'],
+                        'description' => $item['description'] ?? '',
+                        'unit' => $item['unit'] ?? '',
+                        'quantity' => $item['quantity'] ?? 0,
+                        'unit_price' => $item['unit_price'] ?? 0,
+                        'line_total' => $item['line_total'] ?? 0,
+                        'created_at' => now(),
+                    ];
+                    if (Schema::hasColumn('supplier_po_items', 'item_remarks')) {
+                        $row['item_remarks'] = $item['item_remarks'] ?? null;
+                    }
+
+                    return $row;
+                },
                 $items
             ));
 
@@ -184,6 +194,7 @@ class SupplierPurchaseOrderService extends CatalogBaseService
                 DB::select('SELECT RELEASE_LOCK(?)', [$lockName]);
             }
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Failed to create supplier PO.'], 500);
         }
 
@@ -192,9 +203,10 @@ class SupplierPurchaseOrderService extends CatalogBaseService
         }
 
         $this->auditLog->log($request, "Created supplier PO {$refNo} for project {$projectId}");
+
         return response()->json([
-            'status'    => 'success',
-            'po_id'     => $poId,
+            'status' => 'success',
+            'po_id' => $poId,
             'po_ref_no' => $refNo,
         ]);
     }
@@ -206,10 +218,10 @@ class SupplierPurchaseOrderService extends CatalogBaseService
             return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
         }
 
-        $data        = $request->validated();
-        $poId        = (int) $data['po_id'];
+        $data = $request->validated();
+        $poId = (int) $data['po_id'];
         $paymentDate = $data['payment_date'];
-        $remarks     = trim((string) ($data['remarks'] ?? ''));
+        $remarks = trim((string) ($data['remarks'] ?? ''));
 
         $statusRemarks = "Paid on {$paymentDate}";
         if ($remarks !== '') {
@@ -221,23 +233,25 @@ class SupplierPurchaseOrderService extends CatalogBaseService
                 ->where('po_id', $poId)
                 ->where('status', '<>', 'Paid')
                 ->update([
-                    'status'         => 'Paid',
+                    'status' => 'Paid',
                     'status_remarks' => $statusRemarks,
-                    'updated_at'     => now(),
+                    'updated_at' => now(),
                 ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error'], 500);
         }
 
         if ($affected < 1) {
             return response()->json([
-                'status'  => 'error',
+                'status' => 'error',
                 'message' => 'PO not found or already marked as paid.',
             ], 404);
         }
 
         $this->auditLog->log($request, "Marked supplier PO #{$poId} as paid by {$staffCode}");
+
         return response()->json(['status' => 'success', 'message' => 'Payment marked.']);
     }
 
@@ -260,6 +274,7 @@ class SupplierPurchaseOrderService extends CatalogBaseService
 
             if ($deletedMain < 1) {
                 DB::rollBack();
+
                 return response()->json(['status' => 'error', 'message' => 'PO not found.'], 404);
             }
 
@@ -267,10 +282,12 @@ class SupplierPurchaseOrderService extends CatalogBaseService
         } catch (\Throwable $e) {
             DB::rollBack();
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error'], 500);
         }
 
         $this->auditLog->log($request, "Supplier PO #{$resolvedPoId} deleted by {$actorCode}");
+
         return response()->json(['status' => 'success', 'message' => 'PO deleted successfully.']);
     }
 }

@@ -28,6 +28,7 @@
         table.breakdown th, table.breakdown td { border: 0.5px solid #000; padding: 4px; vertical-align: top; }
         table.breakdown th { background: #f2f2f2; font-weight: 700; text-align: center; }
         table.breakdown td.center { text-align: center; }
+        table.breakdown .detail-row td { background: #fcfcfc; font-size: 9pt; white-space: pre-wrap; }
         .muted-row { background: #f9f9f9; }
         .footer-note { font-size: 10pt; margin: 3mm 0; }
         .tagline { text-align: center; font-size: 12pt; font-style: italic; color: #cccccc; margin-top: 8mm; }
@@ -112,19 +113,31 @@
             if ($up === null || $qty === null || $sub === null) { continue; }
             $desc     = (string) ($itm->item_description ?? '');
             $lineDesc = trim((string) ($itm->description ?? ''));
+            $itemRemarks = trim((string) ($itm->item_remarks ?? ''));
             $unit     = (string) ($itm->unit ?? '');
         @endphp
         <tr>
             <td class="center">{{ $i + 1 }}</td>
             <td>
                 {{ $desc }}
-                @if($lineDesc !== '')<br><span style="font-size:9pt;color:#555;">{{ $lineDesc }}</span>@endif
             </td>
             <td class="center">{{ number_format((float) $up, 2) }}</td>
             <td class="center">{{ number_format((float) $qty, 2) }}</td>
             <td class="center">{{ $unit }}</td>
             <td class="center">{{ number_format((float) $sub, 2) }}</td>
         </tr>
+        @foreach(\App\Support\PdfText::chunks($lineDesc) as $descriptionChunk)
+            <tr class="detail-row">
+                <td></td>
+                <td colspan="5"><strong>{{ $L('description', 'Description') }}:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
+            </tr>
+        @endforeach
+        @foreach(\App\Support\PdfText::chunks($itemRemarks) as $remarkChunk)
+            <tr class="detail-row">
+                <td></td>
+                <td colspan="5"><strong>Specifications / {{ $L('remarks', 'Remarks') }}:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+            </tr>
+        @endforeach
     @endforeach
     @if($sstAmt > 0)
         <tr>
@@ -137,6 +150,10 @@
         <td class="center"><strong>{{ $totalPaid }}</strong></td>
     </tr>
 </table>
+
+@if(trim((string) ($inv->quotation_remarks ?? '')) !== '')
+    <p style="margin-top:3mm;white-space:pre-wrap;"><strong>Quotation {{ $L('remarks', 'Remarks') }}:</strong><br>{!! nl2br(e($inv->quotation_remarks), false) !!}</p>
+@endif
 
 <p class="footer-note">
     {{ $L('receipt_thanks', 'Thank you for your payment. We are keen to serve you again.') }}<br>

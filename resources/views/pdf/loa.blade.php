@@ -121,32 +121,42 @@
     </tr>
     <tr>
         <td>Position</td>
-        <td>{!! $data->position !!}</td>
+        <td>{!! nl2br(e($data->position ?? ''), false) !!}</td>
     </tr>
-    <tr>
-        <td>Service Description</td>
-        <td>{!! $services !!}</td>
-    </tr>
-    <tr>
-        <td>Venue</td>
-        <td>{!! $venue !!}</td>
-    </tr>
-    <tr>
-        <td>Fee Breakdown</td>
-        <td>{!! $breakdown !!}</td>
-    </tr>
+    @foreach(\App\Support\PdfText::chunks($services) ?: ['-'] as $chunkIndex => $chunk)
+        <tr>
+            <td>{{ $chunkIndex === 0 ? 'Service Description' : '' }}</td>
+            <td>{!! nl2br(e($chunk), false) !!}</td>
+        </tr>
+    @endforeach
+    @foreach(\App\Support\PdfText::chunks($venue) ?: ['-'] as $chunkIndex => $chunk)
+        <tr>
+            <td>{{ $chunkIndex === 0 ? 'Venue' : '' }}</td>
+            <td>{!! nl2br(e($chunk), false) !!}</td>
+        </tr>
+    @endforeach
+    @foreach(\App\Support\PdfText::chunks($breakdown) ?: ['-'] as $chunkIndex => $chunk)
+        <tr>
+            <td>{{ $chunkIndex === 0 ? 'Fee Breakdown' : '' }}</td>
+            <td>{!! nl2br(e($chunk), false) !!}</td>
+        </tr>
+    @endforeach
     <tr>
         <td>Award Amount</td>
         <td><strong>{{ $formattedAward }}</strong></td>
     </tr>
-    <tr>
-        <td>Payment Terms</td>
-        <td>{!! $data->payment_terms !!}</td>
-    </tr>
-    <tr>
-        <td>Remarks</td>
-        <td>{!! $remarks !!}</td>
-    </tr>
+    @foreach(\App\Support\PdfText::chunks($data->payment_terms ?? '') ?: ['-'] as $chunkIndex => $chunk)
+        <tr>
+            <td>{{ $chunkIndex === 0 ? 'Payment Terms' : '' }}</td>
+            <td>{!! nl2br(e($chunk), false) !!}</td>
+        </tr>
+    @endforeach
+    @foreach(\App\Support\PdfText::chunks($remarks) ?: ['-'] as $chunkIndex => $chunk)
+        <tr>
+            <td>{{ $chunkIndex === 0 ? 'Remarks' : '' }}</td>
+            <td>{!! nl2br(e($chunk), false) !!}</td>
+        </tr>
+    @endforeach
 </table>
 
 <p style="margin-top: 4mm;">

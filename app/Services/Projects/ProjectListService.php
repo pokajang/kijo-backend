@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Schema;
 class ProjectListService
 {
     private const STAFF_PROJECT_ROLES = ['leader', 'pic', 'owner', 'assistant', 'collaborator'];
+
     private const CLOSE_REMINDER_MONEY_TOLERANCE = 0.01;
 
     private static bool $dompdfAutoloaderRegistered = false;
@@ -31,6 +32,9 @@ class ProjectListService
             ? 'p.current_project_value'
             : 'NULL';
         $resolvedProjectValueColumn = $this->projectValueService()->resolvedProjectValueExpression('p');
+        $equipmentQuotationRemarksColumn = Schema::hasColumn('quotes_equipment', 'quotation_remarks')
+            ? 'qe.quotation_remarks'
+            : 'NULL';
 
         $projects = DB::select("
             SELECT
@@ -61,7 +65,8 @@ class ProjectListService
                 COALESCE(qt.pic_name, qh.pic_name, qm.pic_name, qs.pic_name, qe.pic_name) AS quote_pic_name,
                 COALESCE(qt.pic_email, qh.pic_email, qm.pic_email, qs.pic_email, qe.pic_email) AS quote_pic_email,
                 COALESCE(qt.pic_phone, qh.pic_phone, qm.pic_phone, qs.pic_phone, qe.pic_phone) AS quote_pic_phone,
-                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position
+                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position,
+                {$equipmentQuotationRemarksColumn} AS quotation_remarks
             FROM projects_main p
             LEFT JOIN quotes_training qt ON qt.id = p.quote_id AND p.project_type = 'Training'
             LEFT JOIN quotes_ih qh ON qh.id = p.quote_id AND p.project_type = 'Industrial Hygiene'
@@ -181,7 +186,7 @@ class ProjectListService
         if (! empty($equipmentQuoteIds)) {
             $eqPlaceholders = implode(',', array_fill(0, count($equipmentQuoteIds), '?'));
             $eqRows = DB::select(
-                "SELECT qi.quote_id, qi.id, qi.item_id, qi.quantity, qi.unit_price,
+                "SELECT qi.quote_id, qi.id, qi.item_id, qi.item_remarks, qi.quantity, qi.unit_price,
                          qi.marked_up_price, qi.line_total, ci.item_name, ci.description, ci.unit
                  FROM quotes_equipment_items qi
                  JOIN catalog_items ci ON ci.id = qi.item_id
@@ -592,6 +597,9 @@ class ProjectListService
             ? 'p.current_project_value'
             : 'NULL';
         $resolvedProjectValueColumn = $this->projectValueService()->resolvedProjectValueExpression('p');
+        $equipmentQuotationRemarksColumn = Schema::hasColumn('quotes_equipment', 'quotation_remarks')
+            ? 'qe.quotation_remarks'
+            : 'NULL';
 
         $rows = DB::select("
             SELECT
@@ -622,7 +630,8 @@ class ProjectListService
                 COALESCE(qt.pic_name, qh.pic_name, qm.pic_name, qs.pic_name, qe.pic_name) AS quote_pic_name,
                 COALESCE(qt.pic_email, qh.pic_email, qm.pic_email, qs.pic_email, qe.pic_email) AS quote_pic_email,
                 COALESCE(qt.pic_phone, qh.pic_phone, qm.pic_phone, qs.pic_phone, qe.pic_phone) AS quote_pic_phone,
-                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position
+                COALESCE(qt.pic_position, qh.pic_position, qm.pic_position, qs.pic_position, qe.pic_position) AS quote_pic_position,
+                {$equipmentQuotationRemarksColumn} AS quotation_remarks
             FROM projects_main p
             LEFT JOIN quotes_training qt ON qt.id = p.quote_id AND p.project_type = 'Training'
             LEFT JOIN quotes_ih qh ON qh.id = p.quote_id AND p.project_type = 'Industrial Hygiene'
@@ -736,7 +745,7 @@ class ProjectListService
             $project['equipment_items'] = array_map(
                 fn ($row) => (array) $row,
                 DB::select(
-                    'SELECT qi.quote_id, qi.id, qi.item_id, qi.quantity, qi.unit_price,
+                    'SELECT qi.quote_id, qi.id, qi.item_id, qi.item_remarks, qi.quantity, qi.unit_price,
                              qi.marked_up_price, qi.line_total, ci.item_name, ci.description, ci.unit
                      FROM quotes_equipment_items qi
                      JOIN catalog_items ci ON ci.id = qi.item_id

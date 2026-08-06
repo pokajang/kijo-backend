@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Services\Assistant\AssistantFeedbackMemory;
 use App\Services\Assistant\AssistantContextSanitizer;
+use App\Services\Assistant\AssistantFeedbackMemory;
 use App\Services\Assistant\AssistantRetrievalPlanner;
 use App\Services\Assistant\AssistantText;
 use App\Services\Assistant\Sources\ClientContextProvider;
@@ -306,6 +306,7 @@ class KnowledgeAssistantTest extends TestCase
             $table->increments('id');
             $table->unsignedInteger('quote_id');
             $table->unsignedInteger('item_id')->nullable();
+            $table->text('item_remarks')->nullable();
             $table->decimal('unit_price', 12, 2)->nullable();
             $table->decimal('quantity', 12, 2)->nullable();
             $table->decimal('marked_up_price', 12, 2)->nullable();

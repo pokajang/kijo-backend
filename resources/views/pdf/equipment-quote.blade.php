@@ -27,7 +27,8 @@
         .items-table td.right { text-align: right; }
         .items-table .subtotal-row td { text-align: right; font-weight: 400; }
         .items-table .total-row td { text-align: right; font-weight: 700; }
-        .muted { font-size: 8.5pt; color: #6c757d; }
+        .items-table .detail-row td { background: #fcfcfc; font-size: 8.5pt; white-space: pre-wrap; }
+        .quotation-remarks { margin: 3mm 0; padding: 2.5mm 3mm; background: #f7f7f7; border-left: 1.2mm solid #696969; white-space: pre-line; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
         .page-break { page-break-before: always; height: 0; margin: 0; padding: 0; }
@@ -83,15 +84,23 @@
                         <td class="num">{{ $i + 1 }}</td>
                         <td>
                             {{ $item['title'] }}<br>
-                            @php
-                                $shortDesc = mb_strimwidth(strip_tags($item['description'] ?? ''), 0, 50, '…', 'UTF-8');
-                            @endphp
-                            <span class="muted">{{ $shortDesc }}</span>
                         </td>
                         <td class="num">{{ (int) $item['quantity'] }}</td>
                         <td class="right">{{ number_format((float) $item['marked_up_price'], 2) }}</td>
                         <td class="right">{{ number_format((float) $item['line_total'], 2) }}</td>
                     </tr>
+                    @foreach(\App\Support\PdfText::chunks($item['description'] ?? '') as $descriptionChunk)
+                        <tr class="detail-row">
+                            <td></td>
+                            <td colspan="4"><strong>Description:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
+                        </tr>
+                    @endforeach
+                    @foreach(\App\Support\PdfText::chunks($item['item_remarks'] ?? '') as $remarkChunk)
+                        <tr class="detail-row">
+                            <td></td>
+                            <td colspan="4"><strong>Specifications:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+                        </tr>
+                    @endforeach
                 @endforeach
 
                 <tr class="subtotal-row">
@@ -138,6 +147,10 @@
                 </tr>
             </tbody>
         </table>
+
+        @if(!empty($quotationRemarks))
+            <div class="quotation-remarks"><strong>Quotation Remarks:</strong><br>{{ $quotationRemarks }}</div>
+        @endif
 
         <p>
             Kindly review the terms and conditions outlined in the next page, and <strong>return a duly signed copy</strong> of this quotation as confirmation of your acceptance.

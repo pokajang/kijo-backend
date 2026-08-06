@@ -32,6 +32,9 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
 
         $this->assertStringContainsString('Unit Price (RM)', $plain);
         $this->assertStringContainsString('Portable detector', $plain);
+        $this->assertStringContainsString('Specifications: Colour: navy blue', $plain);
+        $this->assertStringContainsString('Quotation Remarks:', $plain);
+        $this->assertStringContainsString('Deliver all equipment together.', $plain);
         $this->assertStringContainsString('RM 200.00', $plain);
         $this->assertStringNotContainsString('2 unit x RM 100.00', $plain);
     }
@@ -130,10 +133,12 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
             'items' => [[
                 'title' => 'Gas Detector',
                 'description' => 'Portable detector',
+                'item_remarks' => 'Colour: navy blue',
                 'quantity' => 2,
                 'marked_up_price' => 100,
                 'line_total' => 200,
             ]],
+            'quotationRemarks' => 'Deliver all equipment together.',
             'lineItemsTotal' => 200,
             'deliveryCharge' => 0,
             'miscCharge' => 0,

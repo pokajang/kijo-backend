@@ -117,6 +117,11 @@
             background-color: #f2f2f2;
             font-weight: 700;
         }
+        .items-table .detail-row td {
+            background: #fcfcfc;
+            font-size: 9pt;
+            white-space: pre-wrap;
+        }
         .text-center {
             text-align: center;
         }
@@ -214,9 +219,21 @@
                     <tr>
                         <td class="text-center">{{ $index + 1 }}</td>
                         <td>{{ $item->item_name ?? '-' }}</td>
-                        <td>{{ $item->description ?? '-' }}</td>
+                        <td></td>
                         <td class="text-center">{{ $item->quantity ?? '-' }} {{ $item->unit ?? '' }}</td>
                     </tr>
+                    @foreach(\App\Support\PdfText::chunks($item->description ?? '') as $descriptionChunk)
+                        <tr class="detail-row">
+                            <td></td>
+                            <td colspan="3"><strong>{{ $L('description', 'Description') }}:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
+                        </tr>
+                    @endforeach
+                    @foreach(\App\Support\PdfText::chunks($item->item_remarks ?? '') as $remarkChunk)
+                        <tr class="detail-row">
+                            <td></td>
+                            <td colspan="3"><strong>Specifications / {{ $L('remarks', 'Remarks') }}:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+                        </tr>
+                    @endforeach
                 @empty
                     <tr>
                         <td colspan="4">{{ $pdfLanguage === 'ms-MY' ? 'Tiada pecahan item tersedia.' : 'No item breakdown available.' }}</td>
@@ -224,6 +241,10 @@
                 @endforelse
             </tbody>
         </table>
+
+        @if(trim((string) ($order->quotation_remarks ?? '')) !== '')
+            <p style="margin:3mm 0;white-space:pre-wrap;"><strong>Quotation {{ $L('remarks', 'Remarks') }}:</strong><br>{!! nl2br(e($order->quotation_remarks), false) !!}</p>
+        @endif
 
         <p>
             {{ $pdfLanguage === 'ms-MY' ? 'Sila kembalikan salinan pesanan penghantaran yang telah ditandatangani sebagai pengesahan penerimaan anda.' : 'Kindly return a duly signed copy of this delivery order as confirmation of your acceptance.' }}

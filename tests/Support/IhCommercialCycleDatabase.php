@@ -389,6 +389,7 @@ final class IhCommercialCycleDatabase
             $table->string('payment_method')->nullable();
             $table->string('grant_approval_no')->nullable();
             $table->text('remarks')->nullable();
+            $table->text('quotation_remarks')->nullable();
             $table->string('status')->nullable();
             $table->string('receipt_no')->nullable();
             $table->string('document_language')->nullable();
@@ -403,6 +404,7 @@ final class IhCommercialCycleDatabase
             $table->unsignedBigInteger('invoice_id');
             $table->string('item_description')->nullable();
             $table->text('description')->nullable();
+            $table->text('item_remarks')->nullable();
             $table->string('unit')->nullable();
             $table->decimal('quantity', 12, 2)->nullable();
             $table->decimal('unit_price', 15, 2)->nullable();
@@ -428,6 +430,7 @@ final class IhCommercialCycleDatabase
             $table->date('project_award_date');
             $table->string('project_type')->nullable();
             $table->text('project_description')->nullable();
+            $table->text('quotation_remarks')->nullable();
             $table->string('project_service_period')->nullable();
             $table->unsignedBigInteger('created_by')->nullable();
             $table->string('document_language')->nullable();
@@ -439,6 +442,7 @@ final class IhCommercialCycleDatabase
             $table->unsignedBigInteger('do_id');
             $table->string('item_name');
             $table->text('description');
+            $table->text('item_remarks')->nullable();
             $table->decimal('quantity', 12, 2);
             $table->string('unit')->nullable();
             $table->timestamps();
@@ -461,6 +465,7 @@ final class IhCommercialCycleDatabase
             $table->string('po_ref_no')->nullable();
             $table->unsignedBigInteger('created_by')->nullable();
             $table->string('status')->nullable();
+            $table->text('quotation_remarks')->nullable();
             $table->timestamp('created_at')->nullable();
         });
 
@@ -470,6 +475,7 @@ final class IhCommercialCycleDatabase
             $table->unsignedBigInteger('item_id')->nullable();
             $table->string('item_name');
             $table->text('description')->nullable();
+            $table->text('item_remarks')->nullable();
             $table->string('unit')->nullable();
             $table->decimal('quantity', 12, 2);
             $table->decimal('unit_price', 15, 2);

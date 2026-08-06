@@ -74,6 +74,7 @@ final class CommercialCycleQuoteSchemas
         Schema::create('quotes_equipment', function (Blueprint $table): void {
             self::commonColumns($table);
             $table->text('inquiry_remarks')->nullable();
+            $table->text('quotation_remarks')->nullable();
             foreach (['discount', 'delivery_charge', 'misc_charge', 'sst_percent', 'sst_amount', 'sub_total', 'grand_total', 'estimated_total_cost'] as $column) {
                 $table->decimal($column, 15, 2)->nullable();
             }
@@ -103,6 +104,7 @@ final class CommercialCycleQuoteSchemas
             $table->id();
             $table->unsignedBigInteger('quote_id');
             $table->unsignedBigInteger('item_id');
+            $table->text('item_remarks')->nullable();
             $table->decimal('quantity', 12, 2);
             $table->decimal('unit_price', 15, 2);
             $table->decimal('marked_up_price', 15, 2);

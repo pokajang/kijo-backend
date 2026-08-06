@@ -14,7 +14,7 @@ class QuoteRecordListingService
     {
         $service = $this->config->normalizeServiceKey($service);
         $cfg = $this->config->quoteConfig($service);
-        if (!$cfg) {
+        if (! $cfg) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported service type.'], 404);
         }
 
@@ -27,7 +27,7 @@ class QuoteRecordListingService
             $quoteIds = $quotes->pluck('id')->map(fn ($v) => (int) $v)->all();
 
             $itemsByQuote = [];
-            if ($service === 'equipment' && !empty($quoteIds)) {
+            if ($service === 'equipment' && ! empty($quoteIds)) {
                 $rows = DB::table('quotes_equipment_items as qi')
                     ->leftJoin('catalog_items as ci', 'ci.id', '=', 'qi.item_id')
                     ->whereIn('qi.quote_id', $quoteIds)
@@ -35,6 +35,7 @@ class QuoteRecordListingService
                         'qi.id',
                         'qi.quote_id',
                         'qi.item_id',
+                        'qi.item_remarks',
                         'qi.quantity',
                         'qi.unit_price',
                         'qi.marked_up_price',
@@ -56,7 +57,7 @@ class QuoteRecordListingService
                 }
             }
 
-            if ($service === 'special' && !empty($quoteIds)) {
+            if ($service === 'special' && ! empty($quoteIds)) {
                 $rows = DB::table('quotes_special_items')
                     ->whereIn('quote_id', $quoteIds)
                     ->select([
@@ -82,7 +83,7 @@ class QuoteRecordListingService
                 }
             }
 
-            if ($service === 'ih' && !empty($quoteIds) && $this->config->hasTable('quotes_ih_items')) {
+            if ($service === 'ih' && ! empty($quoteIds) && $this->config->hasTable('quotes_ih_items')) {
                 $rows = DB::table('quotes_ih_items')
                     ->whereIn('quote_id', $quoteIds)
                     ->select([
@@ -109,7 +110,7 @@ class QuoteRecordListingService
             }
 
             $followups = [];
-            if ($this->config->hasTable('quote_followups') && !empty($quoteIds)) {
+            if ($this->config->hasTable('quote_followups') && ! empty($quoteIds)) {
                 $followups = DB::table('quote_followups')
                     ->where('quote_type', $service)
                     ->whereIn('quote_id', $quoteIds)
@@ -120,7 +121,7 @@ class QuoteRecordListingService
             }
 
             $awardHistory = [];
-            if (!empty($quoteIds) && $this->config->hasTable('projects_main')) {
+            if (! empty($quoteIds) && $this->config->hasTable('projects_main')) {
                 $awardRows = $this->config->linkedProjectsBase($service)
                     ->whereIn('quote_id', $quoteIds)
                     ->select(['id', 'quote_id', 'award_date', 'created_at'])
@@ -142,6 +143,7 @@ class QuoteRecordListingService
                     $quote->line_items = $itemsByQuote[(int) $quote->id] ?? [];
                     $quote->hygiene_items = $itemsByQuote[(int) $quote->id] ?? [];
                 }
+
                 return $quote;
             });
 
@@ -153,6 +155,7 @@ class QuoteRecordListingService
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }
@@ -166,7 +169,7 @@ class QuoteRecordListingService
 
         try {
             $items = DB::select(
-                "
+                '
                 SELECT
                     qi.id,
                     qi.line_item_title AS title,
@@ -187,12 +190,14 @@ class QuoteRecordListingService
                  AND qi.created_at = latest.max_created
                 WHERE qi.service_id = ?
                 ORDER BY qi.id ASC
-                ",
+                ',
                 [$serviceId, $serviceId]
             );
+
             return response()->json($items);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Database error.'], 500);
         }
     }

@@ -2,14 +2,13 @@
 
 namespace App\Services\Invoices;
 
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class InvoiceQueryService extends InvoiceBaseService
 {
-
     public function index(Request $request): JsonResponse
     {
         try {
@@ -72,10 +71,13 @@ class InvoiceQueryService extends InvoiceBaseService
 
             $invoiceIds = array_column($invoices, 'id');
             $breakdownMap = [];
-            if (!empty($invoiceIds)) {
+            if (! empty($invoiceIds)) {
                 $placeholders = implode(',', array_fill(0, count($invoiceIds), '?'));
+                $itemRemarksSelect = Schema::hasColumn('invoice_breakdown', 'item_remarks')
+                    ? 'item_remarks'
+                    : 'NULL AS item_remarks';
                 $rows = DB::select("
-                    SELECT id, invoice_id, item_description, description, unit, quantity, unit_price, subtotal, sort_order
+                    SELECT id, invoice_id, item_description, description, {$itemRemarksSelect}, unit, quantity, unit_price, subtotal, sort_order
                     FROM invoice_breakdown
                     WHERE invoice_id IN ({$placeholders})
                     ORDER BY sort_order ASC
@@ -93,13 +95,14 @@ class InvoiceQueryService extends InvoiceBaseService
             return response()->json(['status' => 'success', 'invoices' => $invoices]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }
 
     public function latestByProject(Request $request): JsonResponse
     {
-        $projectId   = (int) $request->query('project_id', 0);
+        $projectId = (int) $request->query('project_id', 0);
         $serviceType = trim((string) $request->query('service_type', ''));
 
         if ($projectId < 1) {
@@ -118,21 +121,26 @@ class InvoiceQueryService extends InvoiceBaseService
                 ->orderByDesc('id')
                 ->first();
 
-            if (!$invoice) {
+            if (! $invoice) {
                 return response()->json(['status' => 'success', 'data' => null]);
             }
 
+            $breakdownColumns = ['id', 'invoice_id', 'item_description', 'description', 'unit', 'quantity', 'unit_price', 'subtotal', 'sort_order'];
+            if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
+                $breakdownColumns[] = 'item_remarks';
+            }
             $breakdown = DB::table('invoice_breakdown')
                 ->where('invoice_id', $invoice->id)
                 ->orderBy('sort_order')
-                ->get(['id', 'invoice_id', 'item_description', 'description', 'unit', 'quantity', 'unit_price', 'subtotal', 'sort_order']);
+                ->get($breakdownColumns);
 
             return response()->json([
                 'status' => 'success',
-                'data'   => ['invoice' => $invoice, 'breakdown' => $breakdown],
+                'data' => ['invoice' => $invoice, 'breakdown' => $breakdown],
             ]);
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json(['status' => 'error', 'message' => 'Server error'], 500);
         }
     }

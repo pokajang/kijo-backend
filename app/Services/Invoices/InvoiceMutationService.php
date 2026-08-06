@@ -2,6 +2,7 @@
 
 namespace App\Services\Invoices;
 
+use App\Services\Equipment\EquipmentCommercialSnapshotService;
 use App\Services\Projects\ProjectValueService;
 use App\Services\Receivables\ReceivablePaymentService;
 use Carbon\CarbonImmutable;
@@ -26,6 +27,10 @@ class InvoiceMutationService extends InvoiceBaseService
             'project_id' => 'required|integer|min:1',
             'service_type' => 'required|string',
             'breakdown' => 'required|array|min:1',
+            'breakdown.*.item_description' => 'required|string|max:5000',
+            'breakdown.*.description' => 'nullable|string|max:5000',
+            'breakdown.*.item_remarks' => 'nullable|string|max:2000',
+            'quotation_remarks' => 'nullable|string|max:2000',
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
             'close_project' => 'nullable|boolean',
@@ -50,6 +55,14 @@ class InvoiceMutationService extends InvoiceBaseService
         $grantNoInput = trim((string) $request->input('grant_approval_no', ''));
         $grantNo = $isTrainingInvoice && $isHrdPayment && $grantNoInput !== '' ? $grantNoInput : null;
         $breakdownInput = (array) $request->input('breakdown', []);
+        $equipmentSnapshot = ['quotation_remarks' => null, 'items' => []];
+        if (strcasecmp($serviceType, 'Equipment Supply') === 0) {
+            $snapshotService = app(EquipmentCommercialSnapshotService::class);
+            $equipmentSnapshot = $quoteId
+                ? $snapshotService->forQuote($quoteId)
+                : $snapshotService->forProject($projectId);
+            $breakdownInput = $snapshotService->enrichItems($breakdownInput, $equipmentSnapshot);
+        }
         $closeProject = filter_var($request->input('close_project', false), FILTER_VALIDATE_BOOLEAN);
 
         $isHrdLine = static fn (array $line): bool => (bool) preg_match(
@@ -192,6 +205,11 @@ class InvoiceMutationService extends InvoiceBaseService
             if (Schema::hasColumn('invoices', 'document_language')) {
                 $insert['document_language'] = $documentLanguage;
             }
+            if (Schema::hasColumn('invoices', 'quotation_remarks')) {
+                $insert['quotation_remarks'] = $request->exists('quotation_remarks')
+                    ? $request->input('quotation_remarks')
+                    : ($equipmentSnapshot['quotation_remarks'] ?? null);
+            }
 
             $invoiceId = DB::table('invoices')->insertGetId($insert);
             $this->markClientOldIfEligible($clientId);
@@ -199,7 +217,7 @@ class InvoiceMutationService extends InvoiceBaseService
             foreach ($breakdownInput as $i => $line) {
                 $qty = (float) ($line['quantity'] ?? 1);
                 $uprice = (float) ($line['unit_price'] ?? 0);
-                DB::table('invoice_breakdown')->insert([
+                $breakdownInsert = [
                     'invoice_id' => $invoiceId,
                     'item_description' => $line['item_description'] ?? '',
                     'description' => $line['description'] ?? null,
@@ -208,7 +226,11 @@ class InvoiceMutationService extends InvoiceBaseService
                     'unit_price' => $uprice,
                     'subtotal' => $qty * $uprice,
                     'sort_order' => $i + 1,
-                ]);
+                ];
+                if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
+                    $breakdownInsert['item_remarks'] = $line['item_remarks'] ?? null;
+                }
+                DB::table('invoice_breakdown')->insert($breakdownInsert);
             }
 
             $this->insertProjectProgress($projectId, "Invoice {$refNo} created.", $request);
@@ -253,6 +275,11 @@ class InvoiceMutationService extends InvoiceBaseService
         $grantNo = null;
 
         $request->validate([
+            'breakdown' => 'required|array|min:1',
+            'breakdown.*.item_description' => 'required|string|max:5000',
+            'breakdown.*.description' => 'nullable|string|max:5000',
+            'breakdown.*.item_remarks' => 'nullable|string|max:2000',
+            'quotation_remarks' => 'nullable|string|max:2000',
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
         ]);
@@ -390,7 +417,7 @@ class InvoiceMutationService extends InvoiceBaseService
                 abort(422, 'Invoice date cannot be after an existing payment date.');
             }
 
-            DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->limit(1)->update([
+            $invoiceUpdates = [
                 'invoice_loa_no' => $request->input('invoice_loa_no'),
                 'invoice_client_name' => $request->input('invoice_client_name'),
                 'invoice_client_ssm' => $request->input('invoice_client_ssm'),
@@ -419,10 +446,23 @@ class InvoiceMutationService extends InvoiceBaseService
                 'paid_remarks' => $existingInvoice->paid_remarks,
                 'remarks' => $request->input('remarks', ''),
                 'updated_at' => now(),
-            ]);
+            ];
+            if (Schema::hasColumn('invoices', 'quotation_remarks') && $request->exists('quotation_remarks')) {
+                $invoiceUpdates['quotation_remarks'] = $request->input('quotation_remarks');
+            }
+            DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->limit(1)->update($invoiceUpdates);
 
             $invId = $existingInvoice->id;
             if ($invId) {
+                if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
+                    $existingItems = DB::table('invoice_breakdown')
+                        ->where('invoice_id', $invId)
+                        ->orderBy('sort_order')
+                        ->orderBy('id')
+                        ->get(['item_description', 'item_remarks']);
+                    $breakdownInput = app(EquipmentCommercialSnapshotService::class)
+                        ->preserveMissingItemRemarks($breakdownInput, $existingItems);
+                }
                 DB::table('invoice_breakdown')->where('invoice_id', $invId)->delete();
 
                 foreach ($breakdownInput as $i => $line) {
@@ -431,7 +471,7 @@ class InvoiceMutationService extends InvoiceBaseService
                     }
                     $qty = (float) ($line['quantity'] ?? 0);
                     $price = (float) ($line['unit_price'] ?? 0);
-                    DB::table('invoice_breakdown')->insert([
+                    $breakdownInsert = [
                         'invoice_id' => $invId,
                         'item_description' => $line['item_description'] ?? '',
                         'description' => $line['description'] ?? null,
@@ -440,7 +480,11 @@ class InvoiceMutationService extends InvoiceBaseService
                         'unit_price' => $price,
                         'subtotal' => round($qty * $price, 2),
                         'sort_order' => $i + 1,
-                    ]);
+                    ];
+                    if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
+                        $breakdownInsert['item_remarks'] = $line['item_remarks'] ?? null;
+                    }
+                    DB::table('invoice_breakdown')->insert($breakdownInsert);
                 }
             }
 

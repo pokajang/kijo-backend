@@ -5,6 +5,7 @@ namespace App\Services\Projects;
 use App\Http\Requests\Project\AddCollaboratorRequest;
 use App\Http\Requests\Project\AssignVendorRequest;
 use App\Services\AuditLogService;
+use App\Services\Equipment\EquipmentCommercialSnapshotService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -123,7 +124,6 @@ class ProjectVendorService
         $vendorId = (int) $data['vendor_id'];
         $awardValue = (float) $data['award_value'];
         $awardDate = $data['award_date'];
-
         $project = DB::table('projects_main')->where('id', $projectId)->exists();
         if (! $project) {
             return response()->json(['status' => 'error', 'message' => 'Project not found.'], 404);
@@ -132,6 +132,15 @@ class ProjectVendorService
         if (! $this->canAccessProject($request, $projectId)) {
             return response()->json(['status' => 'error', 'message' => 'You are not linked to this project.'], 403);
         }
+
+        $snapshotService = app(EquipmentCommercialSnapshotService::class);
+        $equipmentSnapshot = $snapshotService->forProject($projectId);
+        $servicesDescription = $request->exists('services_description')
+            ? ($data['services_description'] ?? null)
+            : $snapshotService->servicesDescription($equipmentSnapshot);
+        $remarks = $request->exists('remarks')
+            ? ($data['remarks'] ?? null)
+            : ($equipmentSnapshot['quotation_remarks'] ?? null);
 
         $vendorRow = DB::table('vendor_main_details')->where('vendor_id', $vendorId)->first();
         if (! $vendorRow) {
@@ -173,7 +182,7 @@ class ProjectVendorService
 
             $refNo = "LOA{$awardYearTwo}-{$padded}{$nameCode}";
 
-            $normalizeText = function ($value, int $maxLen = 5000): ?string {
+            $normalizeText = function ($value): ?string {
                 if ($value === null) {
                     return null;
                 }
@@ -182,7 +191,7 @@ class ProjectVendorService
                     return null;
                 }
 
-                return strlen($text) > $maxLen ? substr($text, 0, $maxLen) : $text;
+                return $text;
             };
 
             DB::table('project_vendors')->insert([
@@ -191,9 +200,9 @@ class ProjectVendorService
                 'award_value' => $awardValue,
                 'award_date' => $awardDate,
                 'awarded_by' => $staffId,
-                'position' => $normalizeText($data['position'] ?? null, 1000),
-                'remarks' => $normalizeText($data['remarks'] ?? null),
-                'services_description' => $normalizeText($data['services_description'] ?? null),
+                'position' => $normalizeText($data['position'] ?? null),
+                'remarks' => $normalizeText($remarks),
+                'services_description' => $normalizeText($servicesDescription),
                 'venue_details' => $normalizeText($data['venue_details'] ?? null),
                 'fee_breakdown' => $normalizeText($data['fee_breakdown'] ?? null),
                 'payment_terms' => $normalizeText($data['payment_terms'] ?? null),
@@ -352,6 +361,14 @@ class ProjectVendorService
 
     public function updateVendor(Request $request): JsonResponse
     {
+        $request->validate([
+            'position' => ['nullable', 'string', 'max:1000'],
+            'remarks' => ['nullable', 'string', 'max:5000'],
+            'services_description' => ['nullable', 'string', 'max:1000000'],
+            'venue_details' => ['nullable', 'string', 'max:5000'],
+            'fee_breakdown' => ['nullable', 'string', 'max:5000'],
+            'payment_terms' => ['nullable', 'string', 'max:5000'],
+        ]);
         $assignmentId = (int) $request->input('assignment_id', 0);
         $projectId = (int) $request->input('project_id', 0);
         $vendorId = (int) $request->input('vendor_id', 0);
@@ -395,7 +412,7 @@ class ProjectVendorService
             return response()->json(['status' => 'error', 'message' => 'Vendor assignment not found.']);
         }
 
-        $normalizeText = function ($value, int $maxLen = 5000): ?string {
+        $normalizeText = function ($value): ?string {
             if ($value === null) {
                 return null;
             }
@@ -404,23 +421,24 @@ class ProjectVendorService
                 return null;
             }
 
-            return strlen($text) > $maxLen ? substr($text, 0, $maxLen) : $text;
+            return $text;
         };
+
+        $updates = [
+            'vendor_id' => $vendorId,
+            'award_value' => $awardValue,
+        ];
+        foreach (['position', 'remarks', 'services_description', 'venue_details', 'fee_breakdown', 'payment_terms'] as $field) {
+            if ($request->exists($field)) {
+                $updates[$field] = $normalizeText($request->input($field));
+            }
+        }
 
         DB::table('project_vendors')
             ->where('id', $assignmentId)
             ->where('project_id', $projectId)
             ->limit(1)
-            ->update([
-                'vendor_id' => $vendorId,
-                'award_value' => $awardValue,
-                'position' => $normalizeText($request->input('position'), 1000),
-                'remarks' => $normalizeText($request->input('remarks')),
-                'services_description' => $normalizeText($request->input('services_description')),
-                'venue_details' => $normalizeText($request->input('venue_details')),
-                'fee_breakdown' => $normalizeText($request->input('fee_breakdown')),
-                'payment_terms' => $normalizeText($request->input('payment_terms')),
-            ]);
+            ->update($updates);
 
         $loaRef = $existing->loa_ref_no ?: 'N/A';
         $progressMsg = "Vendor assignment updated for {$vendorRow->vendor_name} (LOA ref: {$loaRef}).";

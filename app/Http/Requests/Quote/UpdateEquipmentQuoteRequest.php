@@ -25,11 +25,13 @@ class UpdateEquipmentQuoteRequest extends FormRequest
             'pic_email' => ['required', 'string', 'max:2000'],
             'pic_phone' => ['required', 'string', 'max:2000'],
             'pic_position' => ['required', 'string', 'max:2000'],
+            'quotation_remarks' => ['nullable', 'string', 'max:2000'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.catalog_item_id' => ['required', 'integer'],
             'items.*.item_id' => ['nullable', 'integer'],
             'items.*.item_name' => ['nullable', 'string', 'max:255'],
             'items.*.item_code' => ['nullable', 'string', 'max:100'],
+            'items.*.item_remarks' => ['nullable', 'string', 'max:2000'],
             'items.*.unit_price' => ['required', 'numeric', 'min:0'],
             'items.*.quantity' => ['required', 'numeric', 'min:0.01'],
             'items.*.marked_up_price' => ['nullable', 'numeric', 'min:0'],
@@ -69,11 +71,14 @@ class UpdateEquipmentQuoteRequest extends FormRequest
                 $lineTotal = $qty * ($markedUp ?? $unitPrice);
             }
 
+            $itemRemarks = trim((string) ($item['item_remarks'] ?? ''));
+
             return [
                 'catalog_item_id' => $catalogItemId,
                 'item_id' => $catalogItemId,
                 'item_name' => $item['item_name'] ?? null,
                 'item_code' => $item['item_code'] ?? null,
+                'item_remarks' => $itemRemarks !== '' ? $itemRemarks : null,
                 'quantity' => $item['quantity'] ?? null,
                 'unit_price' => $item['unit_price'] ?? null,
                 'marked_up_price' => $item['marked_up_price'] ?? null,
@@ -82,6 +87,11 @@ class UpdateEquipmentQuoteRequest extends FormRequest
             ];
         }, $items);
 
-        $this->merge(['items' => $normalized]);
+        $quotationRemarks = trim((string) $this->input('quotation_remarks', ''));
+
+        $this->merge([
+            'quotation_remarks' => $quotationRemarks !== '' ? $quotationRemarks : null,
+            'items' => $normalized,
+        ]);
     }
 }

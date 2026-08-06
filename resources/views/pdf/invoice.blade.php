@@ -30,6 +30,7 @@
         table.breakdown th, table.breakdown td { border: 0.5px solid #000; padding: 4px; vertical-align: top; }
         table.breakdown th { background: #f2f2f2; font-weight: 700; text-align: center; }
         table.breakdown td.center { text-align: center; }
+        table.breakdown .detail-row td { background: #fcfcfc; font-size: 9pt; white-space: pre-wrap; }
         .muted-row { background: #f9f9f9; }
         .bank-block { font-size: 11pt; line-height: 1.4; margin: 3mm 0; }
         .sign-table { width: 100%; border-collapse: collapse; margin-top: 3mm; }
@@ -99,6 +100,7 @@
     $invoicePurpose = (string) ($inv->invoice_purpose ?? '');
     $loaNo          = (string) ($inv->invoice_loa_no ?? '');
     $isManpower     = strtolower(trim($serviceType)) === 'manpower supply';
+    $isEquipment    = strtolower(trim($serviceType)) === 'equipment supply';
 
     // Trim "For Month(s): ..." from purpose for display header
     $purposeDisplay = $invoicePurpose;
@@ -155,7 +157,10 @@
     @foreach($orderedItems as $i => $itm)
         @php
             $descLabel  = (string) ($itm->item_description ?? '');
-            $lineDesc   = \App\Support\InvoicePdfDescription::clientVisible($itm->description ?? '');
+            $lineDesc   = $isEquipment
+                ? trim((string) ($itm->description ?? ''))
+                : \App\Support\InvoicePdfDescription::clientVisible($itm->description ?? '');
+            $itemRemarks = trim((string) ($itm->item_remarks ?? ''));
             $isDiscount = str_contains(strtolower($descLabel), 'discount') || str_contains(strtolower($descLabel), 'less');
             $purposeNorm     = strtolower(trim($invoicePurpose));
             $basePurposeNorm = strtolower(trim($purposeDisplay));
@@ -184,7 +189,6 @@
                     <em>{{ $L('remarks', 'Remarks') }}:</em> {{ trim((string) ($inv->remarks ?? '')) !== '' ? $inv->remarks : 'N/A' }}
                 @else
                     {{ $descLabel }}
-                    @if($lineDesc !== '')<br><span style="font-size:9pt;color:#555;">{{ $lineDesc }}</span>@endif
                 @endif
             </td>
             <td class="center">{{ $up }}</td>
@@ -192,6 +196,20 @@
             <td class="center">{{ $unit }}</td>
             <td class="center">{{ $sub }}</td>
         </tr>
+        @if(!$isManpowerBase)
+            @foreach(\App\Support\PdfText::chunks($lineDesc) as $descriptionChunk)
+                <tr class="detail-row">
+                    <td></td>
+                    <td colspan="5"><strong>{{ $L('description', 'Description') }}:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
+                </tr>
+            @endforeach
+            @foreach(\App\Support\PdfText::chunks($itemRemarks) as $remarkChunk)
+                <tr class="detail-row">
+                    <td></td>
+                    <td colspan="5"><strong>Specifications / {{ $L('remarks', 'Remarks') }}:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+                </tr>
+            @endforeach
+        @endif
     @endforeach
     <tr class="muted-row">
         <td colspan="5" style="text-align:right;">
@@ -222,6 +240,10 @@
         <td class="center"><strong>{{ number_format((float) ($inv->grand_total ?? 0), 2) }}</strong></td>
     </tr>
 </table>
+
+@if(trim((string) ($inv->quotation_remarks ?? '')) !== '')
+    <p style="margin-top:3mm;white-space:pre-wrap;"><strong>Quotation {{ $L('remarks', 'Remarks') }}:</strong><br>{!! nl2br(e($inv->quotation_remarks), false) !!}</p>
+@endif
 
 {{-- Banking info --}}
 <p class="bank-block">
