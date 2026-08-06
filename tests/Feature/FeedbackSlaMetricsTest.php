@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -15,8 +16,9 @@ class FeedbackSlaMetricsTest extends TestCase
         parent::setUp();
 
         Carbon::setTestNow(Carbon::parse('2026-06-17 10:30:00'));
+        Queue::fake();
 
-        foreach (['system_feedbacks', 'staff_general', 'system_users', 'user_activities'] as $table) {
+        foreach (['system_feedback_history', 'system_feedbacks', 'staff_general', 'system_users', 'user_activities'] as $table) {
             Schema::dropIfExists($table);
         }
 
@@ -331,7 +333,7 @@ class FeedbackSlaMetricsTest extends TestCase
                 'remarks' => '',
             ])
             ->assertStatus(422)
-            ->assertJsonPath('status', 'error');
+            ->assertJsonValidationErrors('remarks');
 
         $this->actingAdminSession()
             ->putJson("/feedback/{$id}", [
@@ -342,7 +344,7 @@ class FeedbackSlaMetricsTest extends TestCase
             ->assertJsonPath('status', 'success');
     }
 
-    public function test_existing_final_non_sla_track_without_remarks_does_not_block_other_admin_updates(): void
+    public function test_admin_cannot_resolve_existing_feedback(): void
     {
         $id = DB::table('system_feedbacks')->insertGetId([
             'feedback' => 'Backfilled late fix',
@@ -359,19 +361,19 @@ class FeedbackSlaMetricsTest extends TestCase
             ->putJson("/feedback/{$id}", [
                 'status' => 'Resolved',
             ])
-            ->assertOk()
-            ->assertJsonPath('status', 'success');
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('status');
 
         $this->assertDatabaseHas('system_feedbacks', [
             'id' => $id,
-            'status' => 'Resolved',
+            'status' => 'Fixed Completed',
             'resolution_track' => 'Next Upgrade',
             'remarks' => null,
-            'fixed_at' => null,
+            'fixed_at' => '2026-05-10 00:00:00',
         ]);
     }
 
-    public function test_resolved_status_clears_fixed_at_without_counting_as_fixed(): void
+    public function test_reporter_confirmation_preserves_fixed_at(): void
     {
         $id = DB::table('system_feedbacks')->insertGetId([
             'feedback' => 'Close without fix',
@@ -383,11 +385,22 @@ class FeedbackSlaMetricsTest extends TestCase
             'fixed_at' => '2026-05-10 00:00:00',
         ]);
 
-        $this->actingAdminSession()
-            ->putJson("/feedback/{$id}", [
-                'status' => 'Resolved',
-                'resolution_track' => 'Not Actionable',
-                'remarks' => 'Closed after review.',
+        DB::table('staff_general')->insert([
+            'staff_id' => 1,
+            'full_name' => 'Reporter User',
+            'name_code' => 'REP',
+        ]);
+        DB::table('system_users')->insert([
+            'id' => 1,
+            'staff_id' => 1,
+            'email' => 'reporter@example.test',
+            'role' => json_encode([]),
+            'is_active' => 1,
+        ]);
+
+        $this->actingOwnerSession(1)
+            ->postJson("/feedback/{$id}/verification", [
+                'decision' => 'confirm',
             ])
             ->assertOk()
             ->assertJsonPath('status', 'success');
@@ -395,9 +408,12 @@ class FeedbackSlaMetricsTest extends TestCase
         $this->assertDatabaseHas('system_feedbacks', [
             'id' => $id,
             'status' => 'Resolved',
-            'resolution_track' => 'Not Actionable',
-            'fixed_at' => null,
+            'resolution_track' => '30-Day Fix',
         ]);
+        $this->assertSame(
+            '2026-05-10 00:00:00',
+            DB::table('system_feedbacks')->where('id', $id)->value('fixed_at'),
+        );
     }
 
     public function test_resolution_track_migration_backfills_historical_records(): void

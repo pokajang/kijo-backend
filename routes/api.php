@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\ClientController;
 use App\Http\Controllers\Api\DebtorController;
 use App\Http\Controllers\Api\DeliveryOrderController;
 use App\Http\Controllers\Api\FeedbackController;
+use App\Http\Controllers\Api\FeedbackWorkflowController;
 use App\Http\Controllers\Api\GoogleController;
 use App\Http\Controllers\Api\HandbookController;
 use App\Http\Controllers\Api\HrMiscController;
@@ -132,6 +133,9 @@ Route::middleware('auth.session')->group(function () {
     // Batch 1 — Feedback
     Route::get('feedback', [FeedbackController::class, 'index']);
     Route::get('feedback/metrics/monthly', [FeedbackController::class, 'monthlyMetrics']);
+    Route::get('feedback/{id}', [FeedbackWorkflowController::class, 'show'])->whereNumber('id');
+    Route::post('feedback/{id}/comments', [FeedbackWorkflowController::class, 'comment'])->whereNumber('id');
+    Route::post('feedback/{id}/verification', [FeedbackWorkflowController::class, 'verify'])->whereNumber('id');
     Route::post('feedback', [FeedbackController::class, 'store']);
     Route::put('feedback/{id}', [FeedbackController::class, 'update']);
     Route::delete('feedback/{id}', [FeedbackController::class, 'destroy']);

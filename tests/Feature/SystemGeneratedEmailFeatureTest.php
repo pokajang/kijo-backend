@@ -20,7 +20,7 @@ class SystemGeneratedEmailFeatureTest extends TestCase
             'app.url' => 'https://api.amiosh.com',
         ]);
 
-        foreach (['system_feedbacks', 'tool_requests', 'system_users', 'staff_general', 'user_activities'] as $table) {
+        foreach (['system_feedback_history', 'system_feedbacks', 'in_app_notifications', 'tool_requests', 'system_users', 'staff_general', 'user_activities'] as $table) {
             Schema::dropIfExists($table);
         }
 
@@ -72,22 +72,43 @@ class SystemGeneratedEmailFeatureTest extends TestCase
         });
 
         DB::table('staff_general')->insert([
-            'staff_id' => 10,
-            'full_name' => 'Requester User',
-            'name_code' => 'REQ',
-            'email' => 'requester@example.test',
+            [
+                'staff_id' => 10,
+                'full_name' => 'Requester User',
+                'name_code' => 'REQ',
+                'email' => 'requester@example.test',
+            ],
+            [
+                'staff_id' => 20,
+                'full_name' => 'Developer User',
+                'name_code' => 'DEV',
+                'email' => 'developer@example.test',
+            ],
         ]);
 
         DB::table('system_users')->insert([
-            'id' => 10,
-            'staff_id' => 10,
-            'email' => 'requester@example.test',
-            'role' => json_encode(['Staff']),
-            'is_active' => 1,
+            [
+                'id' => 10,
+                'staff_id' => 10,
+                'email' => 'requester@example.test',
+                'role' => json_encode(['Staff']),
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'id' => 20,
+                'staff_id' => 20,
+                'email' => 'developer@example.test',
+                'role' => json_encode(['System Admin']),
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
         ]);
     }
 
-    public function test_feedback_submission_sends_standardized_system_ticket_email_inline(): void
+    public function test_feedback_submission_queues_standardized_emails_for_developer_and_reporter(): void
     {
         Bus::fake([SendHtmlMailJob::class]);
 
@@ -96,23 +117,27 @@ class SystemGeneratedEmailFeatureTest extends TestCase
                 'feedback' => 'Please review <script>alert("x")</script>',
             ])
             ->assertOk()
-            ->assertJsonPath('status', 'success')
-            ->assertJsonPath('mail_sent', true);
+            ->assertJsonPath('status', 'success');
 
-        Bus::assertDispatchedSync(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
+        Bus::assertDispatched(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
             $body = (string) $this->jobProperty($job, 'body');
             $presentation = (array) $this->jobProperty($job, 'presentation');
 
-            return $this->jobProperty($job, 'to') === 'azam@amiosh.com'
-                && $this->jobProperty($job, 'subject') === 'New System Ticket Submitted'
-                && str_contains($body, 'Ticket Details')
-                && str_contains($body, 'New Ticket')
-                && str_contains($body, 'Open system ticket')
+            return $this->jobProperty($job, 'to') === 'developer@example.test'
+                && str_contains((string) $this->jobProperty($job, 'subject'), 'New feedback received')
+                && str_contains($body, 'Feedback Details')
+                && str_contains($body, 'Pending')
+                && str_contains($body, 'Open feedback')
                 && str_contains($body, 'href="https://kijo.amiosh.com/support/feedback/1"')
                 && str_contains($body, '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;')
                 && ! str_contains($body, '<script>alert("x")</script>')
                 && ! str_contains($body, 'https://api.amiosh.com')
-                && ($presentation['headerLabel'] ?? null) === 'System Ticket';
+                && ($presentation['headerLabel'] ?? null) === 'System Feedback';
+        });
+
+        Bus::assertDispatched(SendHtmlMailJob::class, function (SendHtmlMailJob $job): bool {
+            return $this->jobProperty($job, 'to') === 'requester@example.test'
+                && str_contains((string) $this->jobProperty($job, 'subject'), 'Feedback report received');
         });
     }
 

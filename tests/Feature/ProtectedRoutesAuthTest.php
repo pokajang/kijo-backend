@@ -23,6 +23,9 @@ class ProtectedRoutesAuthTest extends TestCase
         return [
             'feedback' => ['GET', '/feedback'],
             'feedback metrics' => ['GET', '/feedback/metrics/monthly'],
+            'feedback detail' => ['GET', '/feedback/1'],
+            'feedback comment' => ['POST', '/feedback/1/comments'],
+            'feedback verification' => ['POST', '/feedback/1/verification'],
             'tool requests' => ['GET', '/tool-requests'],
             'signature' => ['GET', '/signature'],
             'sport events' => ['GET', '/sport-events'],

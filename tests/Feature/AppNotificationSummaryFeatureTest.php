@@ -172,6 +172,33 @@ class AppNotificationSummaryFeatureTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_feedback_notifications_map_to_support_badges(): void
+    {
+        DB::table('in_app_notifications')->insert([
+            'recipient_staff_id' => 40,
+            'actor_staff_id' => 10,
+            'module_key' => 'support.feedback',
+            'entity_type' => 'system_feedback',
+            'entity_id' => 91,
+            'type' => 'feedback.fix.ready',
+            'title' => 'Please verify the reported fix',
+            'route' => '/support/feedback/91',
+            'severity' => 'success',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $summary = $this->withSession(['staff_id' => 40, 'roles' => []])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(1, $summary['by_module']['support.feedback'] ?? 0);
+        $this->assertSame(1, $summary['by_route_group']['/support/feedback'] ?? 0);
+        $this->assertSame(1, $summary['by_tab']['support.feedback'] ?? 0);
+        $this->assertSame(1, $summary['listable_total'] ?? 0);
+    }
+
     public function test_summary_exposes_user_targeted_vendor_registration_badges(): void
     {
         DB::table('client_vendor_registrations')->insert([

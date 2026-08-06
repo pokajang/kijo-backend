@@ -116,6 +116,11 @@ class AppNotificationService
             'tab_key' => 'system-admin.ai-workload-governance',
             'severity' => 'danger',
         ],
+        'support.feedback' => [
+            'route_group' => '/support/feedback',
+            'tab_key' => 'support.feedback',
+            'severity' => 'warning',
+        ],
     ];
 
     private const NEGOTIABLE_SERVICES = ['training', 'manpower'];
