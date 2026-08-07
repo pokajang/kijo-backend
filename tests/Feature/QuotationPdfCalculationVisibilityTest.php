@@ -32,11 +32,39 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
 
         $this->assertStringContainsString('Unit Price (RM)', $plain);
         $this->assertStringContainsString('Portable detector', $plain);
-        $this->assertStringContainsString('Specifications: Colour: navy blue', $plain);
+        $this->assertStringContainsString('Remarks: Colour: navy blue', $plain);
+        $this->assertStringNotContainsString('Specifications:', $plain);
+        $this->assertSame(1, substr_count($html, 'class="equipment-item-row"'));
+        $this->assertStringNotContainsString('equipment-item-continuation-row', $html);
         $this->assertStringContainsString('Quotation Remarks:', $plain);
         $this->assertStringContainsString('Deliver all equipment together.', $plain);
         $this->assertStringContainsString('RM 200.00', $plain);
         $this->assertStringNotContainsString('2 unit x RM 100.00', $plain);
+    }
+
+    public function test_equipment_pdf_keeps_multiple_items_in_separate_single_rows(): void
+    {
+        $data = $this->equipmentViewData();
+        $data['items'][] = [
+            'title' => 'Safety Goggles',
+            'description' => 'Clear anti-fog lens',
+            'item_remarks' => 'Black frame',
+            'quantity' => 3,
+            'marked_up_price' => 25,
+            'line_total' => 75,
+        ];
+        $data['lineItemsTotal'] = 275;
+        $data['subTotalNet'] = 275;
+        $data['grandTotal'] = 275;
+
+        $html = view('pdf.equipment-quote', $data)->render();
+        $plain = $this->plainText($html);
+
+        $this->assertSame(2, substr_count($html, 'class="equipment-item-row"'));
+        $this->assertSame(2, substr_count($html, 'data-pdf-item-description-label'));
+        $this->assertSame(2, substr_count($html, 'data-pdf-item-remarks-label'));
+        $this->assertStringContainsString('Gas Detector Description: Portable detector Remarks: Colour: navy blue', $plain);
+        $this->assertStringContainsString('Safety Goggles Description: Clear anti-fog lens Remarks: Black frame', $plain);
     }
 
     private function manpowerViewData(): array

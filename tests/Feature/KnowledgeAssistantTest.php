@@ -43,6 +43,7 @@ class KnowledgeAssistantTest extends TestCase
         Schema::dropIfExists('assistant_query_plan_cache');
         Schema::dropIfExists('assistant_live_result_cache');
         Schema::dropIfExists('assistant_answer_cache');
+        Schema::dropIfExists('system_feedback_history');
         Schema::dropIfExists('system_feedbacks');
         Schema::dropIfExists('procedures');
         Schema::dropIfExists('legal_compliance_assessments');
@@ -158,6 +159,21 @@ class KnowledgeAssistantTest extends TestCase
             $table->date('action_date')->nullable();
             $table->text('remarks')->nullable();
             $table->timestamps();
+        });
+
+        Schema::create('system_feedback_history', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('feedback_id')->index();
+            $table->string('event_type', 50)->index();
+            $table->unsignedBigInteger('actor_staff_id')->nullable()->index();
+            $table->string('actor_name')->nullable();
+            $table->text('message')->nullable();
+            $table->string('status_from', 50)->nullable();
+            $table->string('status_to', 50)->nullable();
+            $table->string('resolution_track_from', 50)->nullable();
+            $table->string('resolution_track_to', 50)->nullable();
+            $table->json('changes_json')->nullable();
+            $table->timestamp('created_at');
         });
 
         Schema::create('procedures', function (Blueprint $table): void {
@@ -2645,6 +2661,14 @@ Contoh soalan:
 
         $this->assertSame(0, DB::table('assistant_answer_cache')->where('answer_signature', $signature)->count());
         $this->assertDatabaseHas('system_feedbacks', ['reported_by' => 7, 'status' => 'Pending']);
+        $mirroredFeedback = DB::table('system_feedbacks')->where('reported_by', 7)->first();
+        $receivedEvent = DB::table('system_feedback_history')
+            ->where('feedback_id', $mirroredFeedback->id)
+            ->where('event_type', 'report_received')
+            ->first();
+        $this->assertNotNull($receivedEvent);
+        $this->assertSame('ST7', $receivedEvent->actor_name);
+        $this->assertSame((string) $mirroredFeedback->date_reported, (string) $receivedEvent->created_at);
 
         $this->authenticated()
             ->postJson('/knowledge/assistant', ['question' => 'How do I create quotation?'])

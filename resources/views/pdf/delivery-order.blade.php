@@ -117,11 +117,6 @@
             background-color: #f2f2f2;
             font-weight: 700;
         }
-        .items-table .detail-row td {
-            background: #fcfcfc;
-            font-size: 9pt;
-            white-space: pre-wrap;
-        }
         .text-center {
             text-align: center;
         }
@@ -200,14 +195,13 @@
             <thead>
                 <tr>
                     <th style="width:5%;" class="text-center">#</th>
-                    <th style="width:30%;">Item</th>
-                    <th style="width:45%;">{{ $L('description', 'Description') }}</th>
+                    <th style="width:75%;">{{ $pdfLanguage === 'ms-MY' ? 'Penerangan Item' : 'Item Description' }}</th>
                     <th style="width:20%;" class="text-center">{{ $L('qty', 'Quantity') }}</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td colspan="4">
+                    <td colspan="3">
                         <strong>{{ $pdfLanguage === 'ms-MY' ? 'Untuk Projek' : 'For Project' }}:</strong>
                         {{ $projectLine !== '' ? $projectLine : '-' }}
                         @if($projectServicePeriod !== '')
@@ -216,34 +210,40 @@
                     </td>
                 </tr>
                 @forelse($items as $index => $item)
-                    <tr>
-                        <td class="text-center">{{ $index + 1 }}</td>
-                        <td>{{ $item->item_name ?? '-' }}</td>
-                        <td></td>
-                        <td class="text-center">{{ $item->quantity ?? '-' }} {{ $item->unit ?? '' }}</td>
-                    </tr>
-                    @foreach(\App\Support\PdfText::chunks($item->description ?? '') as $descriptionChunk)
-                        <tr class="detail-row">
-                            <td></td>
-                            <td colspan="3"><strong>{{ $L('description', 'Description') }}:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
-                        </tr>
-                    @endforeach
-                    @foreach(\App\Support\PdfText::chunks($item->item_remarks ?? '') as $remarkChunk)
-                        <tr class="detail-row">
-                            <td></td>
-                            <td colspan="3"><strong>Specifications / {{ $L('remarks', 'Remarks') }}:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+                    @php
+                        $itemCellSegments = \App\Support\PdfText::itemCellSegments(
+                            $item->description ?? '',
+                            $item->item_remarks ?? '',
+                        );
+                    @endphp
+                    @foreach($itemCellSegments as $segmentIndex => $itemCellSegment)
+                        <tr class="{{ $segmentIndex === 0 ? 'equipment-item-row' : 'equipment-item-continuation-row' }}">
+                            <td class="text-center">{{ $segmentIndex === 0 ? $index + 1 : '' }}</td>
+                            <td>
+                                @include('pdf.partials.equipment-item-cell', [
+                                    'itemName' => $item->item_name ?? '',
+                                    'description' => $itemCellSegment['description'],
+                                    'remarks' => $itemCellSegment['remarks'],
+                                    'descriptionLabel' => $L('description', 'Description'),
+                                    'remarksLabel' => $L('remarks', 'Remarks'),
+                                    'showItemName' => $segmentIndex === 0,
+                                    'showDescriptionLabel' => $itemCellSegment['show_description_label'],
+                                    'showRemarksLabel' => $itemCellSegment['show_remarks_label'],
+                                ])
+                            </td>
+                            <td class="text-center">{{ $segmentIndex === 0 ? ($item->quantity ?? '-').' '.($item->unit ?? '') : '' }}</td>
                         </tr>
                     @endforeach
                 @empty
                     <tr>
-                        <td colspan="4">{{ $pdfLanguage === 'ms-MY' ? 'Tiada pecahan item tersedia.' : 'No item breakdown available.' }}</td>
+                        <td colspan="3">{{ $pdfLanguage === 'ms-MY' ? 'Tiada pecahan item tersedia.' : 'No item breakdown available.' }}</td>
                     </tr>
                 @endforelse
             </tbody>
         </table>
 
         @if(trim((string) ($order->quotation_remarks ?? '')) !== '')
-            <p style="margin:3mm 0;white-space:pre-wrap;"><strong>Quotation {{ $L('remarks', 'Remarks') }}:</strong><br>{!! nl2br(e($order->quotation_remarks), false) !!}</p>
+            <p style="margin:3mm 0;white-space:pre-wrap;"><strong>{{ $L('quotation_remarks', 'Quotation Remarks') }}:</strong><br>{!! nl2br(e($order->quotation_remarks), false) !!}</p>
         @endif
 
         <p>

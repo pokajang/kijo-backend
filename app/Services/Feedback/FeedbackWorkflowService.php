@@ -48,7 +48,7 @@ class FeedbackWorkflowService
         ];
     }
 
-    public function recordReceived(Request $request, int $feedbackId): ?int
+    public function recordReceived(Request $request, int $feedbackId, CarbonImmutable $reportedAt): ?int
     {
         $actor = $this->actor($request);
         $feedback = $this->findFeedback($feedbackId);
@@ -59,7 +59,7 @@ class FeedbackWorkflowService
             'actor_name' => $actor['name'],
             'status_to' => self::STATUS_PENDING,
             'resolution_track_to' => (string) ($feedback->resolution_track ?? 'Needs Triage'),
-            'created_at' => $feedback->date_reported ?? now(),
+            'created_at' => $reportedAt,
         ]);
 
         $this->notificationService->reportReceived($feedback, $actor, $eventId);

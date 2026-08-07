@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\SendHtmlMailJob;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
@@ -140,6 +141,30 @@ class FeedbackWorkflowTest extends TestCase
             'type' => 'feedback.report.received',
         ]);
         Queue::assertPushed(SendHtmlMailJob::class);
+    }
+
+    public function test_submission_uses_the_exact_server_time_for_the_report_and_history(): void
+    {
+        $submittedAt = CarbonImmutable::create(2026, 8, 6, 14, 37, 52, 'Asia/Kuala_Lumpur');
+        CarbonImmutable::setTestNow($submittedAt);
+
+        try {
+            $response = $this->actingAsStaff(22)
+                ->postJson('/feedback', ['feedback' => 'Timestamp regression'])
+                ->assertOk();
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+
+        $feedbackId = (int) $response->json('feedback_id');
+        $reportedAt = DB::table('system_feedbacks')->where('id', $feedbackId)->value('date_reported');
+        $historyAt = DB::table('system_feedback_history')
+            ->where('feedback_id', $feedbackId)
+            ->where('event_type', 'report_received')
+            ->value('created_at');
+
+        $this->assertSame('2026-08-06 14:37:52', (string) $reportedAt);
+        $this->assertSame((string) $reportedAt, (string) $historyAt);
     }
 
     public function test_admin_updates_append_without_overwriting_previous_history(): void

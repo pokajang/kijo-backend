@@ -30,7 +30,6 @@
         table.breakdown th, table.breakdown td { border: 0.5px solid #000; padding: 4px; vertical-align: top; }
         table.breakdown th { background: #f2f2f2; font-weight: 700; text-align: center; }
         table.breakdown td.center { text-align: center; }
-        table.breakdown .detail-row td { background: #fcfcfc; font-size: 9pt; white-space: pre-wrap; }
         .muted-row { background: #f9f9f9; }
         .bank-block { font-size: 11pt; line-height: 1.4; margin: 3mm 0; }
         .sign-table { width: 100%; border-collapse: collapse; margin-top: 3mm; }
@@ -180,36 +179,36 @@
             $qty  = number_format((float) $itm->quantity, 2);
             $unit = (string) ($itm->unit ?? '');
             $sub  = number_format($raw, 2);
+            $itemCellSegments = $isManpowerBase
+                ? [['description' => '', 'remarks' => '', 'show_description_label' => false, 'show_remarks_label' => false]]
+                : \App\Support\PdfText::itemCellSegments($lineDesc, $itemRemarks);
         @endphp
-        <tr>
-            <td class="center">{{ $i + 1 }}</td>
-            <td>
-                @if($isManpowerBase)
-                    {{ $claimLabel !== '' ? $claimLabel : 'Claim Period' }}<br>
-                    <em>{{ $L('remarks', 'Remarks') }}:</em> {{ trim((string) ($inv->remarks ?? '')) !== '' ? $inv->remarks : 'N/A' }}
-                @else
-                    {{ $descLabel }}
-                @endif
-            </td>
-            <td class="center">{{ $up }}</td>
-            <td class="center">{{ $qty }}</td>
-            <td class="center">{{ $unit }}</td>
-            <td class="center">{{ $sub }}</td>
-        </tr>
-        @if(!$isManpowerBase)
-            @foreach(\App\Support\PdfText::chunks($lineDesc) as $descriptionChunk)
-                <tr class="detail-row">
-                    <td></td>
-                    <td colspan="5"><strong>{{ $L('description', 'Description') }}:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
-                </tr>
-            @endforeach
-            @foreach(\App\Support\PdfText::chunks($itemRemarks) as $remarkChunk)
-                <tr class="detail-row">
-                    <td></td>
-                    <td colspan="5"><strong>Specifications / {{ $L('remarks', 'Remarks') }}:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
-                </tr>
-            @endforeach
-        @endif
+        @foreach($itemCellSegments as $segmentIndex => $itemCellSegment)
+            <tr class="{{ $isManpowerBase ? '' : ($segmentIndex === 0 ? 'equipment-item-row' : 'equipment-item-continuation-row') }}">
+                <td class="center">{{ $segmentIndex === 0 ? $i + 1 : '' }}</td>
+                <td>
+                    @if($isManpowerBase)
+                        {{ $claimLabel !== '' ? $claimLabel : 'Claim Period' }}<br>
+                        <em>{{ $L('remarks', 'Remarks') }}:</em> {{ trim((string) ($inv->remarks ?? '')) !== '' ? $inv->remarks : 'N/A' }}
+                    @else
+                        @include('pdf.partials.equipment-item-cell', [
+                            'itemName' => $descLabel,
+                            'description' => $itemCellSegment['description'],
+                            'remarks' => $itemCellSegment['remarks'],
+                            'descriptionLabel' => $L('description', 'Description'),
+                            'remarksLabel' => $L('remarks', 'Remarks'),
+                            'showItemName' => $segmentIndex === 0,
+                            'showDescriptionLabel' => $itemCellSegment['show_description_label'],
+                            'showRemarksLabel' => $itemCellSegment['show_remarks_label'],
+                        ])
+                    @endif
+                </td>
+                <td class="center">{{ $segmentIndex === 0 ? $up : '' }}</td>
+                <td class="center">{{ $segmentIndex === 0 ? $qty : '' }}</td>
+                <td class="center">{{ $segmentIndex === 0 ? $unit : '' }}</td>
+                <td class="center">{{ $segmentIndex === 0 ? $sub : '' }}</td>
+            </tr>
+        @endforeach
     @endforeach
     <tr class="muted-row">
         <td colspan="5" style="text-align:right;">
@@ -242,7 +241,7 @@
 </table>
 
 @if(trim((string) ($inv->quotation_remarks ?? '')) !== '')
-    <p style="margin-top:3mm;white-space:pre-wrap;"><strong>Quotation {{ $L('remarks', 'Remarks') }}:</strong><br>{!! nl2br(e($inv->quotation_remarks), false) !!}</p>
+    <p style="margin-top:3mm;white-space:pre-wrap;"><strong>{{ $L('quotation_remarks', 'Quotation Remarks') }}:</strong><br>{!! nl2br(e($inv->quotation_remarks), false) !!}</p>
 @endif
 
 {{-- Banking info --}}

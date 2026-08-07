@@ -216,14 +216,16 @@ class FeedbackController extends Controller
     {
         $feedback = $request->validated()['feedback'];
         $staffId = $request->session()->get('staff_id');
+        $reportedAt = CarbonImmutable::now();
 
-        $feedbackId = DB::transaction(function () use ($feedback, $staffId, $request): int {
+        $feedbackId = DB::transaction(function () use ($feedback, $staffId, $request, $reportedAt): int {
             $feedbackId = (int) DB::table('system_feedbacks')->insertGetId([
                 'feedback' => $feedback,
                 'reported_by' => $staffId,
+                'date_reported' => $reportedAt,
                 ...($this->hasResolutionTrackColumn() ? ['resolution_track' => self::TRACK_NEEDS_TRIAGE] : []),
             ]);
-            $this->workflow->recordReceived($request, $feedbackId);
+            $this->workflow->recordReceived($request, $feedbackId, $reportedAt);
 
             return $feedbackId;
         });

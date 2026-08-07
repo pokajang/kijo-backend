@@ -18,6 +18,8 @@ use App\Services\Assistant\AssistantRetrievalPlanner;
 use App\Services\Assistant\AssistantSourceGapService;
 use App\Services\Assistant\AssistantText;
 use App\Services\Assistant\Sources\KnowledgeArticleContextProvider;
+use App\Services\Feedback\FeedbackWorkflowService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -50,6 +52,7 @@ class KnowledgeAssistantService
         private readonly AssistantRetrievalPlanner $retrievalPlanner,
         private readonly AssistantConversationContextResolver $conversationContext,
         private readonly AssistantQuestionIntentResolver $intentResolver,
+        private readonly FeedbackWorkflowService $feedbackWorkflow,
     ) {}
 
     public function thread(Request $request): JsonResponse
@@ -404,7 +407,7 @@ class KnowledgeAssistantService
 
         if ($rating === 'bad') {
             $this->answerCache->forgetAnswerSignature($answerSignature);
-            $this->mirrorBadFeedback($staffId, $message, $question, $reasons, $note, $currentRoute);
+            $this->mirrorBadFeedback($request, $staffId, $message, $question, $reasons, $note, $currentRoute);
             if (array_intersect($reasons, ['Wrong information', 'Wrong source', 'Missing data'])) {
                 $this->sourceGaps->record(
                     $question,
@@ -1388,6 +1391,7 @@ class KnowledgeAssistantService
     }
 
     private function mirrorBadFeedback(
+        Request $request,
         int $staffId,
         object $message,
         string $question,
@@ -1408,24 +1412,28 @@ class KnowledgeAssistantService
             'Answer: '.Str::limit((string) $message->content, 1800, ''),
         ])), 5000, '');
 
+        $reportedAt = CarbonImmutable::now();
         $payload = [
             'feedback' => $feedback,
             'reported_by' => $staffId,
         ];
         if (Schema::hasColumn('system_feedbacks', 'date_reported')) {
-            $payload['date_reported'] = now();
+            $payload['date_reported'] = $reportedAt;
         }
         if (Schema::hasColumn('system_feedbacks', 'status')) {
             $payload['status'] = 'Pending';
         }
         if (Schema::hasColumn('system_feedbacks', 'created_at')) {
-            $payload['created_at'] = now();
+            $payload['created_at'] = $reportedAt;
         }
         if (Schema::hasColumn('system_feedbacks', 'updated_at')) {
-            $payload['updated_at'] = now();
+            $payload['updated_at'] = $reportedAt;
         }
 
-        DB::table('system_feedbacks')->insert($payload);
+        DB::transaction(function () use ($payload, $request, $reportedAt): void {
+            $feedbackId = (int) DB::table('system_feedbacks')->insertGetId($payload);
+            $this->feedbackWorkflow->recordReceived($request, $feedbackId, $reportedAt);
+        });
     }
 
     private function suggestedQueries(string $question): array

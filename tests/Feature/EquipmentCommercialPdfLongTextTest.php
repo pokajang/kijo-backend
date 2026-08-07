@@ -48,6 +48,7 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
         ])->render();
 
         $this->assertSentinels($html);
+        $this->assertConsolidatedItemCell($html);
         $this->assertStringNotContainsString('mb_strimwidth', $html);
     }
 
@@ -76,6 +77,8 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
 
         $this->assertSentinels($invoiceHtml);
         $this->assertSentinels($receiptHtml);
+        $this->assertConsolidatedItemCell($invoiceHtml);
+        $this->assertConsolidatedItemCell($receiptHtml);
     }
 
     public function test_delivery_order_keeps_the_end_of_long_equipment_wording(): void
@@ -109,6 +112,7 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
         ])->render();
 
         $this->assertSentinels($html);
+        $this->assertConsolidatedItemCell($html);
     }
 
     public function test_supplier_po_keeps_the_end_of_long_equipment_wording(): void
@@ -146,6 +150,52 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
         ])->render();
 
         $this->assertSentinels($html);
+        $this->assertConsolidatedItemCell($html);
+    }
+
+    public function test_item_cell_omits_empty_optional_fields_and_escapes_user_wording(): void
+    {
+        $html = view('pdf.partials.equipment-item-cell', [
+            'itemName' => '<script>Unsafe title</script>',
+            'description' => '',
+            'remarks' => '',
+        ])->render();
+
+        $this->assertStringContainsString('&lt;script&gt;Unsafe title&lt;/script&gt;', $html);
+        $this->assertStringNotContainsString('<script>', $html);
+        $this->assertStringNotContainsString('data-pdf-item-description', $html);
+        $this->assertStringNotContainsString('data-pdf-item-remarks', $html);
+        $this->assertStringNotContainsString('Description:', $html);
+        $this->assertStringNotContainsString('Remarks:', $html);
+    }
+
+    public function test_bahasa_commercial_item_labels_are_localized_once(): void
+    {
+        $invoice = $this->invoice();
+        $invoice->document_language = 'ms-MY';
+        $item = (object) [
+            'item_description' => 'Pengesan gas',
+            'description' => 'Pengesan mudah alih',
+            'item_remarks' => 'Warna biru',
+            'unit' => 'unit',
+            'quantity' => 1,
+            'unit_price' => 100,
+            'subtotal' => 100,
+        ];
+
+        $html = view('pdf.receipt', [
+            'pdfLanguage' => 'ms-MY',
+            'inv' => $invoice,
+            'items' => [$item],
+            'logoDataUri' => null,
+        ])->render();
+
+        $this->assertSame(1, substr_count($html, '>Penerangan:</strong>'));
+        $this->assertSame(1, substr_count($html, '>Catatan:</strong>'));
+        $this->assertStringContainsString('>Catatan Sebut Harga:</strong>', $html);
+        $this->assertStringNotContainsString('Quotation Catatan', $html);
+        $this->assertStringNotContainsString('>Description:</strong>', $html);
+        $this->assertStringNotContainsString('>Remarks:</strong>', $html);
     }
 
     public function test_vendor_loa_keeps_multiline_services_and_remarks_without_collapsing_them(): void
@@ -241,5 +291,19 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
         $this->assertStringContainsString(self::DESCRIPTION_END, $html);
         $this->assertStringContainsString(self::ITEM_REMARK_END, $html);
         $this->assertStringContainsString(self::QUOTATION_REMARK_END, $html);
+    }
+
+    private function assertConsolidatedItemCell(string $html): void
+    {
+        $this->assertSame(1, substr_count($html, 'class="equipment-item-row"'));
+        $this->assertSame(1, substr_count($html, 'data-pdf-item-name'));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, 'data-pdf-item-description'));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, 'data-pdf-item-remarks'));
+        $this->assertSame(1, substr_count($html, 'data-pdf-item-description-label'));
+        $this->assertSame(1, substr_count($html, 'data-pdf-item-remarks-label'));
+        $this->assertStringContainsString('>Description:</strong>', $html);
+        $this->assertStringContainsString('>Remarks:</strong>', $html);
+        $this->assertStringNotContainsString('Specifications', $html);
+        $this->assertStringNotContainsString('class="detail-row"', $html);
     }
 }

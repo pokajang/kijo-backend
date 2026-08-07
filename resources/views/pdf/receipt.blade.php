@@ -28,7 +28,6 @@
         table.breakdown th, table.breakdown td { border: 0.5px solid #000; padding: 4px; vertical-align: top; }
         table.breakdown th { background: #f2f2f2; font-weight: 700; text-align: center; }
         table.breakdown td.center { text-align: center; }
-        table.breakdown .detail-row td { background: #fcfcfc; font-size: 9pt; white-space: pre-wrap; }
         .muted-row { background: #f9f9f9; }
         .footer-note { font-size: 10pt; margin: 3mm 0; }
         .tagline { text-align: center; font-size: 12pt; font-style: italic; color: #cccccc; margin-top: 8mm; }
@@ -115,27 +114,27 @@
             $lineDesc = trim((string) ($itm->description ?? ''));
             $itemRemarks = trim((string) ($itm->item_remarks ?? ''));
             $unit     = (string) ($itm->unit ?? '');
+            $itemCellSegments = \App\Support\PdfText::itemCellSegments($lineDesc, $itemRemarks);
         @endphp
-        <tr>
-            <td class="center">{{ $i + 1 }}</td>
-            <td>
-                {{ $desc }}
-            </td>
-            <td class="center">{{ number_format((float) $up, 2) }}</td>
-            <td class="center">{{ number_format((float) $qty, 2) }}</td>
-            <td class="center">{{ $unit }}</td>
-            <td class="center">{{ number_format((float) $sub, 2) }}</td>
-        </tr>
-        @foreach(\App\Support\PdfText::chunks($lineDesc) as $descriptionChunk)
-            <tr class="detail-row">
-                <td></td>
-                <td colspan="5"><strong>{{ $L('description', 'Description') }}:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
-            </tr>
-        @endforeach
-        @foreach(\App\Support\PdfText::chunks($itemRemarks) as $remarkChunk)
-            <tr class="detail-row">
-                <td></td>
-                <td colspan="5"><strong>Specifications / {{ $L('remarks', 'Remarks') }}:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+        @foreach($itemCellSegments as $segmentIndex => $itemCellSegment)
+            <tr class="{{ $segmentIndex === 0 ? 'equipment-item-row' : 'equipment-item-continuation-row' }}">
+                <td class="center">{{ $segmentIndex === 0 ? $i + 1 : '' }}</td>
+                <td>
+                    @include('pdf.partials.equipment-item-cell', [
+                        'itemName' => $desc,
+                        'description' => $itemCellSegment['description'],
+                        'remarks' => $itemCellSegment['remarks'],
+                        'descriptionLabel' => $L('description', 'Description'),
+                        'remarksLabel' => $L('remarks', 'Remarks'),
+                        'showItemName' => $segmentIndex === 0,
+                        'showDescriptionLabel' => $itemCellSegment['show_description_label'],
+                        'showRemarksLabel' => $itemCellSegment['show_remarks_label'],
+                    ])
+                </td>
+                <td class="center">{{ $segmentIndex === 0 ? number_format((float) $up, 2) : '' }}</td>
+                <td class="center">{{ $segmentIndex === 0 ? number_format((float) $qty, 2) : '' }}</td>
+                <td class="center">{{ $segmentIndex === 0 ? $unit : '' }}</td>
+                <td class="center">{{ $segmentIndex === 0 ? number_format((float) $sub, 2) : '' }}</td>
             </tr>
         @endforeach
     @endforeach
@@ -152,7 +151,7 @@
 </table>
 
 @if(trim((string) ($inv->quotation_remarks ?? '')) !== '')
-    <p style="margin-top:3mm;white-space:pre-wrap;"><strong>Quotation {{ $L('remarks', 'Remarks') }}:</strong><br>{!! nl2br(e($inv->quotation_remarks), false) !!}</p>
+    <p style="margin-top:3mm;white-space:pre-wrap;"><strong>{{ $L('quotation_remarks', 'Quotation Remarks') }}:</strong><br>{!! nl2br(e($inv->quotation_remarks), false) !!}</p>
 @endif
 
 <p class="footer-note">

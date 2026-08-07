@@ -27,7 +27,6 @@
         .items-table td.right { text-align: right; }
         .items-table .subtotal-row td { text-align: right; font-weight: 400; }
         .items-table .total-row td { text-align: right; font-weight: 700; }
-        .items-table .detail-row td { background: #fcfcfc; font-size: 8.5pt; white-space: pre-wrap; }
         .quotation-remarks { margin: 3mm 0; padding: 2.5mm 3mm; background: #f7f7f7; border-left: 1.2mm solid #696969; white-space: pre-line; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
@@ -80,25 +79,28 @@
             </thead>
             <tbody>
                 @foreach($items as $i => $item)
-                    <tr>
-                        <td class="num">{{ $i + 1 }}</td>
-                        <td>
-                            {{ $item['title'] }}<br>
-                        </td>
-                        <td class="num">{{ (int) $item['quantity'] }}</td>
-                        <td class="right">{{ number_format((float) $item['marked_up_price'], 2) }}</td>
-                        <td class="right">{{ number_format((float) $item['line_total'], 2) }}</td>
-                    </tr>
-                    @foreach(\App\Support\PdfText::chunks($item['description'] ?? '') as $descriptionChunk)
-                        <tr class="detail-row">
-                            <td></td>
-                            <td colspan="4"><strong>Description:</strong> {!! nl2br(e($descriptionChunk), false) !!}</td>
-                        </tr>
-                    @endforeach
-                    @foreach(\App\Support\PdfText::chunks($item['item_remarks'] ?? '') as $remarkChunk)
-                        <tr class="detail-row">
-                            <td></td>
-                            <td colspan="4"><strong>Specifications:</strong> {!! nl2br(e($remarkChunk), false) !!}</td>
+                    @php
+                        $itemCellSegments = \App\Support\PdfText::itemCellSegments(
+                            $item['description'] ?? '',
+                            $item['item_remarks'] ?? '',
+                        );
+                    @endphp
+                    @foreach($itemCellSegments as $segmentIndex => $itemCellSegment)
+                        <tr class="{{ $segmentIndex === 0 ? 'equipment-item-row' : 'equipment-item-continuation-row' }}">
+                            <td class="num">{{ $segmentIndex === 0 ? $i + 1 : '' }}</td>
+                            <td>
+                                @include('pdf.partials.equipment-item-cell', [
+                                    'itemName' => $item['title'] ?? '',
+                                    'description' => $itemCellSegment['description'],
+                                    'remarks' => $itemCellSegment['remarks'],
+                                    'showItemName' => $segmentIndex === 0,
+                                    'showDescriptionLabel' => $itemCellSegment['show_description_label'],
+                                    'showRemarksLabel' => $itemCellSegment['show_remarks_label'],
+                                ])
+                            </td>
+                            <td class="num">{{ $segmentIndex === 0 ? (int) $item['quantity'] : '' }}</td>
+                            <td class="right">{{ $segmentIndex === 0 ? number_format((float) $item['marked_up_price'], 2) : '' }}</td>
+                            <td class="right">{{ $segmentIndex === 0 ? number_format((float) $item['line_total'], 2) : '' }}</td>
                         </tr>
                     @endforeach
                 @endforeach

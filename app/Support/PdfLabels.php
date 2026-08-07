@@ -43,6 +43,7 @@ class PdfLabels
         'samples' => 'Sampel',
         'work_units' => 'Unit Kerja',
         'remarks' => 'Catatan',
+        'quotation_remarks' => 'Catatan Sebut Harga',
         'important' => 'Penting',
         'unit_price_rm' => 'Harga Seunit (RM)',
         'unit_cost' => 'Kos Seunit',
