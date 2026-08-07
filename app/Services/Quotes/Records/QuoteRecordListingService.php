@@ -2,6 +2,7 @@
 
 namespace App\Services\Quotes\Records;
 
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -43,10 +44,10 @@ class QuoteRecordListingService
                         'qi.created_by',
                         'qi.created_at',
                         'qi.updated_at',
-                        'ci.item_name',
+                        DB::raw(EquipmentItemSnapshot::expression('item_name').' as item_name'),
                         'ci.category_id',
-                        'ci.description',
-                        'ci.unit',
+                        DB::raw(EquipmentItemSnapshot::expression('description').' as description'),
+                        DB::raw(EquipmentItemSnapshot::expression('unit').' as unit'),
                     ])
                     ->orderBy('qi.quote_id')
                     ->orderBy('qi.id')

@@ -13,8 +13,8 @@ final class PdfText
     {
         $limit = max(100, $limit);
         $maxLines = max(1, $maxLines);
-        $description = self::normalize($description);
-        $remarks = self::normalize($remarks);
+        $description = self::compactInline($description);
+        $remarks = self::compactInline($remarks);
         $combined = implode("\n", array_filter([$description, $remarks], static fn (string $value): bool => $value !== ''));
 
         if (count(self::pageChunks($combined, $limit, $maxLines)) <= 1) {
@@ -88,6 +88,40 @@ final class PdfText
         }
 
         return $chunks;
+    }
+
+    /**
+     * Convert pasted list-style text into a compact PDF-safe paragraph.
+     * Explicit numbering is preserved; unsupported bullets become separators.
+     */
+    public static function compactInline($value): string
+    {
+        $text = self::normalize($value);
+        if ($text === '') {
+            return '';
+        }
+
+        $lines = [];
+        foreach (explode("\n", $text) as $line) {
+            $line = preg_replace('/^[\x{2022}\x{2023}\x{25E6}\x{2043}\x{2219}\x{25AA}\x{25AB}]\s*/u', '', trim($line)) ?? '';
+            $line = preg_replace('/\s+/u', ' ', $line) ?? '';
+            if ($line !== '') {
+                $lines[] = $line;
+            }
+        }
+
+        $result = '';
+        foreach ($lines as $line) {
+            if ($result === '') {
+                $result = $line;
+
+                continue;
+            }
+
+            $result .= str_ends_with($result, ':') ? ' '.$line : '; '.$line;
+        }
+
+        return $result;
     }
 
     /**

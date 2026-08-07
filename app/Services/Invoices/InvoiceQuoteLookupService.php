@@ -2,6 +2,7 @@
 
 namespace App\Services\Invoices;
 
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -47,8 +48,12 @@ class InvoiceQuoteLookupService
             ->leftJoin('catalog_items as ci', 'ci.id', '=', 'qi.item_id')
             ->where('qi.quote_id', $id)
             ->orderBy('qi.id')
-            ->get(['qi.id', 'qi.item_id', 'qi.item_remarks', 'qi.quantity', 'qi.unit_price', 'qi.marked_up_price', 'qi.line_total',
-                'ci.item_name', 'ci.description', 'ci.unit']);
+            ->get([
+                'qi.id', 'qi.item_id', 'qi.item_remarks', 'qi.quantity', 'qi.unit_price', 'qi.marked_up_price', 'qi.line_total',
+                DB::raw(EquipmentItemSnapshot::expression('item_name').' as item_name'),
+                DB::raw(EquipmentItemSnapshot::expression('description').' as description'),
+                DB::raw(EquipmentItemSnapshot::expression('unit').' as unit'),
+            ]);
 
         $quote->equipment_items = $items;
 

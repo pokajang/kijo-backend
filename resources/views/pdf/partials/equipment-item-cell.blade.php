@@ -13,8 +13,8 @@
     <div data-pdf-item-name><strong>{{ $pdfItemName !== '' ? $pdfItemName : '-' }}</strong></div>
 @endif
 @if($pdfItemDescription !== '')
-    <div data-pdf-item-description style="margin-top: 2px; line-height: 1.25; word-wrap: break-word;">@if($pdfShowDescriptionLabel)<strong data-pdf-item-description-label>{{ $pdfDescriptionLabel }}:</strong> @endif{!! nl2br(e($pdfItemDescription), false) !!}</div>
+    <div data-pdf-item-description style="margin-top: 2px; color: #666; font-size: 8.5pt; line-height: 1.25; word-wrap: break-word;">@if($pdfShowDescriptionLabel)<strong data-pdf-item-description-label style="color: #444;">{{ $pdfDescriptionLabel }}:</strong> @endif{{ $pdfItemDescription }}</div>
 @endif
 @if($pdfItemRemarks !== '')
-    <div data-pdf-item-remarks style="margin-top: 2px; line-height: 1.25; word-wrap: break-word;">@if($pdfShowRemarksLabel)<strong data-pdf-item-remarks-label>{{ $pdfRemarksLabel }}:</strong> @endif{!! nl2br(e($pdfItemRemarks), false) !!}</div>
+    <div data-pdf-item-remarks style="margin-top: 2px; color: #666; font-size: 8.5pt; line-height: 1.25; word-wrap: break-word;">@if($pdfShowRemarksLabel)<strong data-pdf-item-remarks-label style="color: #444;">{{ $pdfRemarksLabel }}:</strong> @endif{{ $pdfItemRemarks }}</div>
 @endif

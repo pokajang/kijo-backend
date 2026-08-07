@@ -104,6 +104,9 @@ final class CommercialCycleQuoteSchemas
             $table->id();
             $table->unsignedBigInteger('quote_id');
             $table->unsignedBigInteger('item_id');
+            $table->string('item_name')->nullable();
+            $table->text('description')->nullable();
+            $table->string('unit')->nullable();
             $table->text('item_remarks')->nullable();
             $table->decimal('quantity', 12, 2);
             $table->decimal('unit_price', 15, 2);

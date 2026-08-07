@@ -2,6 +2,7 @@
 
 namespace App\Services\Assistant;
 
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -104,12 +105,18 @@ class QuoteRecordDetailContextBuilder
 
         if (Schema::hasTable('catalog_items') && Schema::hasColumn('catalog_items', 'id')) {
             $query->leftJoin('catalog_items as ci', 'ci.id', '=', 'qi.item_id');
+            $columns[] = DB::raw(EquipmentItemSnapshot::expression('item_name').' as item_name');
+            $columns[] = DB::raw(EquipmentItemSnapshot::expression('description').' as description');
+            $columns[] = DB::raw(EquipmentItemSnapshot::expression('unit').' as unit');
             $columns = array_merge($columns, $this->qualifiedColumns('catalog_items', 'ci', [
+                'supplier_name',
+                'supplier_price',
+            ]));
+        } else {
+            $columns = array_merge($columns, $this->qualifiedColumns('quotes_equipment_items', 'qi', [
                 'item_name',
                 'description',
                 'unit',
-                'supplier_name',
-                'supplier_price',
             ]));
         }
 

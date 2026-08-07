@@ -3,6 +3,7 @@
 namespace App\Services\Projects;
 
 use App\Services\AuditLogService;
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -185,11 +186,17 @@ class ProjectListService
         $equipmentItemsByQuote = [];
         if (! empty($equipmentQuoteIds)) {
             $eqPlaceholders = implode(',', array_fill(0, count($equipmentQuoteIds), '?'));
+            $itemNameSelect = EquipmentItemSnapshot::expression('item_name');
+            $descriptionSelect = EquipmentItemSnapshot::expression('description');
+            $unitSelect = EquipmentItemSnapshot::expression('unit');
             $eqRows = DB::select(
                 "SELECT qi.quote_id, qi.id, qi.item_id, qi.item_remarks, qi.quantity, qi.unit_price,
-                         qi.marked_up_price, qi.line_total, ci.item_name, ci.description, ci.unit
+                         qi.marked_up_price, qi.line_total,
+                         {$itemNameSelect} AS item_name,
+                         {$descriptionSelect} AS description,
+                         {$unitSelect} AS unit
                  FROM quotes_equipment_items qi
-                 JOIN catalog_items ci ON ci.id = qi.item_id
+                 LEFT JOIN catalog_items ci ON ci.id = qi.item_id
                  WHERE qi.quote_id IN ({$eqPlaceholders})",
                 $equipmentQuoteIds
             );
@@ -742,14 +749,20 @@ class ProjectListService
         }
 
         if ($project['project_type'] === 'Equipment Supply' && ! empty($project['quote_id'])) {
+            $itemNameSelect = EquipmentItemSnapshot::expression('item_name');
+            $descriptionSelect = EquipmentItemSnapshot::expression('description');
+            $unitSelect = EquipmentItemSnapshot::expression('unit');
             $project['equipment_items'] = array_map(
                 fn ($row) => (array) $row,
                 DB::select(
-                    'SELECT qi.quote_id, qi.id, qi.item_id, qi.item_remarks, qi.quantity, qi.unit_price,
-                             qi.marked_up_price, qi.line_total, ci.item_name, ci.description, ci.unit
+                    "SELECT qi.quote_id, qi.id, qi.item_id, qi.item_remarks, qi.quantity, qi.unit_price,
+                             qi.marked_up_price, qi.line_total,
+                             {$itemNameSelect} AS item_name,
+                             {$descriptionSelect} AS description,
+                             {$unitSelect} AS unit
                      FROM quotes_equipment_items qi
-                     JOIN catalog_items ci ON ci.id = qi.item_id
-                     WHERE qi.quote_id = ?',
+                     LEFT JOIN catalog_items ci ON ci.id = qi.item_id
+                     WHERE qi.quote_id = ?",
                     [(int) $project['quote_id']]
                 )
             );

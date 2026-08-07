@@ -4,6 +4,7 @@ namespace App\Services\QuoteRecords;
 
 use App\Services\AuditLogService;
 use App\Services\Pdf\PdfRenderer;
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -41,12 +42,25 @@ class EquipmentQuoteRecordPdfService extends PdfRenderer
         }
 
         $items = DB::table('quotes_equipment_items as qei')
-            ->join('catalog_items as ci', 'ci.id', '=', 'qei.item_id')
+            ->leftJoin('catalog_items as ci', 'ci.id', '=', 'qei.item_id')
             ->where('qei.quote_id', $quoteId)
             ->orderBy('qei.id')
-            ->select(['ci.item_name as title', 'ci.description', 'qei.item_remarks', 'qei.marked_up_price', 'qei.quantity', 'qei.line_total'])
+            ->select([
+                'qei.item_id',
+                DB::raw(EquipmentItemSnapshot::expression('item_name', 'qei').' as title'),
+                DB::raw(EquipmentItemSnapshot::expression('description', 'qei').' as description'),
+                'qei.item_remarks',
+                'qei.marked_up_price',
+                'qei.quantity',
+                'qei.line_total',
+            ])
             ->get()
-            ->map(fn ($r) => (array) $r)
+            ->map(function ($row): array {
+                $item = (array) $row;
+                $item['title'] = trim((string) ($item['title'] ?? '')) ?: 'Catalog item #'.$item['item_id'];
+
+                return $item;
+            })
             ->toArray();
 
         $lineItemsTotal = array_sum(array_column($items, 'line_total'));

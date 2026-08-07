@@ -5,6 +5,7 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreEquipmentQuoteRequest;
 use App\Http\Requests\Quote\UpdateEquipmentQuoteRequest;
 use App\Services\AuditLogService;
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,9 +36,9 @@ class EquipmentQuoteService
                 'qei.quantity',
                 'qei.marked_up_price',
                 'qei.line_total',
-                'ci.item_name',
-                'ci.description',
-                'ci.unit',
+                DB::raw(EquipmentItemSnapshot::expression('item_name', 'qei').' as item_name'),
+                DB::raw(EquipmentItemSnapshot::expression('description', 'qei').' as description'),
+                DB::raw(EquipmentItemSnapshot::expression('unit', 'qei').' as unit'),
                 'ci.supplier_name',
                 'ci.supplier_price',
             ])
@@ -60,7 +61,9 @@ class EquipmentQuoteService
         }
 
         $data = $request->validated();
-        $items = $this->normalizeEquipmentItems($data['items'] ?? []);
+        $items = $this->attachCatalogSnapshots(
+            $this->normalizeEquipmentItems($data['items'] ?? [])
+        );
 
         // Calculate totals server-side
         $itemsSubtotal = array_sum(array_map(fn ($item) => (float) ($item['line_total'] ?? 0), $items));
@@ -147,6 +150,7 @@ class EquipmentQuoteService
                 $lineInserts[] = [
                     'quote_id' => $quoteId,
                     'item_id' => (int) $item['item_id'],
+                    ...EquipmentItemSnapshot::writableValues($item),
                     'item_remarks' => $item['item_remarks'],
                     'quantity' => (int) $item['quantity'],
                     'unit_price' => (float) $item['unit_price'],
@@ -203,7 +207,10 @@ class EquipmentQuoteService
         }
 
         $data = $request->validated();
-        $items = $this->normalizeEquipmentItems($data['items'] ?? []);
+        $items = $this->attachCatalogSnapshots(
+            $this->normalizeEquipmentItems($data['items'] ?? []),
+            $id,
+        );
 
         $isRevision = $request->boolean('isRevision');
         $itemsSubtotal = array_sum(array_map(fn ($item) => (float) ($item['line_total'] ?? 0), $items));
@@ -282,6 +289,7 @@ class EquipmentQuoteService
                 $lineInserts[] = [
                     'quote_id' => $id,
                     'item_id' => (int) $item['item_id'],
+                    ...EquipmentItemSnapshot::writableValues($item),
                     'item_remarks' => $item['item_remarks'],
                     'quantity' => (int) $item['quantity'],
                     'unit_price' => (float) $item['unit_price'],
@@ -335,5 +343,56 @@ class EquipmentQuoteService
                 'line_total' => (float) $lineTotal,
             ];
         }, $items));
+    }
+
+    /**
+     * Copy catalogue wording at the point the quotation is issued. The client
+     * only submits catalogue IDs; Laravel remains authoritative for snapshots.
+     *
+     * @param  array<int, array<string, mixed>>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachCatalogSnapshots(array $items, ?int $quoteId = null): array
+    {
+        $itemIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $item): int => (int) ($item['item_id'] ?? 0),
+            $items,
+        ))));
+        $existingSnapshots = collect();
+        if ($quoteId !== null && Schema::hasColumns('quotes_equipment_items', ['item_name', 'description', 'unit'])) {
+            $existingSnapshots = DB::table('quotes_equipment_items')
+                ->where('quote_id', $quoteId)
+                ->whereIn('item_id', $itemIds)
+                ->get(['item_id', 'item_name', 'description', 'unit'])
+                ->keyBy('item_id');
+        }
+        $catalogItems = DB::table('catalog_items')
+            ->whereIn('id', $itemIds)
+            ->get(['id', 'item_name', 'description', 'unit'])
+            ->keyBy('id');
+
+        $missingIds = array_values(array_filter(
+            $itemIds,
+            static fn (int $itemId): bool => ! $catalogItems->has($itemId)
+                && trim((string) ($existingSnapshots->get($itemId)->item_name ?? '')) === '',
+        ));
+        if ($missingIds !== []) {
+            throw new HttpResponseException(response()->json([
+                'status' => 'error',
+                'message' => 'One or more selected equipment items are no longer available.',
+                'missing_item_ids' => $missingIds,
+            ], 422));
+        }
+
+        return array_map(static function (array $item) use ($catalogItems, $existingSnapshots): array {
+            $itemId = (int) $item['item_id'];
+            $existingSnapshot = $existingSnapshots->get($itemId);
+            $catalogItem = $catalogItems->get((int) $item['item_id']);
+            $item['item_name'] = trim((string) ($existingSnapshot->item_name ?? $catalogItem->item_name ?? ''));
+            $item['description'] = (string) ($existingSnapshot->description ?? $catalogItem->description ?? '');
+            $item['unit'] = (string) ($existingSnapshot->unit ?? $catalogItem->unit ?? '');
+
+            return $item;
+        }, $items);
     }
 }

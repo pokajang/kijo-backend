@@ -3,6 +3,7 @@
 namespace App\Services\QuoteRecords;
 
 use App\Services\AuditLogService;
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -115,6 +116,9 @@ class EquipmentQuoteRecordListingService
 
         $ids = array_values(array_unique(array_map('intval', array_column($quotes, 'id'))));
         $ph = implode(',', array_fill(0, count($ids), '?'));
+        $itemNameSelect = EquipmentItemSnapshot::expression('item_name');
+        $descriptionSelect = EquipmentItemSnapshot::expression('description');
+        $unitSelect = EquipmentItemSnapshot::expression('unit');
 
         $allItems = DB::select("
             SELECT
@@ -122,10 +126,10 @@ class EquipmentQuoteRecordListingService
                 qi.quote_id,
                 qi.item_id,
                 qi.item_remarks,
-                ci.item_name,
+                {$itemNameSelect} AS item_name,
                 ci.category_id,
-                ci.description,
-                ci.unit,
+                {$descriptionSelect} AS description,
+                {$unitSelect} AS unit,
                 {$supplierNameSelect},
                 {$supplierPriceSelect},
                 {$priceDateSelect},

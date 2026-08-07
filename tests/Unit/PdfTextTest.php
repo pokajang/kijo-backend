@@ -15,7 +15,7 @@ class PdfTextTest extends TestCase
         );
 
         $this->assertCount(1, $segments);
-        $this->assertSame("First catalogue line\nSecond catalogue line", $segments[0]['description']);
+        $this->assertSame('First catalogue line; Second catalogue line', $segments[0]['description']);
         $this->assertSame('Client requested blue equipment.', $segments[0]['remarks']);
         $this->assertTrue($segments[0]['show_description_label']);
         $this->assertTrue($segments[0]['show_remarks_label']);
@@ -55,5 +55,19 @@ class PdfTextTest extends TestCase
         $this->assertNotEmpty($segments);
         $this->assertSame(1, collect($segments)->where('show_description_label', true)->count());
         $this->assertSame(1, collect($segments)->where('show_remarks_label', true)->count());
+    }
+
+    public function test_compact_inline_normalizes_pasted_bullets_and_line_endings(): void
+    {
+        $description = "Personal Air Sampling Pump\r\nIncludes:\r\n"
+            ."• 1 air sampling pump\r\n"
+            ."◦ standard charging dock\r\n"
+            .'3) filter cassette holder';
+
+        $this->assertSame(
+            'Personal Air Sampling Pump; Includes: 1 air sampling pump; standard charging dock; 3) filter cassette holder',
+            PdfText::compactInline($description),
+        );
+        $this->assertStringNotContainsString('•', PdfText::compactInline($description));
     }
 }

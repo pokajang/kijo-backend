@@ -4,6 +4,7 @@ namespace App\Services\Quotes\Records;
 
 use App\Services\Projects\ProjectCollaboratorAssignmentService;
 use App\Services\Projects\ProjectValueService;
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -231,7 +232,8 @@ class QuoteRecordAwardService
                 ->where('qi.quote_id', $quoteId)
                 ->orderBy('qi.id')
                 ->limit(3)
-                ->pluck('ci.item_name')
+                ->selectRaw(EquipmentItemSnapshot::expression('item_name').' as item_name')
+                ->pluck('item_name')
                 ->filter()
                 ->values()
                 ->all();

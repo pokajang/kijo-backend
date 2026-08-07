@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Services\Assistant\QuoteRecordDetailContextBuilder;
+use App\Services\Equipment\EquipmentCommercialSnapshotService;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CommercialCyclePayloads;
@@ -47,6 +49,110 @@ class QuoteCommercialDocumentCyclesTest extends TestCase
         ))
             ->assertStatus(422)
             ->assertJsonValidationErrors('items.0.item_remarks');
+    }
+
+    public function test_equipment_quote_and_commercial_lookup_use_immutable_catalogue_wording(): void
+    {
+        CommercialCycleQuoteSchemas::replace('equipment');
+
+        $create = $this->authenticated()->postJson(
+            '/quotes/equipment',
+            CommercialCyclePayloads::quote('equipment'),
+        )->assertOk();
+        $quoteId = (int) $create->json('quote_id');
+
+        $this->assertDatabaseHas('quotes_equipment_items', [
+            'quote_id' => $quoteId,
+            'item_id' => 701,
+            'item_name' => 'Gas detector',
+            'description' => 'Portable calibrated gas detector.',
+            'unit' => 'unit',
+        ]);
+
+        DB::table('catalog_items')->where('id', 701)->update([
+            'item_name' => 'Changed catalogue name',
+            'description' => 'Changed catalogue description.',
+            'unit' => 'box',
+        ]);
+
+        $this->authenticated()->getJson("/quotes/equipment/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('data.items.0.item_name', 'Gas detector')
+            ->assertJsonPath('data.items.0.description', 'Portable calibrated gas detector.')
+            ->assertJsonPath('data.items.0.unit', 'unit');
+        $this->authenticated()->getJson("/invoices/quote/equipment/{$quoteId}")
+            ->assertOk()
+            ->assertJsonPath('equipment_items.0.item_name', 'Gas detector')
+            ->assertJsonPath('equipment_items.0.description', 'Portable calibrated gas detector.')
+            ->assertJsonPath('equipment_items.0.unit', 'unit');
+
+        $snapshot = app(EquipmentCommercialSnapshotService::class)
+            ->forQuote($quoteId);
+        $this->assertSame('Gas detector', $snapshot['items'][0]['item_name']);
+        $this->assertSame('Portable calibrated gas detector.', $snapshot['items'][0]['description']);
+        $this->assertSame('unit', $snapshot['items'][0]['unit']);
+
+        $assistantContext = app(QuoteRecordDetailContextBuilder::class)->detail('equipment', $quoteId);
+        $this->assertSame('Gas detector', $assistantContext['line_items'][0]['item_name']);
+        $this->assertSame('Portable calibrated gas detector.', $assistantContext['line_items'][0]['description']);
+        $this->assertSame('unit', $assistantContext['line_items'][0]['unit']);
+
+        $this->authenticated()->putJson(
+            "/quotes/equipment/{$quoteId}",
+            CommercialCyclePayloads::quote('equipment', [
+                'quotation_remarks' => 'Updated without changing the issued item wording.',
+            ]),
+        )->assertOk();
+
+        DB::table('catalog_items')->where('id', 701)->delete();
+
+        $this->authenticated()->putJson(
+            "/quotes/equipment/{$quoteId}",
+            CommercialCyclePayloads::quote('equipment', [
+                'quotation_remarks' => 'Updated after the catalogue item was removed.',
+            ]),
+        )->assertOk();
+
+        $this->assertDatabaseHas('quotes_equipment_items', [
+            'quote_id' => $quoteId,
+            'item_id' => 701,
+            'item_name' => 'Gas detector',
+            'description' => 'Portable calibrated gas detector.',
+            'unit' => 'unit',
+        ]);
+    }
+
+    public function test_equipment_snapshot_backfill_is_dry_run_by_default_and_preserves_existing_values(): void
+    {
+        CommercialCycleQuoteSchemas::replace('equipment');
+        $now = now();
+        DB::table('quotes_equipment_items')->insert([
+            'quote_id' => 88,
+            'item_id' => 701,
+            'item_name' => null,
+            'description' => null,
+            'unit' => null,
+            'item_remarks' => null,
+            'quantity' => 1,
+            'unit_price' => 700,
+            'marked_up_price' => 1000,
+            'line_total' => 1000,
+            'created_by' => 10,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $this->artisan('quotes:backfill-equipment-item-snapshots')->assertSuccessful();
+        $this->assertNull(DB::table('quotes_equipment_items')->where('quote_id', 88)->value('item_name'));
+
+        $this->artisan('quotes:backfill-equipment-item-snapshots', ['--commit' => true])
+            ->assertSuccessful();
+        $this->assertDatabaseHas('quotes_equipment_items', [
+            'quote_id' => 88,
+            'item_name' => 'Gas detector',
+            'description' => 'Portable calibrated gas detector.',
+            'unit' => 'unit',
+        ]);
     }
 
     #[DataProvider('quoteServices')]

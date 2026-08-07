@@ -8,6 +8,7 @@ use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
 use App\Services\AuditLogService;
 use App\Services\Projects\ProjectCollaboratorAssignmentService;
 use App\Services\Projects\ProjectValueService;
+use App\Support\EquipmentItemSnapshot;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -50,11 +51,12 @@ class EquipmentQuoteRecordAwardWorkflowService
             }
 
             $names = DB::table('quotes_equipment_items as qei')
-                ->join('catalog_items as ci', 'ci.id', '=', 'qei.item_id')
+                ->leftJoin('catalog_items as ci', 'ci.id', '=', 'qei.item_id')
                 ->where('qei.quote_id', $quoteId)
                 ->orderBy('qei.id')
                 ->limit(3)
-                ->pluck('ci.item_name')
+                ->selectRaw(EquipmentItemSnapshot::expression('item_name', 'qei').' as item_name')
+                ->pluck('item_name')
                 ->toArray();
 
             $projectName = 'Equipment Supply';
@@ -144,11 +146,12 @@ class EquipmentQuoteRecordAwardWorkflowService
             }
 
             $names = DB::table('quotes_equipment_items as qei')
-                ->join('catalog_items as ci', 'ci.id', '=', 'qei.item_id')
+                ->leftJoin('catalog_items as ci', 'ci.id', '=', 'qei.item_id')
                 ->where('qei.quote_id', $quoteId)
                 ->orderBy('qei.id')
                 ->limit(3)
-                ->pluck('ci.item_name')
+                ->selectRaw(EquipmentItemSnapshot::expression('item_name', 'qei').' as item_name')
+                ->pluck('item_name')
                 ->toArray();
 
             $projectName = 'Equipment Supply';

@@ -2,6 +2,8 @@
 
 namespace App\Services\Equipment;
 
+use App\Support\EquipmentItemSnapshot;
+use App\Support\PdfText;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -35,9 +37,9 @@ class EquipmentCommercialSnapshotService
                 'qi.item_id',
                 'qi.quantity',
                 'qi.unit_price',
-                'c.item_name',
-                'c.description',
-                'c.unit',
+                DB::raw(EquipmentItemSnapshot::expression('item_name', 'qi', 'c').' as item_name'),
+                DB::raw(EquipmentItemSnapshot::expression('description', 'qi', 'c').' as description'),
+                DB::raw(EquipmentItemSnapshot::expression('unit', 'qi', 'c').' as unit'),
             ];
             if (Schema::hasColumn('quotes_equipment_items', 'item_remarks')) {
                 $itemColumns[] = 'qi.item_remarks';
@@ -173,9 +175,11 @@ class EquipmentCommercialSnapshotService
         foreach ($snapshot['items'] ?? [] as $item) {
             $lines = array_values(array_filter([
                 $this->nullableText($item['item_name'] ?? null),
-                $this->nullableText($item['description'] ?? null),
+                ($description = $this->nullableText($item['description'] ?? null)) !== null
+                    ? 'Description: '.PdfText::compactInline($description)
+                    : null,
                 ($remarks = $this->nullableText($item['item_remarks'] ?? null)) !== null
-                    ? "Specifications / remarks:\n{$remarks}"
+                    ? 'Remarks: '.PdfText::compactInline($remarks)
                     : null,
             ], static fn ($value): bool => $value !== null));
 

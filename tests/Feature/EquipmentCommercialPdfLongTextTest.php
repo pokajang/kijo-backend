@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\PdfText;
 use Tests\TestCase;
 
 class EquipmentCommercialPdfLongTextTest extends TestCase
@@ -167,6 +168,26 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
         $this->assertStringNotContainsString('data-pdf-item-remarks', $html);
         $this->assertStringNotContainsString('Description:', $html);
         $this->assertStringNotContainsString('Remarks:', $html);
+    }
+
+    public function test_item_cell_uses_compact_muted_typography_without_forced_line_breaks(): void
+    {
+        $segments = PdfText::itemCellSegments(
+            "Personal Air Sampling Pump\nIncludes:\n• pump\n• charging dock",
+            "Colour: navy blue\nSize: compact",
+        );
+        $html = view('pdf.partials.equipment-item-cell', [
+            'itemName' => 'GilAir Plus',
+            'description' => $segments[0]['description'],
+            'remarks' => $segments[0]['remarks'],
+        ])->render();
+
+        $this->assertStringContainsString('font-size: 8.5pt', $html);
+        $this->assertStringContainsString('color: #666', $html);
+        $this->assertStringContainsString('Includes: pump; charging dock', $html);
+        $this->assertStringContainsString('Colour: navy blue; Size: compact', $html);
+        $this->assertStringNotContainsString('<br', $html);
+        $this->assertStringNotContainsString('•', $html);
     }
 
     public function test_bahasa_commercial_item_labels_are_localized_once(): void
