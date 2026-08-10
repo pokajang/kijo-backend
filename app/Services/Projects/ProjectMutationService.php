@@ -3,6 +3,7 @@
 namespace App\Services\Projects;
 
 use App\Http\Requests\Project\CloseProjectRequest;
+use App\Http\Requests\Project\ReactivateProjectRequest;
 use App\Http\Requests\Project\StoreProjectRequest;
 use App\Http\Requests\Project\UpdateProjectRequest;
 use App\Services\AuditLogService;
@@ -243,6 +244,86 @@ class ProjectMutationService
         $this->auditLog->log($request, "Project ID #{$projectId} was marked as {$closeType}");
 
         return response()->json(['status' => 'success', 'message' => 'Project closed successfully.']);
+    }
+
+    public function reactivate(ReactivateProjectRequest $request): JsonResponse
+    {
+        $staffId = (int) $request->session()->get('staff_id', 0);
+        if ($staffId <= 0) {
+            return response()->json(['status' => 'error', 'message' => 'Unauthorized.'], 403);
+        }
+
+        $data = $request->validated();
+        $projectId = (int) $data['project_id'];
+        $reason = $data['reason'];
+        $reactivatableStatuses = [
+            'completed' => 'Completed',
+            'terminated' => 'Terminated',
+            'closed' => 'Closed',
+        ];
+
+        DB::beginTransaction();
+        try {
+            $project = DB::table('projects_main')
+                ->where('id', $projectId)
+                ->lockForUpdate()
+                ->first(['id', 'status']);
+
+            if (! $project) {
+                DB::rollBack();
+
+                return response()->json(['status' => 'error', 'message' => 'Project not found.'], 404);
+            }
+
+            $statusKey = strtolower(trim((string) ($project->status ?? '')));
+            $previousStatus = $reactivatableStatuses[$statusKey] ?? null;
+            if ($previousStatus === null) {
+                DB::rollBack();
+
+                $message = $statusKey === 'active'
+                    ? 'Project is already active.'
+                    : 'Only completed, terminated, or closed projects can be reactivated.';
+
+                return response()->json(['status' => 'error', 'message' => $message], 409);
+            }
+
+            DB::table('projects_main')->where('id', $projectId)->update(['status' => 'Active']);
+
+            $nameCode = DB::table('staff_general')
+                ->where('staff_id', $staffId)
+                ->value('name_code') ?: "STAFF#{$staffId}";
+            $progressMsg = "Project reactivated from {$previousStatus} by {$nameCode}. Reason: {$reason}";
+
+            DB::table('project_progress')->insert([
+                'project_id' => $projectId,
+                'progress_date' => now()->format('Y-m-d'),
+                'progress_text' => $progressMsg,
+                'updated_by' => $staffId,
+                'updated_on' => now(),
+            ]);
+
+            DB::commit();
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            report($e);
+
+            return response()->json(['status' => 'error', 'message' => 'Failed to reactivate project.'], 500);
+        }
+
+        $this->auditLog->log(
+            $request,
+            "Project ID #{$projectId} was reactivated from {$previousStatus} to Active"
+        );
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Project reactivated successfully.',
+            'data' => [
+                'project_id' => $projectId,
+                'previous_status' => $previousStatus,
+                'status' => 'Active',
+            ],
+        ]);
     }
 
     public function reloadPoNumber(Request $request): JsonResponse

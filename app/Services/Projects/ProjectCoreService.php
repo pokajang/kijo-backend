@@ -3,6 +3,7 @@
 namespace App\Services\Projects;
 
 use App\Http\Requests\Project\CloseProjectRequest;
+use App\Http\Requests\Project\ReactivateProjectRequest;
 use App\Http\Requests\Project\StoreProjectRequest;
 use App\Http\Requests\Project\UpdateProjectRequest;
 use Illuminate\Http\JsonResponse;
@@ -53,6 +54,11 @@ class ProjectCoreService
     public function close(CloseProjectRequest $request): JsonResponse
     {
         return $this->projectMutationService()->close($request);
+    }
+
+    public function reactivate(ReactivateProjectRequest $request): JsonResponse
+    {
+        return $this->projectMutationService()->reactivate($request);
     }
 
     public function reloadPoNumber(Request $request): JsonResponse

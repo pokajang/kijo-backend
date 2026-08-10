@@ -91,6 +91,169 @@ class ProjectCloseFeatureTest extends TestCase
         $this->assertDatabaseCount('project_progress', 0);
     }
 
+    public function test_completed_terminated_and_closed_projects_can_be_reactivated(): void
+    {
+        $projects = [
+            210 => 'Completed',
+            211 => 'Terminated',
+            212 => 'Closed',
+        ];
+
+        foreach ($projects as $id => $status) {
+            DB::table('projects_main')->insert([
+                'id' => $id,
+                'project_name' => "{$status} Project",
+                'status' => $status,
+            ]);
+            DB::table('project_closing_details')->insert([
+                'project_id' => $id,
+                'close_date' => '2026-06-08',
+                'close_type' => $status,
+                'reason' => 'Original closure reason.',
+                'closed_by' => 10,
+            ]);
+        }
+
+        foreach ($projects as $id => $previousStatus) {
+            $reason = "Resume {$previousStatus} project.";
+
+            $this->actingSession()
+                ->postJson("/projects/{$id}/reactivate", ['reason' => $reason])
+                ->assertOk()
+                ->assertJsonPath('status', 'success')
+                ->assertJsonPath('data.previous_status', $previousStatus)
+                ->assertJsonPath('data.status', 'Active');
+
+            $this->assertDatabaseHas('projects_main', [
+                'id' => $id,
+                'status' => 'Active',
+            ]);
+            $this->assertDatabaseHas('project_progress', [
+                'project_id' => $id,
+                'progress_text' => "Project reactivated from {$previousStatus} by EMP. Reason: {$reason}",
+                'updated_by' => 10,
+            ]);
+            $this->assertDatabaseHas('user_activities', [
+                'staff_id' => 10,
+                'action' => "Project ID #{$id} was reactivated from {$previousStatus} to Active",
+            ]);
+        }
+
+        $this->assertDatabaseCount('project_closing_details', 3);
+    }
+
+    public function test_active_project_cannot_be_reactivated(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 213,
+            'project_name' => 'Active Project',
+            'status' => 'Active',
+        ]);
+
+        $this->actingSession()
+            ->postJson('/projects/213/reactivate', ['reason' => 'Duplicate request.'])
+            ->assertStatus(409)
+            ->assertJsonPath('status', 'error')
+            ->assertJsonPath('message', 'Project is already active.');
+
+        $this->assertDatabaseCount('project_progress', 0);
+        $this->assertDatabaseCount('user_activities', 0);
+    }
+
+    public function test_reactivation_requires_a_reason(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 214,
+            'project_name' => 'Completed Project',
+            'status' => 'Completed',
+        ]);
+
+        $this->actingSession()
+            ->postJson('/projects/214/reactivate', ['reason' => '   '])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('reason');
+
+        $this->assertDatabaseHas('projects_main', ['id' => 214, 'status' => 'Completed']);
+        $this->assertDatabaseCount('project_progress', 0);
+    }
+
+    public function test_reactivation_requires_an_authenticated_staff_session(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 215,
+            'project_name' => 'Completed Project',
+            'status' => 'Completed',
+        ]);
+
+        $this->postJson('/projects/215/reactivate', ['reason' => 'Resume work.'])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Unauthorized.');
+
+        $this->assertDatabaseHas('projects_main', ['id' => 215, 'status' => 'Completed']);
+        $this->assertDatabaseCount('project_progress', 0);
+    }
+
+    public function test_reactivated_project_can_be_closed_again_without_losing_history(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 216,
+            'project_name' => 'Restarted Project',
+            'status' => 'Completed',
+        ]);
+        DB::table('project_closing_details')->insert([
+            'project_id' => 216,
+            'close_date' => '2026-06-01',
+            'close_type' => 'Completed',
+            'reason' => 'First closure.',
+            'closed_by' => 10,
+        ]);
+
+        $this->actingSession()
+            ->postJson('/projects/216/reactivate', ['reason' => 'Client requested more work.'])
+            ->assertOk();
+
+        $this->actingSession()
+            ->postJson('/projects/216/close', [
+                'closeDate' => '2026-06-15',
+                'closeType' => 'Terminated',
+                'reason' => 'The additional work was cancelled.',
+            ])
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('projects_main', ['id' => 216, 'status' => 'Terminated']);
+        $this->assertDatabaseCount('project_closing_details', 2);
+        $this->assertDatabaseHas('project_closing_details', [
+            'project_id' => 216,
+            'close_type' => 'Completed',
+            'reason' => 'First closure.',
+        ]);
+        $this->assertDatabaseHas('project_closing_details', [
+            'project_id' => 216,
+            'close_type' => 'Terminated',
+            'reason' => 'The additional work was cancelled.',
+        ]);
+    }
+
+    public function test_reactivation_rolls_back_when_progress_history_cannot_be_recorded(): void
+    {
+        DB::table('projects_main')->insert([
+            'id' => 217,
+            'project_name' => 'Completed Project',
+            'status' => 'Completed',
+        ]);
+        Schema::drop('project_progress');
+
+        $this->actingSession()
+            ->postJson('/projects/217/reactivate', ['reason' => 'Resume work.'])
+            ->assertInternalServerError()
+            ->assertJsonPath('status', 'error')
+            ->assertJsonPath('message', 'Failed to reactivate project.');
+
+        $this->assertDatabaseHas('projects_main', ['id' => 217, 'status' => 'Completed']);
+        $this->assertDatabaseCount('user_activities', 0);
+    }
+
     private function createTables(): void
     {
         Schema::dropIfExists('user_activities');

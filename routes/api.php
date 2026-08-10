@@ -587,6 +587,7 @@ Route::middleware('auth.session')->group(function () {
     Route::put('projects/{id}', [ProjectController::class, 'update']);
     Route::delete('projects/{id}', [ProjectController::class, 'destroy']);
     Route::post('projects/{id}/close', [ProjectController::class, 'close']);
+    Route::post('projects/{id}/reactivate', [ProjectController::class, 'reactivate']);
     Route::post('projects/{id}/reload-po', [ProjectController::class, 'reloadPoNumber']);
     Route::post('projects/{id}/value/impact-preview', [ProjectController::class, 'previewValueImpact']);
     Route::patch('projects/{id}/value', [ProjectController::class, 'updateValue']);

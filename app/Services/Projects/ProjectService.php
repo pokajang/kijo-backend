@@ -7,6 +7,7 @@ use App\Http\Requests\Project\AddExpenseRequest;
 use App\Http\Requests\Project\AddProgressRequest;
 use App\Http\Requests\Project\AssignVendorRequest;
 use App\Http\Requests\Project\CloseProjectRequest;
+use App\Http\Requests\Project\ReactivateProjectRequest;
 use App\Http\Requests\Project\StoreProjectRequest;
 use App\Http\Requests\Project\UpdateProgressRequest;
 use App\Http\Requests\Project\UpdateProjectRequest;
@@ -83,6 +84,11 @@ class ProjectService
     public function close(CloseProjectRequest $request): JsonResponse
     {
         return $this->projectCoreService()->close($request);
+    }
+
+    public function reactivate(ReactivateProjectRequest $request): JsonResponse
+    {
+        return $this->projectCoreService()->reactivate($request);
     }
 
     public function reloadPoNumber(Request $request): JsonResponse
