@@ -27,7 +27,7 @@
         .items-table td.right { text-align: right; }
         .items-table .subtotal-row td { text-align: right; font-weight: 400; }
         .items-table .total-row td { text-align: right; font-weight: 700; }
-        .quotation-remarks { margin: 3mm 0; padding: 2.5mm 3mm; background: #f7f7f7; border-left: 1.2mm solid #696969; white-space: pre-line; }
+        .items-table .quotation-remarks-row td { text-align: left; white-space: pre-line; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
         .page-break { page-break-before: always; height: 0; margin: 0; padding: 0; }
@@ -105,6 +105,14 @@
                     @endforeach
                 @endforeach
 
+                @foreach(\App\Support\PdfText::tableRowSegments($quotationRemarks) as $remarksIndex => $quotationRemarkSegment)
+                    <tr class="quotation-remarks-row{{ $remarksIndex > 0 ? ' quotation-remarks-continuation-row' : '' }}">
+                        <td colspan="5">
+                            @if($remarksIndex === 0)<strong>Quotation Remarks:</strong> @endif{{ $quotationRemarkSegment }}
+                        </td>
+                    </tr>
+                @endforeach
+
                 <tr class="subtotal-row">
                     <td colspan="4">Amount (RM)</td>
                     <td>RM {{ number_format($lineItemsTotal, 2) }}</td>
@@ -149,10 +157,6 @@
                 </tr>
             </tbody>
         </table>
-
-        @if(!empty($quotationRemarks))
-            <div class="quotation-remarks"><strong>Quotation Remarks:</strong><br>{{ $quotationRemarks }}</div>
-        @endif
 
         <p>
             Kindly review the terms and conditions outlined in the next page, and <strong>return a duly signed copy</strong> of this quotation as confirmation of your acceptance.

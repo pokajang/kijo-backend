@@ -38,6 +38,12 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
         $this->assertStringNotContainsString('equipment-item-continuation-row', $html);
         $this->assertStringContainsString('Quotation Remarks:', $plain);
         $this->assertStringContainsString('Deliver all equipment together.', $plain);
+        $this->assertSame(1, substr_count($html, 'class="quotation-remarks-row"'));
+        $this->assertStringNotContainsString('<div class="quotation-remarks">', $html);
+        $this->assertTrue(
+            strpos($html, 'class="quotation-remarks-row"') < strpos($html, 'class="subtotal-row"'),
+            'Quotation remarks should be a table row before the totals.',
+        );
         $this->assertStringContainsString('RM 200.00', $plain);
         $this->assertStringNotContainsString('2 unit x RM 100.00', $plain);
     }

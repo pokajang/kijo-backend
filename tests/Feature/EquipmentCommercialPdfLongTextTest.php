@@ -50,6 +50,8 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
 
         $this->assertSentinels($html);
         $this->assertConsolidatedItemCell($html);
+        $this->assertGreaterThan(1, substr_count($html, 'quotation-remarks-row'));
+        $this->assertSame(1, substr_count($html, '<strong>Quotation Remarks:</strong>'));
         $this->assertStringNotContainsString('mb_strimwidth', $html);
     }
 

@@ -91,6 +91,18 @@ final class PdfText
     }
 
     /**
+     * Split text into page-safe table rows while preserving intentional line breaks.
+     *
+     * @return list<string>
+     */
+    public static function tableRowSegments($value, int $limit = 700, int $maxLines = 18): array
+    {
+        $text = self::normalize($value);
+
+        return $text === '' ? [] : self::pageChunks($text, max(100, $limit), max(1, $maxLines));
+    }
+
+    /**
      * Convert pasted list-style text into a compact PDF-safe paragraph.
      * Explicit numbering is preserved; unsupported bullets become separators.
      */
