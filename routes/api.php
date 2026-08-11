@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\AppraisalController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CatalogController;
 use App\Http\Controllers\Api\ClientController;
+use App\Http\Controllers\Api\ClientFirstTouchController;
 use App\Http\Controllers\Api\DebtorController;
 use App\Http\Controllers\Api\DeliveryOrderController;
 use App\Http\Controllers\Api\FeedbackController;
@@ -224,6 +225,22 @@ Route::middleware('auth.session')->group(function () {
     Route::get('client-companies/roi', [ClientController::class, 'roiReport']);
     Route::post('client-companies/refresh-status-from-invoices', [ClientController::class, 'refreshStatusFromInvoices']);
     Route::get('client-companies/{companyId}/commercial-history', [ClientController::class, 'commercialHistory'])->whereNumber('companyId');
+    Route::get('client-first-touches', [ClientFirstTouchController::class, 'index']);
+    Route::get('client-first-touches/staff-options', [ClientFirstTouchController::class, 'staffOptions']);
+    Route::get('client-first-touches/{companyId}/inquiry-options', [ClientFirstTouchController::class, 'inquiryOptions'])->whereNumber('companyId');
+    Route::get('client-first-touches/{companyId}', [ClientFirstTouchController::class, 'show'])->whereNumber('companyId');
+    Route::post('client-first-touches/{companyId}/claims', [ClientFirstTouchController::class, 'storeClaim'])->whereNumber('companyId');
+    Route::post('client-first-touches/{companyId}/claims/{claimId}', [ClientFirstTouchController::class, 'updateClaim'])->whereNumber('companyId')->whereNumber('claimId');
+    Route::post('client-first-touches/{companyId}/disputes', [ClientFirstTouchController::class, 'storeDispute'])->whereNumber('companyId');
+    Route::get('client-first-touch/evidence/{evidenceId}', [ClientFirstTouchController::class, 'evidence'])->whereNumber('evidenceId');
+    Route::post(
+        'client-first-touch-conflicts/{conflictId}/clarifications/{clarificationId}/respond',
+        [ClientFirstTouchController::class, 'respondToClarification'],
+    )->whereNumber('conflictId')->whereNumber('clarificationId');
+    Route::middleware('role:Manager,System Admin')->group(function () {
+        Route::get('client-first-touch-conflicts', [ClientFirstTouchController::class, 'conflicts']);
+        Route::post('client-first-touch-conflicts/{conflictId}/resolve', [ClientFirstTouchController::class, 'resolve'])->whereNumber('conflictId');
+    });
     Route::get('client-vendor-registrations', [ClientController::class, 'vendorRegistrations']);
     Route::post('client-vendor-registrations', [ClientController::class, 'storeVendorRegistration']);
     Route::get('client-vendor-registrations/attention-count', [ClientController::class, 'vendorRegistrationAttentionCount']);

@@ -66,6 +66,11 @@ class AppNotificationService
             'tab_key' => 'client.vendor-registration',
             'severity' => 'danger',
         ],
+        'client.first-touch' => [
+            'route_group' => '/client/first-touch',
+            'tab_key' => 'client.first-touch',
+            'severity' => 'warning',
+        ],
         'crm.negotiations' => [
             'route_group' => '/crm/price-exceptions',
             'tab_key' => 'crm.negotiations',
@@ -467,6 +472,13 @@ class AppNotificationService
 
         $this->reconcileModuleCount(
             $byModule,
+            'client.first-touch',
+            $this->clientFirstTouchAttentionCount($staffId),
+            self::RECONCILE_MAX,
+        );
+
+        $this->reconcileModuleCount(
+            $byModule,
             'crm.negotiations',
             $this->negotiationAttentionCount($request),
             self::RECONCILE_MAX,
@@ -526,6 +538,56 @@ class AppNotificationService
             ->whereNull('consumed_at')
             ->whereNull('resolved_at')
             ->count();
+    }
+
+    private function clientFirstTouchAttentionCount(int $staffId): int
+    {
+        if (
+            $staffId <= 0
+            || ! Schema::hasTable('client_first_touch_conflicts')
+            || ! Schema::hasTable('client_first_touch_claims')
+            || ! Schema::hasTable('client_first_touch_disputes')
+        ) {
+            return 0;
+        }
+
+        $reviewerIds = app(WorkflowService::class)->effectiveStepStaffIds(
+            'client-first-touch-conflict',
+            'review',
+            1,
+            ['Manager', 'System Admin'],
+        );
+        $reviewerIds = array_values(array_intersect(
+            $reviewerIds,
+            $this->staffIdsForRoles(['Manager', 'System Admin']),
+        ));
+        $reviewCount = 0;
+        if (in_array($staffId, $reviewerIds, true)) {
+            $reviewCount = DB::table('client_first_touch_conflicts as conflict')
+                ->whereIn('conflict.status', ['open', 'clarification_requested'])
+                ->whereNotExists(function ($query) use ($staffId): void {
+                    $query->from('client_first_touch_claims as claim')
+                        ->whereColumn('claim.client_id', 'conflict.client_id')
+                        ->where('claim.submitted_by_staff_id', $staffId);
+                })
+                ->whereNotExists(function ($query) use ($staffId): void {
+                    $query->from('client_first_touch_disputes as dispute')
+                        ->whereColumn('dispute.client_id', 'conflict.client_id')
+                        ->where('dispute.submitted_by_staff_id', $staffId);
+                })
+                ->count();
+        }
+
+        $clarificationCount = 0;
+        if (Schema::hasTable('client_first_touch_clarifications')) {
+            $clarificationCount = DB::table('client_first_touch_clarifications')
+                ->where('requested_from_staff_id', $staffId)
+                ->where('status', 'pending')
+                ->distinct()
+                ->count('conflict_id');
+        }
+
+        return (int) $reviewCount + (int) $clarificationCount;
     }
 
     private function storedCounts(int $staffId): array

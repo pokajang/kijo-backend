@@ -60,7 +60,8 @@ class WorkflowSetupStatusTest extends TestCase
             ->assertJsonPath('data.templates.vendor-payment.missing', 0)
             ->assertJsonPath('data.templates.leave-application.missing', 0)
             ->assertJsonPath('data.templates.quote-price-exception.missing', 0)
-            ->assertJsonPath('data.templates.quote-approval.missing', 0);
+            ->assertJsonPath('data.templates.quote-approval.missing', 0)
+            ->assertJsonPath('data.templates.client-first-touch-conflict.missing', 0);
     }
 
     public function test_setup_status_counts_active_steps_without_configured_recipients(): void
@@ -68,12 +69,13 @@ class WorkflowSetupStatusTest extends TestCase
         $this->actingSession()
             ->getJson('/workflows/setup-status')
             ->assertOk()
-            ->assertJsonPath('data.total_missing', 14)
+            ->assertJsonPath('data.total_missing', 15)
             ->assertJsonPath('data.templates.salary-application.missing', 2)
             ->assertJsonPath('data.templates.vendor-payment.missing', 3)
             ->assertJsonPath('data.templates.leave-application.missing', 6)
             ->assertJsonPath('data.templates.quote-price-exception.missing', 1)
-            ->assertJsonPath('data.templates.quote-approval.missing', 2);
+            ->assertJsonPath('data.templates.quote-approval.missing', 2)
+            ->assertJsonPath('data.templates.client-first-touch-conflict.missing', 1);
     }
 
     public function test_setup_status_ignores_inactive_recipients_and_fallback_roles(): void

@@ -22,6 +22,8 @@ class WorkflowService
 
     public const QUOTE_APPROVAL_TEMPLATE_KEY = 'quote-approval';
 
+    public const FIRST_TOUCH_TEMPLATE_KEY = 'client-first-touch-conflict';
+
     private const SALARY_SUBJECT_TYPE = 'salary_application';
 
     private const OTHER_CLAIM_SUBJECT_TYPE = 'other_claim_application';
@@ -49,12 +51,16 @@ class WorkflowService
         'approve' => ['Manager', 'System Admin'],
     ];
 
+    private const FIRST_TOUCH_FALLBACK_ROLES = [
+        'review' => ['Manager', 'System Admin'],
+    ];
+
     public function templates(Request $request): JsonResponse
     {
         $this->ensureDefaultTemplates();
 
         $templates = DB::table('workflow_templates')
-            ->orderByRaw("CASE process_key WHEN 'salary-application' THEN 1 WHEN 'vendor-payment' THEN 2 WHEN 'leave-application' THEN 3 WHEN 'quote-price-exception' THEN 4 WHEN 'quote-approval' THEN 5 ELSE 9 END")
+            ->orderByRaw("CASE process_key WHEN 'salary-application' THEN 1 WHEN 'vendor-payment' THEN 2 WHEN 'leave-application' THEN 3 WHEN 'quote-price-exception' THEN 4 WHEN 'quote-approval' THEN 5 WHEN 'client-first-touch-conflict' THEN 6 ELSE 9 END")
             ->orderBy('label')
             ->get()
             ->map(fn (object $template): array => $this->templateSummary($template))
@@ -76,6 +82,7 @@ class WorkflowService
             self::LEAVE_TEMPLATE_KEY,
             self::NEGOTIATION_TEMPLATE_KEY,
             self::QUOTE_APPROVAL_TEMPLATE_KEY,
+            self::FIRST_TOUCH_TEMPLATE_KEY,
         ];
         $emptyStatus = array_fill_keys($templateKeys, ['missing' => 0]);
 
@@ -153,7 +160,7 @@ class WorkflowService
         if ($key === self::LEAVE_TEMPLATE_KEY) {
             return response()->json($this->leaveTemplatePayload($request));
         }
-        if (in_array($key, [self::NEGOTIATION_TEMPLATE_KEY, self::QUOTE_APPROVAL_TEMPLATE_KEY], true)) {
+        if (in_array($key, [self::NEGOTIATION_TEMPLATE_KEY, self::QUOTE_APPROVAL_TEMPLATE_KEY, self::FIRST_TOUCH_TEMPLATE_KEY], true)) {
             return response()->json($this->genericTemplatePayload($request, $key));
         }
 
@@ -184,10 +191,12 @@ class WorkflowService
         if ($key === self::LEAVE_TEMPLATE_KEY) {
             return response()->json($this->updateLeaveTemplate($request));
         }
-        if (in_array($key, [self::NEGOTIATION_TEMPLATE_KEY, self::QUOTE_APPROVAL_TEMPLATE_KEY], true)) {
-            $message = $key === self::QUOTE_APPROVAL_TEMPLATE_KEY
-                ? 'Quotation approval workflow settings saved.'
-                : 'Negotiation workflow settings saved.';
+        if (in_array($key, [self::NEGOTIATION_TEMPLATE_KEY, self::QUOTE_APPROVAL_TEMPLATE_KEY, self::FIRST_TOUCH_TEMPLATE_KEY], true)) {
+            $message = match ($key) {
+                self::QUOTE_APPROVAL_TEMPLATE_KEY => 'Quotation approval workflow settings saved.',
+                self::FIRST_TOUCH_TEMPLATE_KEY => 'First-touch conflict workflow settings saved.',
+                default => 'Negotiation workflow settings saved.',
+            };
 
             return response()->json($this->updateGenericTemplate($request, $key, $message));
         }
@@ -1520,7 +1529,9 @@ class WorkflowService
                 ...$this->templateSummary($template),
                 'steps' => $this->centralSteps((int) $template->id, true),
             ],
-            'active_staff' => $this->activeStaff(),
+            'active_staff' => $key === self::FIRST_TOUCH_TEMPLATE_KEY
+                ? $this->activeStaffForRoles(self::FIRST_TOUCH_FALLBACK_ROLES['review'])
+                : $this->activeStaff(),
             'can_edit' => $this->hasAnyRole($request, self::MANAGE_ROLES),
         ];
     }
@@ -1545,9 +1556,18 @@ class WorkflowService
             ->pluck('id')
             ->map(fn ($id): int => (int) $id)
             ->all();
-        $validStaffIds = $this->validStaffIds(collect($stepsPayload)->flatMap(
+        $requestedStaffIds = collect($stepsPayload)->flatMap(
             fn ($step): array => (array) ($step['recipient_staff_ids'] ?? []),
-        )->all());
+        )->all();
+        $validStaffIds = $key === self::FIRST_TOUCH_TEMPLATE_KEY
+            ? array_values(array_intersect(
+                array_map('intval', $requestedStaffIds),
+                array_map(
+                    static fn (array $staff): int => (int) $staff['staff_id'],
+                    $this->activeStaffForRoles(self::FIRST_TOUCH_FALLBACK_ROLES['review']),
+                ),
+            ))
+            : $this->validStaffIds($requestedStaffIds);
 
         DB::transaction(function () use ($stepsPayload, $validStepIds, $validStaffIds): void {
             foreach ($stepsPayload as $step) {
@@ -1659,6 +1679,7 @@ class WorkflowService
             ['leave-application', 'Leave Application', 'leave', '/staff/leaves/records/{id}'],
             ['quote-price-exception', 'Negotiation', 'crm', '/crm/price-exceptions/{id}'],
             [self::QUOTE_APPROVAL_TEMPLATE_KEY, 'Quotation Approval', 'crm', '/crm/records?approval_scope=mine'],
+            [self::FIRST_TOUCH_TEMPLATE_KEY, 'First Touch Conflicts', 'client', '/client/first-touch/{id}?tab=claims'],
         ] as [$key, $label, $module, $route]) {
             DB::table('workflow_templates')->updateOrInsert(
                 ['process_key' => $key],
@@ -1805,6 +1826,31 @@ class WorkflowService
                     ],
                 );
             }
+        }
+
+        $firstTouchTemplateId = (int) DB::table('workflow_templates')
+            ->where('process_key', self::FIRST_TOUCH_TEMPLATE_KEY)
+            ->value('id');
+        if ($firstTouchTemplateId > 0) {
+            DB::table('workflow_template_steps')->updateOrInsert(
+                [
+                    'template_id' => $firstTouchTemplateId,
+                    'step_key' => 'review',
+                    'level_no' => 1,
+                ],
+                [
+                    'template_id' => $firstTouchTemplateId,
+                    'step_key' => 'review',
+                    'level_no' => 1,
+                    'sort_order' => 10,
+                    'label' => 'Conflict Reviewers',
+                    'action_label' => 'Review',
+                    'fallback_roles' => json_encode(self::FIRST_TOUCH_FALLBACK_ROLES['review']),
+                    'active' => 1,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ],
+            );
         }
     }
 

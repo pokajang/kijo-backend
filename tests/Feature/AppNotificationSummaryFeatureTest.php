@@ -36,6 +36,10 @@ class AppNotificationSummaryFeatureTest extends TestCase
             'quotes_manpower',
             'client_vendor_registration_recipients',
             'client_vendor_registrations',
+            'client_first_touch_clarifications',
+            'client_first_touch_disputes',
+            'client_first_touch_claims',
+            'client_first_touch_conflicts',
             'in_app_notifications',
             'vendor_payment_workflow_recipients',
             'vendor_payments',
@@ -103,6 +107,32 @@ class AppNotificationSummaryFeatureTest extends TestCase
             $table->integer('registration_id');
             $table->integer('staff_id');
             $table->timestamps();
+        });
+
+        Schema::create('client_first_touch_conflicts', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('client_id');
+            $table->unsignedBigInteger('current_claim_id')->nullable();
+            $table->string('status')->default('open');
+            $table->timestamps();
+        });
+        Schema::create('client_first_touch_claims', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('client_id');
+            $table->unsignedBigInteger('submitted_by_staff_id');
+            $table->timestamp('submitted_at')->nullable();
+        });
+        Schema::create('client_first_touch_disputes', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('client_id');
+            $table->unsignedBigInteger('submitted_by_staff_id');
+            $table->timestamp('submitted_at')->nullable();
+        });
+        Schema::create('client_first_touch_clarifications', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('conflict_id');
+            $table->unsignedBigInteger('requested_from_staff_id');
+            $table->string('status')->default('pending');
         });
 
         foreach (['quotes_training', 'quotes_manpower'] as $tableName) {
@@ -197,6 +227,57 @@ class AppNotificationSummaryFeatureTest extends TestCase
         $this->assertSame(1, $summary['by_route_group']['/support/feedback'] ?? 0);
         $this->assertSame(1, $summary['by_tab']['support.feedback'] ?? 0);
         $this->assertSame(1, $summary['listable_total'] ?? 0);
+    }
+
+    public function test_first_touch_badge_counts_independent_reviews_and_assigned_clarifications(): void
+    {
+        DB::table('staff_general')->insert([
+            ['staff_id' => 10, 'full_name' => 'Reviewer', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 20, 'full_name' => 'Submitter', 'status' => 'Active', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('system_users')->insert([
+            ['staff_id' => 10, 'role' => 'Manager', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['staff_id' => 20, 'role' => 'Staff', 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('client_first_touch_conflicts')->insert([
+            'id' => 91,
+            'client_id' => 399,
+            'current_claim_id' => 51,
+            'status' => 'open',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('client_first_touch_claims')->insert([
+            'id' => 51,
+            'client_id' => 399,
+            'submitted_by_staff_id' => 20,
+            'submitted_at' => now(),
+        ]);
+
+        $reviewerSummary = $this->withSession(['staff_id' => 10, 'roles' => ['Manager']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(1, $reviewerSummary['by_tab']['client.first-touch'] ?? 0);
+        $this->assertSame(1, $reviewerSummary['by_route_group']['/client/first-touch'] ?? 0);
+
+        $submitterSummary = $this->withSession(['staff_id' => 20, 'roles' => ['Staff']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(0, $submitterSummary['by_tab']['client.first-touch'] ?? 0);
+
+        DB::table('client_first_touch_clarifications')->insert([
+            'id' => 71,
+            'conflict_id' => 91,
+            'requested_from_staff_id' => 20,
+            'status' => 'pending',
+        ]);
+        $clarificationSummary = $this->withSession(['staff_id' => 20, 'roles' => ['Staff']])
+            ->getJson('/notifications/summary')
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(1, $clarificationSummary['by_tab']['client.first-touch'] ?? 0);
     }
 
     public function test_summary_exposes_user_targeted_vendor_registration_badges(): void
