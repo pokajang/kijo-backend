@@ -26,19 +26,25 @@ class ClientFirstTouchQueryService
         $clientIds = $clients->pluck('company_id')->map(fn ($id): int => (int) $id)->all();
         $claims = $this->currentClaims($clientIds);
         $conflicts = $this->openConflicts($clientIds);
+        $earliestQuotes = $this->timeline->earliestQuotesForClients($clientIds);
         $roi = collect(app(ClientRoiReportService::class)->reportRows(null, null))
             ->keyBy(fn (array $row): int => (int) $row['company_id']);
 
-        return $clients->map(function (object $client) use ($claims, $conflicts, $roi, $request): array {
+        return $clients->map(function (object $client) use ($claims, $conflicts, $earliestQuotes, $roi, $request): array {
             $clientId = (int) $client->company_id;
             $claim = $claims[$clientId] ?? null;
             $conflict = $conflicts[$clientId] ?? null;
+            $firstTouch = $claim ? $this->claim($claim) : null;
 
             return [
                 'companyId' => $clientId,
                 'companyName' => (string) $client->company_name,
-                'firstTouch' => $claim ? $this->claim($claim) : null,
-                'claims' => $claim ? [$this->claim($claim)] : [],
+                'firstTouch' => $firstTouch,
+                'firstRecordedInteraction' => $this->firstRecordedInteraction(
+                    $firstTouch,
+                    $earliestQuotes[$clientId] ?? null,
+                ),
+                'claims' => $firstTouch ? [$firstTouch] : [],
                 'disputes' => [],
                 'conflict' => $conflict ? $this->conflict($conflict) : null,
                 'permissions' => $request
@@ -139,11 +145,13 @@ class ClientFirstTouchQueryService
             ->first();
         $roi = app(ClientRoiReportService::class)->rowForClient($clientId, null, null);
         $timeline = $this->timeline->forClient($clientId, $firstTouch);
+        $earliestQuote = $this->timeline->earliestQuotesForClients([$clientId])[$clientId] ?? null;
 
         return [
             'companyId' => (int) $client->company_id,
             'companyName' => (string) $client->company_name,
             'firstTouch' => $firstTouch,
+            'firstRecordedInteraction' => $this->firstRecordedInteraction($firstTouch, $earliestQuote),
             'claims' => $claims,
             'disputes' => $disputes,
             'clarifications' => $clarifications,
@@ -374,6 +382,37 @@ class ClientFirstTouchQueryService
             'collected' => round((float) ($roi['received_total'] ?? 0), 2),
             'grossProfit' => round((float) ($roi['actual_profit'] ?? 0), 2),
             'asOf' => now()->toDateString(),
+        ];
+    }
+
+    private function firstRecordedInteraction(?array $firstTouch, ?array $earliestQuote): array
+    {
+        if (! empty($firstTouch['occurredAt'])) {
+            return [
+                'date' => $firstTouch['occurredAt'],
+                'origin' => 'documented',
+                'quoteId' => null,
+                'quoteReference' => null,
+                'quoteService' => null,
+            ];
+        }
+
+        if ($earliestQuote) {
+            return [
+                'date' => $earliestQuote['date'],
+                'origin' => 'inferred_quote',
+                'quoteId' => $earliestQuote['quoteId'],
+                'quoteReference' => $earliestQuote['quoteReference'],
+                'quoteService' => $earliestQuote['quoteService'],
+            ];
+        }
+
+        return [
+            'date' => null,
+            'origin' => 'unavailable',
+            'quoteId' => null,
+            'quoteReference' => null,
+            'quoteService' => null,
         ];
     }
 

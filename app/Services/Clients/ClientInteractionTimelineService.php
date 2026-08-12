@@ -78,6 +78,68 @@ class ClientInteractionTimelineService
         return array_values(array_filter($entries, static fn (array $entry): bool => ! empty($entry['date'])));
     }
 
+    /**
+     * Return the earliest quotation recorded for each client. This is intentionally
+     * separate from a documented first-touch claim, so callers can present a useful
+     * fallback without treating a quotation as submitted evidence.
+     */
+    public function earliestQuotesForClients(array $clientIds): array
+    {
+        $clientIds = array_values(array_unique(array_filter(
+            array_map(static fn ($clientId): int => (int) $clientId, $clientIds),
+        )));
+        if ($clientIds === []) {
+            return [];
+        }
+
+        $earliestByClient = [];
+        foreach (self::QUOTE_SERVICES as $service) {
+            $config = $this->quoteConfig->quoteConfig($service) ?: [];
+            $table = $config['table'] ?? '';
+            if (! $table || ! $this->hasColumns($table, ['id', 'client_id', 'created_at'])) {
+                continue;
+            }
+
+            $columns = ['id', 'client_id', 'created_at'];
+            if ($this->quoteConfig->hasColumn($table, 'quote_ref_no')) {
+                $columns[] = 'quote_ref_no';
+            }
+
+            foreach (DB::table($table)
+                ->whereIn('client_id', $clientIds)
+                ->whereNotNull('created_at')
+                ->get($columns) as $row) {
+                $clientId = (int) $row->client_id;
+                $candidate = [
+                    'date' => $this->date($row->created_at),
+                    'createdAt' => (string) $row->created_at,
+                    'quoteId' => (int) $row->id,
+                    'quoteReference' => trim((string) ($row->quote_ref_no ?? '')) ?: "Quote #{$row->id}",
+                    'quoteService' => $service,
+                ];
+
+                if (! $candidate['date']) {
+                    continue;
+                }
+
+                $current = $earliestByClient[$clientId] ?? null;
+                if (! $current || [
+                    $candidate['createdAt'],
+                    $candidate['quoteService'],
+                    $candidate['quoteId'],
+                ] < [
+                    $current['createdAt'],
+                    $current['quoteService'],
+                    $current['quoteId'],
+                ]) {
+                    $earliestByClient[$clientId] = $candidate;
+                }
+            }
+        }
+
+        return $earliestByClient;
+    }
+
     private function firstTouchEntry(?array $firstTouch): array
     {
         if (! $firstTouch || empty($firstTouch['occurredAt'])) {
