@@ -429,8 +429,15 @@ class ClientFirstTouchQueryService
             $entries[] = [
                 'id' => 'first-touch-'.$firstTouch['id'],
                 'date' => $firstTouch['occurredAt'],
+                'time' => $firstTouch['occurredTime'],
                 'title' => 'First documented encounter',
-                'description' => trim($firstTouch['clientContact'].' encountered Amiosh via '.$firstTouch['sourceValue'], ' .'),
+                'context' => implode(' · ', array_filter([
+                    $firstTouch['sourceValue'],
+                    $firstTouch['clientContact'],
+                ])),
+                'staffName' => $firstTouch['amioshContact'] ?: $firstTouch['referrerName'],
+                'staffCode' => $firstTouch['amioshContactCode'] ?: $firstTouch['referrerCode'],
+                'staffRole' => $firstTouch['amioshContact'] ? 'Handled by' : 'Referred through',
                 'type' => 'origin',
             ];
         }
@@ -442,6 +449,10 @@ class ClientFirstTouchQueryService
                 'id' => 'project-'.$project['id'],
                 'date' => $project['awardDate'],
                 'title' => 'Project awarded',
+                'context' => $project['name'],
+                'staffName' => $project['salesOwner'],
+                'staffCode' => $project['salesOwnerCode'],
+                'staffRole' => $project['salesOwner'] ? 'Sales owner' : '',
                 'description' => $project['name'].($project['salesOwner'] ? ' — sales credit: '.$project['salesOwner'] : ''),
                 'type' => 'award',
             ];
