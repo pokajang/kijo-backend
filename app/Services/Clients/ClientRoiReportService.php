@@ -192,24 +192,7 @@ class ClientRoiReportService extends ClientBaseService
             ]);
         }
 
-        $paidQuery = DB::table('invoices')
-            ->selectRaw('client_id, COUNT(*) AS received_count, COALESCE(SUM(paid_amount), 0) AS received_total, MAX(paid_date) AS last_paid_date')
-            ->whereNotNull('client_id')
-            ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) = 'paid'")
-            ->whereNotNull('paid_date')
-            ->groupBy('client_id');
-
-        $this->applyDateRange($paidQuery, 'paid_date', $start, $end);
-
-        foreach ($paidQuery->get() as $row) {
-            $this->addMetric($metrics, (int) $row->client_id, [
-                'received_count' => (int) $row->received_count,
-                'received_total' => (float) $row->received_total,
-                'last_paid_date' => $row->last_paid_date,
-            ]);
-        }
-
-        $this->mergePaymentDays($metrics, 'invoices', $start, $end);
+        $this->mergeReceivablePayments($metrics, 'invoices', 'invoice', $start, $end);
     }
 
     private function mergeManualDebtors(array &$metrics, ?string $start, ?string $end): void
@@ -233,24 +216,65 @@ class ClientRoiReportService extends ClientBaseService
             ]);
         }
 
-        $paidQuery = DB::table('manual_debtors')
-            ->selectRaw('client_id, COUNT(*) AS received_count, COALESCE(SUM(paid_amount), 0) AS received_total, MAX(paid_date) AS last_paid_date')
-            ->whereNotNull('client_id')
-            ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) = 'paid'")
-            ->whereNotNull('paid_date')
-            ->groupBy('client_id');
+        $this->mergeReceivablePayments($metrics, 'manual_debtors', 'manual', $start, $end);
+    }
 
-        $this->applyDateRange($paidQuery, 'paid_date', $start, $end);
+    private function mergeReceivablePayments(
+        array &$metrics,
+        string $table,
+        string $sourceType,
+        ?string $start,
+        ?string $end,
+    ): void {
+        $hasLedger = Schema::hasTable('receivable_payments');
+        if ($hasLedger) {
+            $ledgerQuery = DB::table('receivable_payments as rp')
+                ->join("{$table} as r", 'r.id', '=', 'rp.source_id')
+                ->select(['r.client_id', 'r.invoice_date', 'rp.payment_date', 'rp.amount'])
+                ->where('rp.source_type', $sourceType)
+                ->whereNull('rp.reversed_at')
+                ->whereNotNull('r.client_id')
+                ->whereRaw("LOWER(TRIM(COALESCE(r.status, ''))) NOT IN ('cancelled', 'canceled', 'void')");
+            $this->applyDateRange($ledgerQuery, 'rp.payment_date', $start, $end);
 
-        foreach ($paidQuery->get() as $row) {
-            $this->addMetric($metrics, (int) $row->client_id, [
-                'received_count' => (int) $row->received_count,
-                'received_total' => (float) $row->received_total,
-                'last_paid_date' => $row->last_paid_date,
-            ]);
+            foreach ($ledgerQuery->get() as $payment) {
+                $days = $this->paymentDays($payment->invoice_date, $payment->payment_date);
+                $this->addMetric($metrics, (int) $payment->client_id, [
+                    'received_count' => 1,
+                    'received_total' => (float) $payment->amount,
+                    'last_paid_date' => $payment->payment_date,
+                    'payment_days_total' => $days ?? 0,
+                    'payment_days_count' => $days === null ? 0 : 1,
+                ]);
+            }
         }
 
-        $this->mergePaymentDays($metrics, 'manual_debtors', $start, $end);
+        $legacyQuery = DB::table("{$table} as r")
+            ->select(['r.client_id', 'r.invoice_date', 'r.paid_date', 'r.paid_amount'])
+            ->whereNotNull('r.client_id')
+            ->whereNotNull('r.paid_date')
+            ->where('r.paid_amount', '>', 0)
+            ->whereRaw("LOWER(TRIM(COALESCE(r.status, ''))) NOT IN ('cancelled', 'canceled', 'void')");
+        if ($hasLedger) {
+            $legacyQuery->whereNotExists(function ($query) use ($sourceType): void {
+                $query->selectRaw('1')
+                    ->from('receivable_payments as rp')
+                    ->where('rp.source_type', $sourceType)
+                    ->whereColumn('rp.source_id', 'r.id');
+            });
+        }
+        $this->applyDateRange($legacyQuery, 'r.paid_date', $start, $end);
+
+        foreach ($legacyQuery->get() as $payment) {
+            $days = $this->paymentDays($payment->invoice_date, $payment->paid_date);
+            $this->addMetric($metrics, (int) $payment->client_id, [
+                'received_count' => 1,
+                'received_total' => (float) $payment->paid_amount,
+                'last_paid_date' => $payment->paid_date,
+                'payment_days_total' => $days ?? 0,
+                'payment_days_count' => $days === null ? 0 : 1,
+            ]);
+        }
     }
 
     private function mergePaymentDays(array &$metrics, string $table, ?string $start, ?string $end): void

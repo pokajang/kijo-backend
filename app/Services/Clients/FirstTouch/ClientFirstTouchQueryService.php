@@ -2,15 +2,18 @@
 
 namespace App\Services\Clients\FirstTouch;
 
+use App\Services\Clients\ClientInteractionTimelineService;
 use App\Services\Clients\ClientRoiReportService;
-use App\Services\Projects\ProjectValueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class ClientFirstTouchQueryService
 {
-    public function __construct(private ClientFirstTouchAuthorizationService $authorization) {}
+    public function __construct(
+        private ClientFirstTouchAuthorizationService $authorization,
+        private ClientInteractionTimelineService $timeline,
+    ) {}
 
     public function index(?Request $request = null): array
     {
@@ -135,7 +138,7 @@ class ClientFirstTouchQueryService
             ->orderByDesc('id')
             ->first();
         $roi = app(ClientRoiReportService::class)->rowForClient($clientId, null, null);
-        $projects = $this->projects($clientId);
+        $timeline = $this->timeline->forClient($clientId, $firstTouch);
 
         return [
             'companyId' => (int) $client->company_id,
@@ -155,8 +158,8 @@ class ClientFirstTouchQueryService
                 )
                 : [],
             'contribution' => $this->contribution($roi),
-            'projects' => $projects,
-            'timeline' => $this->timeline($firstTouch, $projects),
+            'projects' => [],
+            'timeline' => $timeline,
         ];
     }
 
@@ -372,95 +375,6 @@ class ClientFirstTouchQueryService
             'grossProfit' => round((float) ($roi['actual_profit'] ?? 0), 2),
             'asOf' => now()->toDateString(),
         ];
-    }
-
-    private function projects(int $clientId): array
-    {
-        if (! Schema::hasTable('projects_main')) {
-            return [];
-        }
-
-        $valueExpression = app(ProjectValueService::class)->resolvedProjectValueExpression('p');
-        $invoiceTotals = DB::table('invoices')
-            ->selectRaw("project_id, COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) NOT IN ('cancelled', 'canceled', 'void') THEN grand_total ELSE 0 END), 0) AS invoiced, COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'paid' THEN paid_amount ELSE 0 END), 0) AS collected")
-            ->whereNotNull('project_id')
-            ->groupBy('project_id');
-        $vendorCosts = DB::table('project_vendors')
-            ->selectRaw('project_id, COALESCE(SUM(award_value), 0) AS vendor_cost')
-            ->groupBy('project_id');
-        $expenseCosts = DB::table('project_expenses')
-            ->selectRaw('project_id, COALESCE(SUM(amount), 0) AS expense_cost')
-            ->groupBy('project_id');
-        $owners = DB::table('project_collaborators as pc')
-            ->join('staff_general as sg', 'sg.staff_id', '=', 'pc.staff_id')
-            ->selectRaw("pc.project_id, GROUP_CONCAT(sg.full_name ORDER BY CASE WHEN LOWER(pc.project_role) IN ('owner', 'leader') THEN 0 ELSE 1 END, sg.full_name SEPARATOR ', ') AS sales_owner, GROUP_CONCAT(sg.name_code ORDER BY CASE WHEN LOWER(pc.project_role) IN ('owner', 'leader') THEN 0 ELSE 1 END, sg.full_name SEPARATOR ', ') AS sales_owner_code")
-            ->whereIn(DB::raw('LOWER(pc.project_role)'), ['owner', 'leader', 'pic'])
-            ->groupBy('pc.project_id');
-
-        return DB::table('projects_main as p')
-            ->leftJoinSub($invoiceTotals, 'i', fn ($join) => $join->on('i.project_id', '=', 'p.id'))
-            ->leftJoinSub($vendorCosts, 'v', fn ($join) => $join->on('v.project_id', '=', 'p.id'))
-            ->leftJoinSub($expenseCosts, 'e', fn ($join) => $join->on('e.project_id', '=', 'p.id'))
-            ->leftJoinSub($owners, 'o', fn ($join) => $join->on('o.project_id', '=', 'p.id'))
-            ->where('p.client_id', $clientId)
-            ->whereRaw("LOWER(TRIM(COALESCE(p.status, ''))) <> 'terminated'")
-            ->selectRaw("p.id, p.project_name, p.status, p.award_date, {$valueExpression} AS awarded, COALESCE(i.invoiced, 0) AS invoiced, COALESCE(i.collected, 0) AS collected, COALESCE(v.vendor_cost, 0) + COALESCE(e.expense_cost, 0) AS total_cost, o.sales_owner, o.sales_owner_code")
-            ->orderByDesc('p.award_date')
-            ->orderByDesc('p.id')
-            ->get()
-            ->map(fn (object $project): array => [
-                'id' => (int) $project->id,
-                'name' => (string) $project->project_name,
-                'awarded' => round((float) $project->awarded, 2),
-                'invoiced' => round((float) $project->invoiced, 2),
-                'collected' => round((float) $project->collected, 2),
-                'grossProfit' => round((float) $project->collected - (float) $project->total_cost, 2),
-                'salesOwner' => (string) ($project->sales_owner ?? ''),
-                'salesOwnerCode' => (string) ($project->sales_owner_code ?? ''),
-                'status' => strtolower((string) $project->status),
-                'awardDate' => $this->date($project->award_date),
-            ])->all();
-    }
-
-    private function timeline(?array $firstTouch, array $projects): array
-    {
-        $entries = [];
-        if ($firstTouch) {
-            $entries[] = [
-                'id' => 'first-touch-'.$firstTouch['id'],
-                'date' => $firstTouch['occurredAt'],
-                'time' => $firstTouch['occurredTime'],
-                'title' => 'First documented encounter',
-                'context' => implode(' · ', array_filter([
-                    $firstTouch['sourceValue'],
-                    $firstTouch['clientContact'],
-                ])),
-                'staffName' => $firstTouch['amioshContact'] ?: $firstTouch['referrerName'],
-                'staffCode' => $firstTouch['amioshContactCode'] ?: $firstTouch['referrerCode'],
-                'staffRole' => $firstTouch['amioshContact'] ? 'Handled by' : 'Referred through',
-                'type' => 'origin',
-            ];
-        }
-        foreach ($projects as $project) {
-            if (! $project['awardDate']) {
-                continue;
-            }
-            $entries[] = [
-                'id' => 'project-'.$project['id'],
-                'date' => $project['awardDate'],
-                'title' => 'Project awarded',
-                'context' => $project['name'],
-                'staffName' => $project['salesOwner'],
-                'staffCode' => $project['salesOwnerCode'],
-                'staffRole' => $project['salesOwner'] ? 'Sales owner' : '',
-                'description' => $project['name'].($project['salesOwner'] ? ' — sales credit: '.$project['salesOwner'] : ''),
-                'type' => 'award',
-            ];
-        }
-
-        usort($entries, fn (array $left, array $right): int => strcmp((string) $left['date'], (string) $right['date']));
-
-        return $entries;
     }
 
     private function date(mixed $value): ?string
