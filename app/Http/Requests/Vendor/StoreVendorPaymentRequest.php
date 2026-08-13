@@ -5,6 +5,7 @@ namespace App\Http\Requests\Vendor;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Validator;
 
 class StoreVendorPaymentRequest extends FormRequest
@@ -16,17 +17,29 @@ class StoreVendorPaymentRequest extends FormRequest
         return true;
     }
 
+    protected function prepareForValidation(): void
+    {
+        if (! $this->filled('idempotency_key')) {
+            // Older deployed clients predate client-generated idempotency keys.
+            // A server UUID keeps those submissions compatible; current clients
+            // still receive retry deduplication from their stable supplied key.
+            $this->merge(['idempotency_key' => (string) Str::uuid()]);
+        }
+    }
+
     public function rules(): array
     {
         return [
             'vendor_id' => ['required', 'integer', 'min:1'],
             'project_id' => ['nullable', 'integer', 'min:1'],
+            'project_vendor_assignment_id' => ['nullable', 'integer', 'min:1'],
             'payment_context' => ['required', 'string', 'max:100'],
             'payment_type' => ['required', 'string', 'max:100'],
             'amount' => ['required', 'numeric', 'min:0.01'],
             'method' => ['required', 'string', 'max:100'],
             'remarks' => ['nullable', 'string', 'max:2000'],
-            'receipt' => ['nullable', 'file', 'mimes:pdf,jpeg,jpg,png', 'max:5120'],
+            'receipt' => ['required', 'file', 'mimes:pdf,jpeg,jpg,png', 'max:5120'],
+            'idempotency_key' => ['required', 'string', 'max:120'],
         ];
     }
 
@@ -94,6 +107,17 @@ class StoreVendorPaymentRequest extends FormRequest
 
             if (! $isAssignedVendor) {
                 $validator->errors()->add('vendor_id', 'Selected vendor is not assigned to this project.');
+
+                return;
+            }
+
+            $assignmentId = (int) $this->input('project_vendor_assignment_id', 0);
+            if ($assignmentId > 0 && ! DB::table('project_vendors')
+                ->where('id', $assignmentId)
+                ->where('project_id', $projectId)
+                ->where('vendor_id', $vendorId)
+                ->exists()) {
+                $validator->errors()->add('project_vendor_assignment_id', 'Selected vendor assignment does not match this project.');
             }
         });
     }

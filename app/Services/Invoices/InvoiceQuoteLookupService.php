@@ -100,6 +100,7 @@ class InvoiceQuoteLookupService
                 ->orderBy('id')
                 ->get(['id', 'quote_id', 'item_description', 'description', 'quantity', 'unit', 'unit_price', 'line_total', 'sort_order'])
             : collect();
+        $quote->invoice_seed = app(IhInvoiceSeedService::class)->build($quote, $quote->hygiene_items);
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }

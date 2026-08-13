@@ -5,6 +5,7 @@ namespace App\Services\Vendors;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 class VendorPaymentFlowPresenter
 {
@@ -21,7 +22,7 @@ class VendorPaymentFlowPresenter
         $progressByKey = collect($progress)->keyBy(
             fn ($entry): string => ($entry['stageType'] ?? '').'.'.((int) ($entry['levelNo'] ?? 1)),
         );
-        $status = ucfirst(strtolower(trim((string) ($payment->status ?? ''))));
+        $status = Str::headline(strtolower(trim((string) ($payment->status ?? ''))));
         $activeStage = $this->currentStage($payment, $status);
         $activeKey = $activeStage
             ? $activeStage['stage_type'].'.'.$activeStage['level_no']
@@ -133,7 +134,7 @@ class VendorPaymentFlowPresenter
             ];
         }
 
-        return $status === 'Approved'
+        return in_array($status, ['Approved', 'Partially Paid'], true)
             ? ['stage_type' => VendorPaymentWorkflowService::STAGE_FINANCE, 'level_no' => 1]
             : null;
     }

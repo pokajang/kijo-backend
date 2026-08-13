@@ -76,8 +76,14 @@ class InvoiceQueryService extends InvoiceBaseService
                 $itemRemarksSelect = Schema::hasColumn('invoice_breakdown', 'item_remarks')
                     ? 'item_remarks'
                     : 'NULL AS item_remarks';
+                $lineTypeSelect = Schema::hasColumn('invoice_breakdown', 'line_type')
+                    ? 'line_type'
+                    : 'NULL AS line_type';
+                $sourceLineKeySelect = Schema::hasColumn('invoice_breakdown', 'source_line_key')
+                    ? 'source_line_key'
+                    : 'NULL AS source_line_key';
                 $rows = DB::select("
-                    SELECT id, invoice_id, item_description, description, {$itemRemarksSelect}, unit, quantity, unit_price, subtotal, sort_order
+                    SELECT id, invoice_id, item_description, description, {$itemRemarksSelect}, {$lineTypeSelect}, {$sourceLineKeySelect}, unit, quantity, unit_price, subtotal, sort_order
                     FROM invoice_breakdown
                     WHERE invoice_id IN ({$placeholders})
                     ORDER BY sort_order ASC
@@ -128,6 +134,12 @@ class InvoiceQueryService extends InvoiceBaseService
             $breakdownColumns = ['id', 'invoice_id', 'item_description', 'description', 'unit', 'quantity', 'unit_price', 'subtotal', 'sort_order'];
             if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
                 $breakdownColumns[] = 'item_remarks';
+            }
+            if (Schema::hasColumn('invoice_breakdown', 'line_type')) {
+                $breakdownColumns[] = 'line_type';
+            }
+            if (Schema::hasColumn('invoice_breakdown', 'source_line_key')) {
+                $breakdownColumns[] = 'source_line_key';
             }
             $breakdown = DB::table('invoice_breakdown')
                 ->where('invoice_id', $invoice->id)

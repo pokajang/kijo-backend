@@ -125,7 +125,8 @@
     $discountItems    = [];
     foreach ($preTax as $itm) {
         $dl = strtolower((string) ($itm->item_description ?? ''));
-        if (str_contains($dl, 'discount') || str_contains($dl, 'less')) {
+        $lineType = strtolower(trim((string) ($itm->line_type ?? '')));
+        if ($lineType === 'discount' || str_contains($dl, 'discount') || str_contains($dl, 'less')) {
             $discountItems[] = $itm;
         } else {
             $nonDiscountItems[] = $itm;
@@ -160,7 +161,8 @@
                 ? trim((string) ($itm->description ?? ''))
                 : \App\Support\InvoicePdfDescription::clientVisible($itm->description ?? '');
             $itemRemarks = trim((string) ($itm->item_remarks ?? ''));
-            $isDiscount = str_contains(strtolower($descLabel), 'discount') || str_contains(strtolower($descLabel), 'less');
+            $lineType   = strtolower(trim((string) ($itm->line_type ?? '')));
+            $isDiscount = $lineType === 'discount' || str_contains(strtolower($descLabel), 'discount') || str_contains(strtolower($descLabel), 'less');
             $purposeNorm     = strtolower(trim($invoicePurpose));
             $basePurposeNorm = strtolower(trim($purposeDisplay));
             $descNorm        = strtolower(trim($descLabel));

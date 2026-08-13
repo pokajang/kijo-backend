@@ -88,9 +88,20 @@ class IhQuotePdfService
 
         if ($isHistoricalPricing) {
             // Historical PDFs retain the contractual totals saved by their original clients.
-            $subTotalNet = max(0, (float) ($quote->sub_total ?? 0));
-            $grossSubtotal = $subTotalNet + $discountAmount;
-            $serviceTotal = max(0, $grossSubtotal - $travelCharge);
+            if ($isUnknownPricing) {
+                $subTotalNet = max(0, $grandTotal - $sstAmount);
+                $grossSubtotal = $subTotalNet + $discountAmount;
+                $serviceTotal = max(0, $grossSubtotal - $travelCharge);
+            } else {
+                $storedTotals = $this->pricingCalculator->resolveStoredHistoricalTotals(
+                    $quote,
+                    $pricingRuleVersion,
+                    $complexityRating,
+                );
+                $subTotalNet = $storedTotals['taxable_total'];
+                $grossSubtotal = $storedTotals['gross_subtotal'];
+                $serviceTotal = $storedTotals['service_total'];
+            }
         } else {
             $serviceTotal = $sampleCount * $workUnitsForCalc * $unitPrice;
             $grossSubtotal = $serviceTotal + $travelCharge + $additionalFeesTotal;

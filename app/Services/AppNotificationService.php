@@ -797,26 +797,23 @@ class AppNotificationService
             return 0;
         }
 
-        $roles = $request->session()->get('roles', []);
-        if ($this->rolesMatch($roles, ['system admin'])) {
-            return $this->countVendorPaymentsByStatuses(['Pending', 'Checked', 'Approved']);
+        $query = DB::table('vendor_payments')
+            ->whereIn(DB::raw("LOWER(COALESCE(status, ''))"), ['pending', 'checked', 'approved', 'partially paid']);
+        if (Schema::hasColumn('vendor_payments', 'deleted_at')) {
+            $query->whereNull('deleted_at');
         }
 
-        $count = 0;
-
-        if ($this->canActForVendorPaymentStage($request, 'review', ['manager', 'system admin'])) {
-            $count += $this->countVendorPaymentsByStatuses(['Pending']);
-        }
-
-        if ($this->canActForVendorPaymentStage($request, 'approval', ['manager', 'system admin'])) {
-            $count += $this->countVendorPaymentsByStatuses(['Checked']);
-        }
-
-        if ($this->canActForVendorPaymentStage($request, 'finance', ['finance', 'account', 'bank', 'manager', 'system admin'])) {
-            $count += $this->countVendorPaymentsByStatuses(['Approved']);
-        }
-
-        return $count;
+        $authorization = app(\App\Services\Vendors\VendorPaymentAuthorizationService::class);
+        return $query->get()->filter(function (object $payment) use ($request, $authorization): bool {
+            $permissions = $authorization->permissions($request, $payment);
+            return (bool) (
+                $permissions['can_check']
+                || $permissions['can_approve']
+                || $permissions['can_return']
+                || $permissions['can_reject']
+                || $permissions['can_record_payment']
+            );
+        })->count();
     }
 
     private function countVendorPaymentsByStatuses(array $statuses): int

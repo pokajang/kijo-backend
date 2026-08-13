@@ -110,6 +110,8 @@ class ProjectFinanceService
                 vp.status,
                 vp.created_at,
                 vp.date_approved,
+                vp.paid_date,
+                vp.paid_amount,
                 vp.payment_type,
                 vp.receipt_path,
                 vp.created_by,
@@ -124,10 +126,15 @@ class ProjectFinanceService
 
         $outstanding = 0;
         foreach ($payments as $payment) {
-            $payment->receipt_path = AppFilePaths::publicUrlForStoredPath($payment->receipt_path ?? '');
+            $receiptAvailable = ! empty($payment->receipt_path)
+                && AppFilePaths::storedPathExists((string) $payment->receipt_path);
+            $payment->receipt_path = $receiptAvailable
+                ? route('vendor-payments.invoice', ['id' => $payment->id], false)
+                : '';
             $payment->receipt_url = $payment->receipt_path;
-            if (strtolower($payment->status) === 'approved') {
-                $outstanding += (float) $payment->amount;
+            $payment->receipt_state = $receiptAvailable ? 'available' : 'unavailable';
+            if (in_array(strtolower($payment->status), ['approved', 'partially paid'], true)) {
+                $outstanding += max(0, (float) $payment->amount - (float) ($payment->paid_amount ?? 0));
             }
         }
 

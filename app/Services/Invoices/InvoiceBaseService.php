@@ -3,19 +3,27 @@
 namespace App\Services\Invoices;
 
 use App\Services\AuditLogService;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 abstract class InvoiceBaseService
 {
     protected const SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS = 30;
+
     protected const PAYMENT_TERMS_SOURCE_SYSTEM_DEFAULT = 'system_default';
+
     protected const PAYMENT_TERMS_SOURCE_CLIENT = 'client';
+
     protected const PAYMENT_TERMS_SOURCE_INVOICE_OVERRIDE = 'invoice_override';
+
     protected const PAYMENT_TERMS_SOURCE_LEGACY = 'legacy';
 
     public function __construct(protected AuditLogService $auditLog) {}
+
+    protected function totalsCalculator(): InvoiceTotalsCalculator
+    {
+        return app(InvoiceTotalsCalculator::class);
+    }
 
     protected function insertProjectProgress(int $projectId, string $text, Request $request): void
     {
@@ -24,11 +32,11 @@ abstract class InvoiceBaseService
         }
         try {
             DB::table('project_progress')->insert([
-                'project_id'    => $projectId,
+                'project_id' => $projectId,
                 'progress_date' => now()->format('Y-m-d'),
                 'progress_text' => $text,
-                'updated_by'    => (int) $request->session()->get('staff_id', 0) ?: null,
-                'updated_on'    => now(),
+                'updated_by' => (int) $request->session()->get('staff_id', 0) ?: null,
+                'updated_on' => now(),
             ]);
         } catch (\Throwable $e) {
             report($e);
@@ -38,6 +46,7 @@ abstract class InvoiceBaseService
     protected function normalizeDocumentLanguage(mixed $language): string
     {
         $value = strtolower(trim((string) $language));
+
         return match ($value) {
             'bm', 'ms', 'ms-my', 'ms_my', 'bahasa', 'bahasa melayu' => 'ms-MY',
             default => 'en',
@@ -57,11 +66,12 @@ abstract class InvoiceBaseService
         $hrdAmount = 0.0;
 
         foreach ($breakdown as $index => $line) {
-            if (!is_array($line)) {
+            if (! is_array($line)) {
                 continue;
             }
 
             $label = strtolower(trim((string) ($line['item_description'] ?? '')));
+            $lineType = $this->totalsCalculator()->lineType($line);
             $qty = (float) ($line['quantity'] ?? 0);
             $unitPrice = (float) ($line['unit_price'] ?? 0);
             $calculated = round($qty * $unitPrice, 2);
@@ -70,19 +80,22 @@ abstract class InvoiceBaseService
                 $submittedSubtotal = (float) $line['subtotal'];
                 if (abs($submittedSubtotal - $calculated) > $tolerance) {
                     $row = $index + 1;
+
                     return "Invoice breakdown row {$row} subtotal must equal quantity x unit price.";
                 }
             }
 
-            if ($this->isInvoiceTaxLine($label)) {
+            if ($lineType === 'tax' || $lineType === 'hrd' || $this->isInvoiceTaxLine($label)) {
                 if ($this->isInvoiceHrdLine($label)) {
                     $hrdAmount += $calculated;
                 }
+
                 continue;
             }
 
-            if ($this->isInvoiceDiscountLine($label)) {
+            if ($lineType === 'discount' || $this->isInvoiceDiscountLine($label)) {
                 $discountTotal += abs($calculated);
+
                 continue;
             }
 
@@ -122,6 +135,7 @@ abstract class InvoiceBaseService
     protected function isIndustrialHygieneService(string $serviceType): bool
     {
         $value = strtolower(trim($serviceType));
+
         return $value === 'ih' || $value === 'industrial hygiene';
     }
 }

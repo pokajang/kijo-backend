@@ -445,25 +445,11 @@ class IhQuoteService
         string $pricingRule,
         int $complexityRating,
     ): array {
-        $discount = max(0, (float) ($quote->discount ?? 0));
-        $subTotal = max(0, (float) ($quote->sub_total ?? 0));
-        $grossSubtotal = $this->pricingCalculator->isHistoricalRule($pricingRule)
-            ? $subTotal + $discount
-            : $subTotal;
-
-        return [
-            'pricing_rule_version' => $pricingRule,
-            'complexity_rating' => $complexityRating,
-            'complexity_multiplier' => $pricingRule === IhPricingCalculator::LEGACY_RULE
-                ? $this->pricingCalculator->multiplierFor($complexityRating)
-                : 1.0,
-            'gross_subtotal' => round($grossSubtotal, 2),
-            'discount' => round($discount, 2),
-            'sst_percent' => max(0, (float) ($quote->sst_percent ?? 0)),
-            'sst_amount' => round(max(0, (float) ($quote->sst_amount ?? 0)), 2),
-            'sub_total' => round($subTotal, 2),
-            'grand_total' => round(max(0, (float) ($quote->grand_total ?? 0)), 2),
-        ];
+        return $this->pricingCalculator->resolveStoredHistoricalTotals(
+            $quote,
+            $pricingRule,
+            $complexityRating,
+        );
     }
 
     private function replaceIhItems(int $quoteId, array $lineItems): void

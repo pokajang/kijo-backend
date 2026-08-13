@@ -3,6 +3,7 @@
 namespace App\Services\Vendors;
 
 use App\Http\Requests\Vendor\ApproveVendorPaymentRequest;
+use App\Http\Requests\Vendor\CancelVendorPaymentRequest;
 use App\Http\Requests\Vendor\CheckVendorPaymentRequest;
 use App\Http\Requests\Vendor\DeactivateVendorRequest;
 use App\Http\Requests\Vendor\DecideVendorPaymentRequest;
@@ -13,11 +14,16 @@ use App\Http\Requests\Vendor\ListVendorMainDetailsRequest;
 use App\Http\Requests\Vendor\ListVendorPaymentsRequest;
 use App\Http\Requests\Vendor\ListVendorsRequest;
 use App\Http\Requests\Vendor\MarkVendorPaymentPaidRequest;
+use App\Http\Requests\Vendor\RecordVendorPaymentTransactionRequest;
 use App\Http\Requests\Vendor\PermanentDeleteVendorRequest;
 use App\Http\Requests\Vendor\ReactivateVendorRequest;
 use App\Http\Requests\Vendor\StoreVendorPaymentRequest;
+use App\Http\Requests\Vendor\ResubmitVendorPaymentRequest;
+use App\Http\Requests\Vendor\ReverseVendorPaymentTransactionRequest;
+use App\Http\Requests\Vendor\UpdateVendorPaymentRequest;
 use App\Http\Requests\Vendor\StoreVendorRequest;
 use App\Http\Requests\Vendor\UpdateVendorRequest;
+use Illuminate\Http\Request;
 
 class VendorService
 {
@@ -86,6 +92,16 @@ class VendorService
         return $this->vendorPaymentService()->listPayments($request);
     }
 
+    public function showPayment(Request $request, int $id)
+    {
+        return $this->vendorPaymentService()->showPayment($request, $id);
+    }
+
+    public function paymentInvoice(Request $request, int $id)
+    {
+        return $this->vendorPaymentService()->paymentInvoice($request, $id);
+    }
+
     public function paidPaymentsByVendor(ListVendorPaymentsRequest $request)
     {
         return $this->vendorPaymentService()->paidPaymentsByVendor($request);
@@ -99,6 +115,34 @@ class VendorService
     public function storePayment(StoreVendorPaymentRequest $request)
     {
         return $this->vendorPaymentService()->storePayment($request);
+    }
+
+    public function updatePayment(UpdateVendorPaymentRequest $request, int $id)
+    {
+        return $this->vendorPaymentService()->updatePayment($request, $id);
+    }
+
+    public function cancelPayment(CancelVendorPaymentRequest $request, int $id)
+    {
+        return $this->vendorPaymentService()->cancelPayment($request, $id);
+    }
+
+    public function resubmitPayment(ResubmitVendorPaymentRequest $request, int $id)
+    {
+        return $this->vendorPaymentService()->resubmitPayment($request, $id);
+    }
+
+    public function recordPaymentTransaction(RecordVendorPaymentTransactionRequest $request, int $id)
+    {
+        return $this->vendorPaymentService()->recordPaymentTransaction($request, $id);
+    }
+
+    public function reversePaymentTransaction(
+        ReverseVendorPaymentTransactionRequest $request,
+        int $id,
+        int $transactionId,
+    ) {
+        return $this->vendorPaymentService()->reversePaymentTransaction($request, $id, $transactionId);
     }
 
     public function checkPayment(CheckVendorPaymentRequest $request, ?int $id = null)

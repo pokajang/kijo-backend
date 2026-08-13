@@ -384,8 +384,14 @@ final class IhCommercialCycleDatabase
             $table->string('payment_terms_source')->nullable();
             $table->date('due_date')->nullable();
             $table->decimal('amount', 15, 2)->default(0);
+            $table->decimal('sst_percent', 8, 4)->nullable();
             $table->decimal('sst_amount', 15, 2)->default(0);
             $table->decimal('grand_total', 15, 2)->default(0);
+            $table->string('calculation_version', 80)->nullable();
+            $table->json('source_snapshot')->nullable();
+            $table->text('deviation_reason')->nullable();
+            $table->unsignedInteger('deviation_acknowledged_by')->nullable();
+            $table->timestamp('deviation_acknowledged_at')->nullable();
             $table->string('payment_method')->nullable();
             $table->string('grant_approval_no')->nullable();
             $table->text('remarks')->nullable();
@@ -404,6 +410,8 @@ final class IhCommercialCycleDatabase
             $table->unsignedBigInteger('invoice_id');
             $table->string('item_description')->nullable();
             $table->text('description')->nullable();
+            $table->string('line_type', 40)->nullable();
+            $table->string('source_line_key', 120)->nullable();
             $table->text('item_remarks')->nullable();
             $table->string('unit')->nullable();
             $table->decimal('quantity', 12, 2)->nullable();

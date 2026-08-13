@@ -14,7 +14,11 @@ class ManageIhSmokeFixture extends Command
         {--source-id= : Existing IH quote to clone for prepare}
         {--quote-id= : Disposable legacy quote to remove for cleanup}
         {--rule=legacy : legacy or intermediate pricing fixture}
-        {--complexity=4 : Legacy complexity rating for prepare}';
+        {--complexity=4 : Legacy complexity rating for prepare}
+        {--unit-price=500 : Legacy unit price for prepare}
+        {--discount=0 : Legacy discount for prepare}
+        {--sst-percent=0 : Legacy SST percentage for prepare}
+        {--legacy-gross-subtotal : Store the legacy subtotal before discount}';
 
     protected $description = 'Create, modify, or remove a disposable historical IH quote for local browser smoke tests';
 
@@ -65,10 +69,10 @@ class ManageIhSmokeFixture extends Command
         $pricingInput = [
             'sample_counts' => $isIntermediate ? 120 : 2,
             'num_work_units' => 1,
-            'unit_price' => $isIntermediate ? 79.17 : 500,
+            'unit_price' => $isIntermediate ? 79.17 : max(0, (float) $this->option('unit-price')),
             'travel_charge' => 0,
-            'discount' => $isIntermediate ? 200 : 0,
-            'sst_percent' => 0,
+            'discount' => $isIntermediate ? 200 : max(0, (float) $this->option('discount')),
+            'sst_percent' => $isIntermediate ? 0 : max(0, (float) $this->option('sst-percent')),
         ];
         $totals = $calculator->calculate(
             $pricingInput,
@@ -79,6 +83,8 @@ class ManageIhSmokeFixture extends Command
         if ($isIntermediate) {
             $totals['sub_total'] = 9300;
             $totals['grand_total'] = 9300;
+        } elseif ($this->option('legacy-gross-subtotal')) {
+            $totals['sub_total'] = $totals['gross_subtotal'];
         }
         $columns = array_flip(Schema::getColumnListing('quotes_ih'));
         $row = array_intersect_key((array) $source, $columns);
@@ -127,6 +133,11 @@ class ManageIhSmokeFixture extends Command
             'pricing_rule_version' => $pricingRule,
             'complexity_rating' => $rating,
             'grand_total' => $totals['grand_total'],
+            'subtotal_convention' => $isIntermediate
+                ? 'net-after-discount'
+                : ($this->option('legacy-gross-subtotal')
+                    ? 'gross-before-discount'
+                    : 'net-after-discount'),
         ], JSON_THROW_ON_ERROR));
 
         return self::SUCCESS;

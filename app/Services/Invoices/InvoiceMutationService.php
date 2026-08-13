@@ -30,6 +30,16 @@ class InvoiceMutationService extends InvoiceBaseService
             'breakdown.*.item_description' => 'required|string|max:5000',
             'breakdown.*.description' => 'nullable|string|max:5000',
             'breakdown.*.item_remarks' => 'nullable|string|max:2000',
+            'breakdown.*.line_type' => 'nullable|string|max:40',
+            'breakdown.*.source_line_key' => 'nullable|string|max:120',
+            'amount' => 'required|numeric|min:0',
+            'sst_percent' => 'nullable|numeric|min:0|max:100',
+            'sst_amount' => 'required|numeric|min:0',
+            'grand_total' => 'required|numeric|min:0',
+            'calculation_version' => 'nullable|string|max:80',
+            'source_snapshot' => 'nullable|array',
+            'deviation_reason' => 'nullable|string|max:2000',
+            'deviation_acknowledged' => 'nullable|boolean',
             'quotation_remarks' => 'nullable|string|max:2000',
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
@@ -125,16 +135,67 @@ class InvoiceMutationService extends InvoiceBaseService
             ]);
         }
 
+        $resolvedAmount = (float) $request->input('amount', 0);
+        $resolvedSstPercent = $this->submittedSstPercent($request);
+        $resolvedSstAmount = (float) $request->input('sst_amount', 0);
+        $resolvedGrandTotal = (float) $request->input('grand_total', 0);
+        if ($this->isIndustrialHygieneService($serviceType)) {
+            $calculated = $this->totalsCalculator()->calculateIndustrialHygienePayload(
+                $breakdownInput,
+                $resolvedSstPercent,
+                $resolvedSstAmount,
+                $resolvedGrandTotal,
+            );
+            if ($calculated['field_errors'] !== []) {
+                return response()->json([
+                    'status' => 'error',
+                    'code' => 'invoice_validation_failed',
+                    'message' => 'Some invoice fields require attention.',
+                    'field_errors' => $calculated['field_errors'],
+                ], 422);
+            }
+            $resolvedAmount = $calculated['amount'];
+            $resolvedSstPercent = $calculated['sst_percent'];
+            $resolvedSstAmount = $calculated['sst_amount'];
+            $resolvedGrandTotal = $calculated['grand_total'];
+        }
+
         $totalError = $this->invoiceTotalValidationMessage(
             $serviceType,
             $breakdownInput,
-            (float) $request->input('amount', 0),
-            (float) $request->input('sst_amount', 0),
-            (float) $request->input('grand_total', 0)
+            $resolvedAmount,
+            $resolvedSstAmount,
+            $resolvedGrandTotal
         );
         if ($totalError !== null) {
             return response()->json(['status' => 'error', 'message' => $totalError], 422);
         }
+
+        $deviation = $this->invoiceDeviation($projectId, $resolvedGrandTotal);
+        $deviationReason = trim((string) $request->input('deviation_reason', ''));
+        $deviationAcknowledged = filter_var(
+            $request->input('deviation_acknowledged', false),
+            FILTER_VALIDATE_BOOLEAN,
+        );
+        if ($deviation['overage'] > self::MONEY_TOLERANCE && $this->usesLegacyInvoiceContract($request)) {
+            $deviationReason = $this->legacyDeviationReason($deviation);
+            $deviationAcknowledged = true;
+        }
+        if ($deviationResponse = $this->deviationErrorResponse(
+            $deviation,
+            $deviationReason,
+            $deviationAcknowledged,
+        )) {
+            return $deviationResponse;
+        }
+        $sourceSnapshot = array_merge((array) $request->input('source_snapshot', []), [
+            'project_id' => $projectId,
+            'project_value' => $deviation['project_value'],
+            'previously_invoiced' => $deviation['previously_invoiced'],
+            'compatibility_mode' => $this->usesLegacyInvoiceContract($request)
+                ? 'legacy_invoice_payload_v1'
+                : null,
+        ]);
 
         $yearFull = date('Y');
         $yearTwo = date('y');
@@ -192,9 +253,9 @@ class InvoiceMutationService extends InvoiceBaseService
                 'payment_terms_days' => $paymentTermsDays,
                 'payment_terms_source' => $paymentTerms['source'],
                 'due_date' => $dueDate,
-                'amount' => $request->input('amount', 0),
-                'sst_amount' => $request->input('sst_amount', 0),
-                'grand_total' => $request->input('grand_total', 0),
+                'amount' => $resolvedAmount,
+                'sst_amount' => $resolvedSstAmount,
+                'grand_total' => $resolvedGrandTotal,
                 'payment_method' => $paymentMethod,
                 'grant_approval_no' => $grantNo,
                 'remarks' => $request->input('remarks', ''),
@@ -204,6 +265,22 @@ class InvoiceMutationService extends InvoiceBaseService
             ];
             if (Schema::hasColumn('invoices', 'document_language')) {
                 $insert['document_language'] = $documentLanguage;
+            }
+            if (Schema::hasColumn('invoices', 'sst_percent')) {
+                $insert['sst_percent'] = $resolvedSstPercent;
+            }
+            if (Schema::hasColumn('invoices', 'calculation_version')) {
+                $insert['calculation_version'] = $this->isIndustrialHygieneService($serviceType)
+                    ? InvoiceTotalsCalculator::VERSION
+                    : 'legacy_service_v1';
+            }
+            if (Schema::hasColumn('invoices', 'source_snapshot')) {
+                $insert['source_snapshot'] = json_encode($sourceSnapshot, JSON_THROW_ON_ERROR);
+            }
+            if (Schema::hasColumn('invoices', 'deviation_reason') && $deviation['overage'] > self::MONEY_TOLERANCE) {
+                $insert['deviation_reason'] = $deviationReason;
+                $insert['deviation_acknowledged_by'] = $staffId;
+                $insert['deviation_acknowledged_at'] = now();
             }
             if (Schema::hasColumn('invoices', 'quotation_remarks')) {
                 $insert['quotation_remarks'] = $request->exists('quotation_remarks')
@@ -229,6 +306,12 @@ class InvoiceMutationService extends InvoiceBaseService
                 ];
                 if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
                     $breakdownInsert['item_remarks'] = $line['item_remarks'] ?? null;
+                }
+                if (Schema::hasColumn('invoice_breakdown', 'line_type')) {
+                    $breakdownInsert['line_type'] = $this->totalsCalculator()->lineType((array) $line);
+                }
+                if (Schema::hasColumn('invoice_breakdown', 'source_line_key')) {
+                    $breakdownInsert['source_line_key'] = $line['source_line_key'] ?? null;
                 }
                 DB::table('invoice_breakdown')->insert($breakdownInsert);
             }
@@ -279,9 +362,18 @@ class InvoiceMutationService extends InvoiceBaseService
             'breakdown.*.item_description' => 'required|string|max:5000',
             'breakdown.*.description' => 'nullable|string|max:5000',
             'breakdown.*.item_remarks' => 'nullable|string|max:2000',
+            'breakdown.*.line_type' => 'nullable|string|max:40',
+            'breakdown.*.source_line_key' => 'nullable|string|max:120',
+            'amount' => 'required|numeric|min:0',
+            'sst_percent' => 'nullable|numeric|min:0|max:100',
+            'sst_amount' => 'required|numeric|min:0',
+            'grand_total' => 'required|numeric|min:0',
+            'calculation_version' => 'nullable|string|max:80',
             'quotation_remarks' => 'nullable|string|max:2000',
             'payment_terms_days' => 'nullable|integer|min:0|max:365',
             'override_payment_terms' => 'nullable|boolean',
+            'deviation_reason' => 'nullable|string|max:2000',
+            'deviation_acknowledged' => 'nullable|boolean',
         ]);
 
         if ($invoiceRef === '' || ! $dateIssued || $status === '') {
@@ -290,11 +382,15 @@ class InvoiceMutationService extends InvoiceBaseService
 
         $existingInvoice = DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->first([
             'id',
+            'project_id',
             'service_type',
             'client_id',
             'payment_terms_days',
             'payment_terms_source',
+            'amount',
+            'sst_amount',
             'grand_total',
+            'invoice_date',
             'status',
             'paid_date',
             'paid_amount',
@@ -335,17 +431,67 @@ class InvoiceMutationService extends InvoiceBaseService
             );
         }
 
+        $resolvedAmount = (float) $request->input('amount', 0);
+        $resolvedSstPercent = $this->submittedSstPercent($request);
+        $resolvedSstAmount = (float) $request->input('sst_amount', 0);
+        $resolvedGrandTotal = (float) $request->input('grand_total', 0);
+        if ($this->isIndustrialHygieneService((string) $existingInvoice->service_type)) {
+            $calculated = $this->totalsCalculator()->calculateIndustrialHygienePayload(
+                $breakdownInput,
+                $resolvedSstPercent,
+                $resolvedSstAmount,
+                $resolvedGrandTotal,
+            );
+            if ($calculated['field_errors'] !== []) {
+                return response()->json([
+                    'status' => 'error',
+                    'code' => 'invoice_validation_failed',
+                    'message' => 'Some invoice fields require attention.',
+                    'field_errors' => $calculated['field_errors'],
+                ], 422);
+            }
+            $resolvedAmount = $calculated['amount'];
+            $resolvedSstPercent = $calculated['sst_percent'];
+            $resolvedSstAmount = $calculated['sst_amount'];
+            $resolvedGrandTotal = $calculated['grand_total'];
+        }
+
         $totalError = $this->invoiceTotalValidationMessage(
             (string) $existingInvoice->service_type,
             $breakdownInput,
-            (float) $request->input('amount', 0),
-            (float) $request->input('sst_amount', 0),
-            (float) $request->input('grand_total', 0)
+            $resolvedAmount,
+            $resolvedSstAmount,
+            $resolvedGrandTotal
         );
         if ($totalError !== null) {
             return response()->json(['status' => 'error', 'message' => $totalError], 422);
         }
 
+        $financialInputsChanged = $this->financialInputsChanged(
+            $existingInvoice,
+            $breakdownInput,
+            $resolvedAmount,
+            $resolvedSstAmount,
+            $resolvedGrandTotal,
+            (string) $dateIssued,
+        );
+        $deviation = $financialInputsChanged
+            ? $this->invoiceDeviation(
+                (int) $existingInvoice->project_id,
+                $resolvedGrandTotal,
+                (int) $existingInvoice->id,
+            )
+            : null;
+        $deviationReason = trim((string) $request->input('deviation_reason', ''));
+        $deviationAcknowledged = filter_var(
+            $request->input('deviation_acknowledged', false),
+            FILTER_VALIDATE_BOOLEAN,
+        );
+        if (($deviation['overage'] ?? 0) > self::MONEY_TOLERANCE
+            && $this->usesLegacyInvoiceContract($request)) {
+            $deviationReason = $this->legacyDeviationReason($deviation);
+            $deviationAcknowledged = true;
+        }
         $paymentService = app(ReceivablePaymentService::class);
         $ledgerSummary = $paymentService->summariesFor('invoice', [(int) $existingInvoice->id]);
         $paymentSummary = $paymentService->calculateSummary(
@@ -354,7 +500,28 @@ class InvoiceMutationService extends InvoiceBaseService
             $existingInvoice->paid_date ?? null,
             $ledgerSummary[(int) $existingInvoice->id] ?? null,
         );
-        if ((float) $request->input('grand_total', 0) + self::MONEY_TOLERANCE < $paymentSummary['paidTotal']) {
+        $statusLower = strtolower(trim((string) ($existingInvoice->status ?? '')));
+        $financiallyLocked = $paymentSummary['paidTotal'] > self::MONEY_TOLERANCE
+            || in_array($statusLower, ['paid', 'cancelled', 'canceled', 'void'], true);
+        if ($financiallyLocked && $financialInputsChanged) {
+            return response()->json([
+                'status' => 'error',
+                'code' => 'invoice_financials_locked',
+                'message' => $paymentSummary['paidTotal'] > self::MONEY_TOLERANCE
+                    ? 'Financial values cannot be changed because payment has already been recorded.'
+                    : 'Financial values cannot be changed for a cancelled or void invoice.',
+                'allowed_actions' => ['view_invoice', 'view_payment'],
+            ], 422);
+        }
+        if ($deviation !== null
+            && ($deviationResponse = $this->deviationErrorResponse(
+                $deviation,
+                $deviationReason,
+                $deviationAcknowledged,
+            ))) {
+            return $deviationResponse;
+        }
+        if ($resolvedGrandTotal + self::MONEY_TOLERANCE < $paymentSummary['paidTotal']) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Invoice total cannot be less than the amount already paid.',
@@ -398,7 +565,29 @@ class InvoiceMutationService extends InvoiceBaseService
                 $existingInvoice->paid_date ?? null,
                 $lockedLedgerSummary[(int) $existingInvoice->id] ?? null,
             );
-            if ((float) $request->input('grand_total', 0) + self::MONEY_TOLERANCE < $lockedPaymentSummary['paidTotal']) {
+            $lockedStatus = strtolower(trim((string) ($existingInvoice->status ?? '')));
+            $lockedFinancials = $lockedPaymentSummary['paidTotal'] > self::MONEY_TOLERANCE
+                || in_array($lockedStatus, ['paid', 'cancelled', 'canceled', 'void'], true);
+            if ($lockedFinancials && $this->financialInputsChanged(
+                $existingInvoice,
+                $breakdownInput,
+                $resolvedAmount,
+                $resolvedSstAmount,
+                $resolvedGrandTotal,
+                (string) $dateIssued,
+            )) {
+                DB::rollBack();
+
+                return response()->json([
+                    'status' => 'error',
+                    'code' => 'invoice_financials_locked',
+                    'message' => $lockedPaymentSummary['paidTotal'] > self::MONEY_TOLERANCE
+                        ? 'Financial values cannot be changed because payment has already been recorded.'
+                        : 'Financial values cannot be changed for a cancelled or void invoice.',
+                    'allowed_actions' => ['view_invoice', 'view_payment'],
+                ], 422);
+            }
+            if ($resolvedGrandTotal + self::MONEY_TOLERANCE < $lockedPaymentSummary['paidTotal']) {
                 abort(422, 'Invoice total cannot be less than the amount already paid.');
             }
             $lockedHasPaymentLedger = Schema::hasTable('receivable_payments')
@@ -436,9 +625,9 @@ class InvoiceMutationService extends InvoiceBaseService
                 'payment_terms_source' => $paymentTerms['source'],
                 'due_date' => $this->dueDateFor($dateIssued, $paymentTermsDays),
                 'status' => $existingInvoice->status,
-                'amount' => $request->input('amount', 0),
-                'sst_amount' => $request->input('sst_amount', 0),
-                'grand_total' => $request->input('grand_total', 0),
+                'amount' => $resolvedAmount,
+                'sst_amount' => $resolvedSstAmount,
+                'grand_total' => $resolvedGrandTotal,
                 'payment_method' => $request->input('payment_method', ''),
                 'grant_approval_no' => $grantNo,
                 'paid_date' => $existingInvoice->paid_date,
@@ -449,6 +638,21 @@ class InvoiceMutationService extends InvoiceBaseService
             ];
             if (Schema::hasColumn('invoices', 'quotation_remarks') && $request->exists('quotation_remarks')) {
                 $invoiceUpdates['quotation_remarks'] = $request->input('quotation_remarks');
+            }
+            if (Schema::hasColumn('invoices', 'sst_percent')) {
+                $invoiceUpdates['sst_percent'] = $resolvedSstPercent;
+            }
+            if (Schema::hasColumn('invoices', 'calculation_version')
+                && $this->isIndustrialHygieneService((string) $existingInvoice->service_type)) {
+                $invoiceUpdates['calculation_version'] = InvoiceTotalsCalculator::VERSION;
+            }
+            if ($financialInputsChanged && Schema::hasColumn('invoices', 'deviation_reason')) {
+                $hasDeviation = ($deviation['overage'] ?? 0) > self::MONEY_TOLERANCE;
+                $invoiceUpdates['deviation_reason'] = $hasDeviation ? $deviationReason : null;
+                $invoiceUpdates['deviation_acknowledged_by'] = $hasDeviation
+                    ? ((int) $request->session()->get('staff_id', 0) ?: null)
+                    : null;
+                $invoiceUpdates['deviation_acknowledged_at'] = $hasDeviation ? now() : null;
             }
             DB::table('invoices')->where('invoice_ref_no', $invoiceRef)->limit(1)->update($invoiceUpdates);
 
@@ -484,6 +688,12 @@ class InvoiceMutationService extends InvoiceBaseService
                     if (Schema::hasColumn('invoice_breakdown', 'item_remarks')) {
                         $breakdownInsert['item_remarks'] = $line['item_remarks'] ?? null;
                     }
+                    if (Schema::hasColumn('invoice_breakdown', 'line_type')) {
+                        $breakdownInsert['line_type'] = $this->totalsCalculator()->lineType($line);
+                    }
+                    if (Schema::hasColumn('invoice_breakdown', 'source_line_key')) {
+                        $breakdownInsert['source_line_key'] = $line['source_line_key'] ?? null;
+                    }
                     DB::table('invoice_breakdown')->insert($breakdownInsert);
                 }
             }
@@ -497,7 +707,16 @@ class InvoiceMutationService extends InvoiceBaseService
                 $paymentService->synchronizeProjection('invoice', (int) $existingInvoice->id);
             }
 
-            $this->auditLog->log($request, "Updated invoice {$invoiceRef}");
+            $oldGrandTotal = round((float) ($existingInvoice->grand_total ?? 0), 2);
+            $auditMessage = "Updated invoice {$invoiceRef}";
+            if (abs($oldGrandTotal - $resolvedGrandTotal) > self::MONEY_TOLERANCE) {
+                $auditMessage .= sprintf(
+                    ' (grand total RM %s to RM %s)',
+                    number_format($oldGrandTotal, 2, '.', ','),
+                    number_format($resolvedGrandTotal, 2, '.', ','),
+                );
+            }
+            $this->auditLog->log($request, $auditMessage);
             DB::commit();
 
             return response()->json(['status' => 'success', 'message' => 'Invoice updated successfully.']);
@@ -552,6 +771,129 @@ class InvoiceMutationService extends InvoiceBaseService
             'days' => self::SYSTEM_DEFAULT_PAYMENT_TERMS_DAYS,
             'source' => self::PAYMENT_TERMS_SOURCE_SYSTEM_DEFAULT,
         ];
+    }
+
+    private function submittedSstPercent(Request $request): ?float
+    {
+        if (! $request->exists('sst_percent') || $request->input('sst_percent') === '') {
+            return null;
+        }
+
+        return (float) $request->input('sst_percent');
+    }
+
+    private function usesLegacyInvoiceContract(Request $request): bool
+    {
+        // The original invoice client supplied neither a calculation version nor
+        // an SST rate. A short-lived current client supplied the SST rate before
+        // it started sending the version marker, so treat that shape as current
+        // to preserve its guided deviation validation during cached rollouts.
+        return ! $request->filled('calculation_version') && ! $request->exists('sst_percent');
+    }
+
+    private function legacyDeviationReason(array $deviation): string
+    {
+        return sprintf(
+            'Legacy invoice client compatibility: submitted total is RM %s above the remaining project value.',
+            number_format((float) ($deviation['overage'] ?? 0), 2),
+        );
+    }
+
+    private function financialInputsChanged(
+        object $invoice,
+        array $submittedBreakdown,
+        float $amount,
+        float $sstAmount,
+        float $grandTotal,
+        string $invoiceDate,
+    ): bool {
+        if (abs((float) ($invoice->amount ?? 0) - $amount) > self::MONEY_TOLERANCE
+            || abs((float) ($invoice->sst_amount ?? 0) - $sstAmount) > self::MONEY_TOLERANCE
+            || abs((float) ($invoice->grand_total ?? 0) - $grandTotal) > self::MONEY_TOLERANCE
+            || (string) ($invoice->invoice_date ?? '') !== $invoiceDate) {
+            return true;
+        }
+
+        if (! Schema::hasTable('invoice_breakdown')) {
+            return false;
+        }
+
+        $stored = DB::table('invoice_breakdown')
+            ->where('invoice_id', (int) $invoice->id)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get(['quantity', 'unit_price']);
+        $submitted = collect($submittedBreakdown)
+            ->filter(fn ($line): bool => is_array($line))
+            ->values();
+
+        if ($stored->count() !== $submitted->count()) {
+            return true;
+        }
+
+        foreach ($stored as $index => $line) {
+            $candidate = (array) $submitted->get($index, []);
+            if (abs((float) $line->quantity - (float) ($candidate['quantity'] ?? 0)) > self::MONEY_TOLERANCE
+                || abs((float) $line->unit_price - (float) ($candidate['unit_price'] ?? 0)) > self::MONEY_TOLERANCE) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function invoiceDeviation(int $projectId, float $invoiceTotal, ?int $excludeInvoiceId = null): array
+    {
+        $project = DB::table('projects_main')->where('id', $projectId)->first();
+        $projectValue = $this->projectValueService()->resolvedValue($project);
+        $invoiceQuery = DB::table('invoices')
+            ->where('project_id', $projectId)
+            ->whereRaw("LOWER(COALESCE(status, '')) NOT IN (?, ?, ?)", ['cancelled', 'canceled', 'void']);
+        if ($excludeInvoiceId !== null) {
+            $invoiceQuery->where('id', '!=', $excludeInvoiceId);
+        }
+        $alreadyInvoiced = (float) $invoiceQuery->sum('grand_total');
+        $hasProjectValue = $projectValue > self::MONEY_TOLERANCE;
+        $remaining = $hasProjectValue ? max(0, round($projectValue - $alreadyInvoiced, 2)) : 0.0;
+
+        return [
+            'project_value' => round($projectValue, 2),
+            'previously_invoiced' => round($alreadyInvoiced, 2),
+            'invoice_total' => round($invoiceTotal, 2),
+            'remaining_value' => $remaining,
+            'overage' => $hasProjectValue ? round(max(0, $invoiceTotal - $remaining), 2) : 0.0,
+        ];
+    }
+
+    private function deviationErrorResponse(
+        array $deviation,
+        string $deviationReason,
+        bool $deviationAcknowledged,
+    ): ?JsonResponse {
+        if ($deviation['overage'] <= self::MONEY_TOLERANCE
+            || ($deviationReason !== '' && $deviationAcknowledged)) {
+            return null;
+        }
+
+        $fieldErrors = [];
+        if ($deviationReason === '') {
+            $fieldErrors['deviation_reason'] = ['Briefly explain why this invoice exceeds the project value.'];
+        }
+        if (! $deviationAcknowledged) {
+            $fieldErrors['deviation_acknowledged'] = ['Confirm the project-value difference to continue.'];
+        }
+
+        return response()->json([
+            'status' => 'error',
+            'code' => 'invoice_over_project_value',
+            'message' => sprintf(
+                'This invoice is RM %s above the remaining project value.',
+                number_format($deviation['overage'], 2),
+            ),
+            'field_errors' => $fieldErrors,
+            'context' => $deviation,
+            'allowed_actions' => ['acknowledge_and_continue', 'return_to_pricing', 'view_project'],
+        ], 422);
     }
 
     private function normalizePaymentTermsDays(mixed $value): int

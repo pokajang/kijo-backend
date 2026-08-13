@@ -38,6 +38,19 @@ class InvoicePdfCalculationVisibilityTest extends TestCase
         $this->assertStringContainsString('Unit Price (RM)', $plain);
     }
 
+    public function test_typed_discount_remains_a_deduction_after_its_label_is_renamed(): void
+    {
+        $html = view('pdf.invoice', $this->viewData([
+            $this->line('Industrial Hygiene', '', 1, 3000, 'service'),
+            $this->line('Commercial adjustment', '', 1, -50, 'discount'),
+        ]))->render();
+        $plain = $this->plainText($html);
+
+        $this->assertStringContainsString('Commercial adjustment', $plain);
+        $this->assertStringContainsString('-50.00', $plain);
+        $this->assertStringContainsString('Subtotal after Discount', $plain);
+    }
+
     private function viewData(array $items, string $serviceType = 'Industrial Hygiene'): array
     {
         return [
@@ -89,6 +102,7 @@ class InvoicePdfCalculationVisibilityTest extends TestCase
         string $description,
         float $quantity,
         float $unitPrice,
+        ?string $lineType = null,
     ): object {
         return (object) [
             'item_description' => $label,
@@ -97,6 +111,7 @@ class InvoicePdfCalculationVisibilityTest extends TestCase
             'unit' => 'Lot',
             'unit_price' => $unitPrice,
             'subtotal' => $quantity * $unitPrice,
+            'line_type' => $lineType,
         ];
     }
 

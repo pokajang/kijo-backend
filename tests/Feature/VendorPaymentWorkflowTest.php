@@ -4,9 +4,11 @@ namespace Tests\Feature;
 
 use App\Jobs\SendHtmlMailJob;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class VendorPaymentWorkflowTest extends TestCase
@@ -21,6 +23,7 @@ class VendorPaymentWorkflowTest extends TestCase
             'mail.from.address' => 'kijo@work.amiosh.com',
             'mail.from.name' => 'Kijo Alert',
         ]);
+        Storage::fake('private');
 
         foreach ([
             'user_activities',
@@ -32,6 +35,8 @@ class VendorPaymentWorkflowTest extends TestCase
             'workflow_templates',
             'vendor_payment_workflow_recipients',
             'vendor_payment_workflow_settings',
+            'vendor_payment_events',
+            'vendor_payment_transactions',
             'projects_main',
             'vendor_main_details',
             'vendor_payments',
@@ -112,8 +117,57 @@ class VendorPaymentWorkflowTest extends TestCase
             $table->unsignedTinyInteger('current_approval_level')->nullable();
             $table->json('workflow_progress_json')->nullable();
             $table->json('workflow_settings_snapshot_json')->nullable();
+            $table->unsignedInteger('version')->default(1);
+            $table->string('idempotency_key', 120)->nullable()->unique();
+            $table->unsignedBigInteger('parent_payment_id')->nullable();
+            $table->unsignedInteger('revision_number')->default(1);
+            $table->unsignedBigInteger('superseded_by_payment_id')->nullable();
+            $table->timestamp('superseded_at')->nullable();
+            $table->timestamp('cancelled_at')->nullable();
+            $table->unsignedBigInteger('cancelled_by')->nullable();
+            $table->text('cancellation_reason')->nullable();
+            $table->timestamp('updated_at')->nullable();
+            $table->unsignedBigInteger('updated_by')->nullable();
+            $table->string('vendor_name_snapshot')->nullable();
+            $table->string('receipt_original_name')->nullable();
+            $table->string('receipt_mime_type')->nullable();
+            $table->unsignedBigInteger('receipt_size')->nullable();
+            $table->string('receipt_sha256', 64)->nullable();
+            $table->string('receipt_state')->nullable();
             $table->timestamp('deleted_at')->nullable();
             $table->unsignedInteger('deleted_by')->nullable();
+        });
+
+        Schema::create('vendor_payment_transactions', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('vendor_payment_id');
+            $table->decimal('amount', 14, 2);
+            $table->date('paid_date');
+            $table->string('method');
+            $table->string('reference_number');
+            $table->string('bank_name_snapshot')->nullable();
+            $table->string('bank_account_snapshot')->nullable();
+            $table->text('remarks')->nullable();
+            $table->unsignedBigInteger('created_by');
+            $table->string('created_by_name_code')->nullable();
+            $table->string('idempotency_key')->nullable()->unique();
+            $table->timestamp('reversed_at')->nullable();
+            $table->unsignedBigInteger('reversed_by')->nullable();
+            $table->text('reversal_reason')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('vendor_payment_events', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('vendor_payment_id');
+            $table->string('event_type');
+            $table->string('from_status')->nullable();
+            $table->string('to_status')->nullable();
+            $table->unsignedBigInteger('actor_staff_id')->nullable();
+            $table->string('actor_name_code')->nullable();
+            $table->text('remarks')->nullable();
+            $table->json('metadata_json')->nullable();
+            $table->timestamp('created_at')->nullable();
         });
 
         Schema::create('vendor_payment_workflow_settings', function (Blueprint $table): void {
@@ -211,7 +265,7 @@ class VendorPaymentWorkflowTest extends TestCase
         DB::table('projects_main')->insert(['id' => 501, 'project_name' => 'Project A']);
     }
 
-    public function test_configured_requester_can_review_and_approve_own_request(): void
+    public function test_configured_requester_cannot_review_or_approve_own_request(): void
     {
         $this->actingSession(30, ['System Admin'])
             ->putJson('/workflows/templates/vendor-payment', $this->vendorWorkflowPayload([
@@ -230,39 +284,22 @@ class VendorPaymentWorkflowTest extends TestCase
 
         $this->actingSession(20, ['Manager'])
             ->patchJson("/vendor-payments/{$paymentId}/check")
-            ->assertOk()
-            ->assertJsonPath('message', 'Payment reviewed.');
+            ->assertForbidden();
 
         $this->actingSession(20, ['Manager'])
             ->getJson('/vendor-payments')
             ->assertOk()
             ->assertJsonPath('history.0.id', $paymentId)
-            ->assertJsonPath('history.0.can_approve', true);
-
-        $this->assertDatabaseHas('in_app_notifications', [
-            'entity_id' => $paymentId,
-            'type' => 'vendor_payment_checked',
-            'recipient_staff_id' => 20,
-            'actor_staff_id' => 20,
-        ]);
+            ->assertJsonPath('history.0.can_check', false)
+            ->assertJsonPath('history.0.can_approve', false);
 
         $this->actingSession(20, ['Manager'])
             ->patchJson("/vendor-payments/{$paymentId}/approve")
-            ->assertOk();
+            ->assertStatus(409);
 
         $this->assertDatabaseHas('vendor_payments', [
             'id' => $paymentId,
-            'status' => 'Approved',
-            'checked_by' => 20,
-            'approved_by' => 20,
-        ]);
-        $this->assertDatabaseHas('user_activities', [
-            'staff_id' => 20,
-            'action' => "Reviewed payment ID #{$paymentId}",
-        ]);
-        $this->assertDatabaseHas('user_activities', [
-            'staff_id' => 20,
-            'action' => "Approved payment ID #{$paymentId}",
+            'status' => 'Pending',
         ]);
     }
 
@@ -291,16 +328,16 @@ class VendorPaymentWorkflowTest extends TestCase
             ->assertJsonPath('history.0.workflow_progress.0.actorCode', 'CHK')
             ->assertJsonPath('history.0.workflow_progress.0.remarks', 'Verified');
 
-        $this->actingSession(20, ['Manager'])
-            ->patchJson("/vendor-payments/{$paymentId}/approve", ['remarks' => 'Same checker'])
+        $this->actingSession(30, ['System Admin'])
+            ->patchJson("/vendor-payments/{$paymentId}/approve", ['remarks' => 'Approved independently'])
             ->assertOk()
             ->assertJsonPath('status', 'success');
 
         $this->assertDatabaseHas('vendor_payments', [
             'id' => $paymentId,
             'status' => 'Approved',
-            'approved_by' => 20,
-            'approval_remarks' => 'Same checker',
+            'approved_by' => 30,
+            'approval_remarks' => 'Approved independently',
         ]);
 
         $this->actingSession(40, ['Finance'])
@@ -334,7 +371,19 @@ class VendorPaymentWorkflowTest extends TestCase
             ->assertJsonPath('history.0.workflow_flow.currentStage', null)
             ->assertJsonPath('history.0.workflow_flow.stages.0.status', 'Reviewed')
             ->assertJsonPath('history.0.workflow_flow.stages.1.status', 'Approved')
-            ->assertJsonPath('history.0.workflow_flow.stages.2.status', 'Paid');
+            ->assertJsonPath('history.0.workflow_flow.stages.2.status', 'Paid')
+            ->assertJsonPath('history.0.requested_by_actor.display', 'Request User (REQ)')
+            ->assertJsonPath('history.0.reviewed_by_actor.display', 'Check User (CHK)')
+            ->assertJsonPath('history.0.approved_by_actor.display', 'Approve User (APP)')
+            ->assertJsonPath('history.0.paid_by_actor.display', 'Finance User (FIN)');
+
+        $this->actingSession(10, ['Staff'])
+            ->getJson("/vendor-payments/{$paymentId}")
+            ->assertOk()
+            ->assertJsonPath('data.reviewed_by_actor.staff_id', 20)
+            ->assertJsonPath('data.reviewed_by_actor.full_name', 'Check User')
+            ->assertJsonPath('data.paid_by_actor.staff_id', 40)
+            ->assertJsonPath('data.paid_by_actor.name_code', 'FIN');
     }
 
     public function test_invalid_transitions_and_approved_delete_are_rejected(): void
@@ -349,7 +398,7 @@ class VendorPaymentWorkflowTest extends TestCase
 
         $this->actingSession(20, ['Manager'])
             ->deleteJson("/vendor-payments/{$paymentId}")
-            ->assertStatus(409);
+            ->assertForbidden();
 
         $this->assertNull(DB::table('vendor_payments')->where('id', $paymentId)->value('deleted_at'));
 
@@ -357,7 +406,7 @@ class VendorPaymentWorkflowTest extends TestCase
 
         $this->actingSession(20, ['Manager'])
             ->deleteJson("/vendor-payments/{$paymentId}")
-            ->assertStatus(409);
+            ->assertForbidden();
     }
 
     public function test_workflow_creates_and_resolves_notifications(): void
@@ -390,15 +439,14 @@ class VendorPaymentWorkflowTest extends TestCase
 
     public function test_submit_return_and_reject_notifications_are_recorded(): void
     {
-        $submitResponse = $this->actingSession(10, ['Staff'])
-            ->postJson('/vendor-payments', [
-                'vendor_id' => 7,
-                'payment_context' => 'Office',
-                'payment_type' => 'Deposit',
-                'amount' => 125,
-                'method' => 'Online Transfer',
-                'remarks' => 'Office setup',
-            ])
+        $submitResponse = $this->submitPayment(10, [
+            'vendor_id' => 7,
+            'payment_context' => 'Office',
+            'payment_type' => 'Deposit',
+            'amount' => 125,
+            'method' => 'Online Transfer',
+            'remarks' => 'Office setup',
+        ])
             ->assertOk()
             ->assertJsonPath('status', 'success');
 
@@ -444,6 +492,34 @@ class VendorPaymentWorkflowTest extends TestCase
             'type' => 'vendor_payment_rejected',
             'recipient_staff_id' => 10,
         ]);
+    }
+
+    public function test_legacy_payment_submission_without_idempotency_key_remains_compatible(): void
+    {
+        $response = $this->submitPayment(10, ['idempotency_key' => null])
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('idempotent', false);
+
+        $key = DB::table('vendor_payments')
+            ->where('id', (int) $response->json('id'))
+            ->value('idempotency_key');
+
+        $this->assertNotEmpty($key);
+    }
+
+    public function test_current_payment_submission_keeps_client_idempotency_across_retries(): void
+    {
+        $key = 'stable-client-key';
+        $first = $this->submitPayment(10, ['idempotency_key' => $key])
+            ->assertOk()
+            ->assertJsonPath('idempotent', false);
+        $second = $this->submitPayment(10, ['idempotency_key' => $key])
+            ->assertOk()
+            ->assertJsonPath('idempotent', true);
+
+        $this->assertSame((int) $first->json('id'), (int) $second->json('id'));
+        $this->assertSame(1, DB::table('vendor_payments')->where('idempotency_key', $key)->count());
     }
 
     public function test_paid_by_vendor_endpoint_returns_only_paid_rows(): void
@@ -544,15 +620,14 @@ class VendorPaymentWorkflowTest extends TestCase
             ]))
             ->assertOk();
 
-        $submitResponse = $this->actingSession(10, ['Staff'])
-            ->postJson('/vendor-payments', [
-                'vendor_id' => 7,
-                'payment_context' => 'Office',
-                'payment_type' => 'Deposit',
-                'amount' => 125,
-                'method' => 'Online Transfer',
-                'remarks' => 'Approval only',
-            ])
+        $submitResponse = $this->submitPayment(10, [
+            'vendor_id' => 7,
+            'payment_context' => 'Office',
+            'payment_type' => 'Deposit',
+            'amount' => 125,
+            'method' => 'Online Transfer',
+            'remarks' => 'Approval only',
+        ])
             ->assertOk();
 
         $paymentId = (int) $submitResponse->json('id');
@@ -640,15 +715,14 @@ class VendorPaymentWorkflowTest extends TestCase
             ]))
             ->assertOk();
 
-        $submitResponse = $this->actingSession(10, ['Staff'])
-            ->postJson('/vendor-payments', [
-                'vendor_id' => 7,
-                'payment_context' => 'Office',
-                'payment_type' => 'Deposit',
-                'amount' => 125,
-                'method' => 'Online Transfer',
-                'remarks' => 'Finance only',
-            ])
+        $submitResponse = $this->submitPayment(10, [
+            'vendor_id' => 7,
+            'payment_context' => 'Office',
+            'payment_type' => 'Deposit',
+            'amount' => 125,
+            'method' => 'Online Transfer',
+            'remarks' => 'Finance only',
+        ])
             ->assertOk();
 
         $paymentId = (int) $submitResponse->json('id');
@@ -811,14 +885,13 @@ class VendorPaymentWorkflowTest extends TestCase
             ]))
             ->assertOk();
 
-        $paymentId = (int) $this->actingSession(10, ['Staff'])
-            ->postJson('/vendor-payments', [
-                'vendor_id' => 7,
-                'payment_context' => 'Snapshot flow',
-                'payment_type' => 'Deposit',
-                'amount' => 125,
-                'method' => 'Online Transfer',
-            ])
+        $paymentId = (int) $this->submitPayment(10, [
+            'vendor_id' => 7,
+            'payment_context' => 'Snapshot flow',
+            'payment_type' => 'Deposit',
+            'amount' => 125,
+            'method' => 'Online Transfer',
+        ])
             ->assertOk()
             ->json('id');
 
@@ -936,6 +1009,123 @@ class VendorPaymentWorkflowTest extends TestCase
             ->assertJsonPath('history.0.workflow_flow.stages.1.remarks', 'Approval needs more information.');
     }
 
+    public function test_authenticated_staff_can_view_payment_and_its_verified_invoice(): void
+    {
+        $response = $this->submitPayment(10)->assertOk();
+        $paymentId = (int) $response->json('id');
+
+        $this->actingSession(50, ['Staff'])
+            ->getJson("/vendor-payments/{$paymentId}")
+            ->assertOk()
+            ->assertJsonPath('data.id', $paymentId)
+            ->assertJsonPath('data.permissions.can_view', true)
+            ->assertJsonPath('data.receipt_state', 'available')
+            ->assertJsonPath('data.receipt_url', "/vendor-payments/{$paymentId}/invoice");
+
+        $this->actingSession(50, ['Staff'])
+            ->get("/vendor-payments/{$paymentId}/invoice")
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf')
+            ->assertHeader('x-content-type-options', 'nosniff');
+
+        $cacheControl = $this->actingSession(50, ['Staff'])
+            ->get("/vendor-payments/{$paymentId}/invoice")
+            ->headers->get('cache-control');
+        $this->assertStringContainsString('private', (string) $cacheControl);
+        $this->assertStringContainsString('no-store', (string) $cacheControl);
+
+        $stored = DB::table('vendor_payments')->where('id', $paymentId)->first();
+        $this->assertSame(64, strlen((string) $stored->receipt_sha256));
+        $this->assertSame('invoice.pdf', $stored->receipt_original_name);
+    }
+
+    public function test_invoice_integrity_mismatch_is_rejected_instead_of_serving_corrupt_bytes(): void
+    {
+        $response = $this->submitPayment(10)->assertOk();
+        $paymentId = (int) $response->json('id');
+        DB::table('vendor_payments')->where('id', $paymentId)->update([
+            'receipt_sha256' => str_repeat('0', 64),
+        ]);
+
+        $this->actingSession(30, ['System Admin'])
+            ->getJson("/vendor-payments/{$paymentId}/invoice")
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Invoice attachment failed integrity verification.');
+    }
+
+    public function test_creator_can_cancel_untouched_request_but_another_staff_member_cannot(): void
+    {
+        $paymentId = $this->insertPayment(['version' => 1]);
+
+        $this->actingSession(50, ['Staff'])
+            ->postJson("/vendor-payments/{$paymentId}/cancel", ['version' => 1, 'reason' => 'Not mine'])
+            ->assertForbidden();
+
+        $this->actingSession(10, ['Staff'])
+            ->postJson("/vendor-payments/{$paymentId}/cancel", ['version' => 1, 'reason' => 'Duplicate request'])
+            ->assertOk();
+
+        $this->assertDatabaseHas('vendor_payments', [
+            'id' => $paymentId,
+            'status' => 'Cancelled',
+            'cancelled_by' => 10,
+            'cancellation_reason' => 'Duplicate request',
+            'version' => 2,
+        ]);
+    }
+
+    public function test_finance_transactions_support_partial_payment_overpayment_guard_and_reversal(): void
+    {
+        $paymentId = $this->insertPayment(['status' => 'Approved', 'version' => 1]);
+        $payload = [
+            'amount' => 50,
+            'paid_date' => '2026-08-13',
+            'method' => 'Online Transfer',
+            'reference_number' => 'TXN-001',
+            'idempotency_key' => 'transaction-one',
+            'version' => 1,
+        ];
+
+        $response = $this->actingSession(40, ['Finance'])
+            ->postJson("/vendor-payments/{$paymentId}/transactions", $payload)
+            ->assertOk();
+        $transactionId = (int) $response->json('id');
+
+        $this->assertDatabaseHas('vendor_payments', [
+            'id' => $paymentId,
+            'status' => 'Partially Paid',
+            'paid_amount' => 50,
+            'version' => 2,
+        ]);
+
+        $this->actingSession(40, ['Finance'])
+            ->postJson("/vendor-payments/{$paymentId}/transactions", array_merge($payload, [
+                'amount' => 100,
+                'reference_number' => 'TXN-OVER',
+                'idempotency_key' => 'transaction-over',
+                'version' => 2,
+            ]))
+            ->assertStatus(409);
+
+        $this->actingSession(40, ['Finance'])
+            ->postJson("/vendor-payments/{$paymentId}/transactions/{$transactionId}/reverse", [
+                'version' => 2,
+                'reason' => 'Bank transfer was rejected',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('vendor_payments', [
+            'id' => $paymentId,
+            'status' => 'Approved',
+            'version' => 3,
+        ]);
+        $this->assertDatabaseHas('vendor_payment_transactions', [
+            'id' => $transactionId,
+            'reversed_by' => 40,
+            'reversal_reason' => 'Bank transfer was rejected',
+        ]);
+    }
+
     private function insertPayment(array $overrides = []): int
     {
         return DB::table('vendor_payments')->insertGetId(array_merge([
@@ -950,6 +1140,22 @@ class VendorPaymentWorkflowTest extends TestCase
             'created_by_name_code' => 'REQ',
             'created_at' => now(),
             'deleted_at' => null,
+        ], $overrides));
+    }
+
+    private function submitPayment(int $staffId, array $overrides = [])
+    {
+        return $this->actingSession($staffId, ['Staff'])->post('/vendor-payments', array_merge([
+            'vendor_id' => 7,
+            'payment_context' => 'Office',
+            'payment_type' => 'Deposit',
+            'amount' => 125,
+            'method' => 'Online Transfer',
+            'receipt' => UploadedFile::fake()->createWithContent(
+                'invoice.pdf',
+                "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF",
+            ),
+            'idempotency_key' => 'test-'.uniqid('', true),
         ], $overrides));
     }
 

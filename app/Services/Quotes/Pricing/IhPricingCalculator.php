@@ -4,6 +4,8 @@ namespace App\Services\Quotes\Pricing;
 
 final class IhPricingCalculator
 {
+    private const HISTORICAL_TOTAL_TOLERANCE = 0.05;
+
     public const LEGACY_RULE = 'ih_complexity_v1';
 
     public const INTERMEDIATE_RULE = 'ih_standard_v1';
@@ -87,5 +89,60 @@ final class IhPricingCalculator
         $rating = max(1, min(5, $complexityRating));
 
         return 1 + (($rating - 1) * 0.1);
+    }
+
+    public function resolveStoredHistoricalTotals(
+        array|object $quote,
+        string $pricingRuleVersion,
+        int $complexityRating = 1,
+    ): array {
+        $rule = $this->normalizeRule($pricingRuleVersion);
+        if (! $this->isHistoricalRule($rule)) {
+            throw new \InvalidArgumentException('Stored IH totals are only valid for historical pricing rules.');
+        }
+
+        $data = (array) $quote;
+        $discount = round(max(0, (float) ($data['discount'] ?? 0)), 2);
+        $storedSubtotal = round(max(0, (float) ($data['sub_total'] ?? 0)), 2);
+        $sstAmount = round(max(0, (float) ($data['sst_amount'] ?? 0)), 2);
+        $grandTotal = round(max(0, (float) ($data['grand_total'] ?? 0)), 2);
+        $taxableFromGrandTotal = round(max(0, $grandTotal - $sstAmount), 2);
+        $netConventionDifference = abs($storedSubtotal - $taxableFromGrandTotal);
+        $grossConventionTaxable = round(max(0, $storedSubtotal - $discount), 2);
+        $grossConventionDifference = abs($grossConventionTaxable - $taxableFromGrandTotal);
+        $usesLegacyGrossSubtotal = $rule === self::LEGACY_RULE
+            && $discount > 0
+            && $grossConventionDifference <= self::HISTORICAL_TOTAL_TOLERANCE
+            && $grossConventionDifference < $netConventionDifference;
+        $grossSubtotal = $usesLegacyGrossSubtotal
+            ? $storedSubtotal
+            : round($storedSubtotal + $discount, 2);
+        $taxableTotal = round(max(0, $grossSubtotal - $discount), 2);
+        $normalizedComplexity = $rule === self::LEGACY_RULE
+            ? max(1, min(5, $complexityRating))
+            : 1;
+
+        return [
+            'pricing_rule_version' => $rule,
+            'complexity_rating' => $normalizedComplexity,
+            'complexity_multiplier' => $rule === self::LEGACY_RULE
+                ? $this->multiplierFor($normalizedComplexity)
+                : 1.0,
+            'service_total' => round(max(0, $grossSubtotal - (float) ($data['travel_charge'] ?? 0)), 2),
+            'additional_fees_total' => 0.0,
+            'gross_subtotal' => $grossSubtotal,
+            'taxable_total' => $taxableTotal,
+            'discount' => $discount,
+            'sst_percent' => max(0, (float) ($data['sst_percent'] ?? 0)),
+            'sst_amount' => $sstAmount,
+            'sub_total' => $storedSubtotal,
+            'grand_total' => $grandTotal,
+            'subtotal_convention' => $usesLegacyGrossSubtotal
+                ? 'gross-before-discount'
+                : 'net-after-discount',
+            'is_reconciled' => ($usesLegacyGrossSubtotal
+                ? $grossConventionDifference
+                : $netConventionDifference) <= self::HISTORICAL_TOTAL_TOLERANCE,
+        ];
     }
 }

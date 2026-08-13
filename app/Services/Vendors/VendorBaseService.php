@@ -28,9 +28,15 @@ abstract class VendorBaseService
 
     protected function normalizePaymentRow(array $row): array
     {
-        $receiptUrl = AppFilePaths::publicUrlForStoredPath($row['receipt_path'] ?? '');
+        $paymentId = (int) ($row['id'] ?? 0);
+        $receiptAvailable = ! empty($row['receipt_path'])
+            && AppFilePaths::storedPathExists((string) $row['receipt_path']);
+        $receiptUrl = $paymentId > 0 && $receiptAvailable
+            ? route('vendor-payments.invoice', ['id' => $paymentId], false)
+            : '';
         $row['receipt_path'] = $receiptUrl;
         $row['receipt_url'] = $receiptUrl;
+        $row['receipt_state'] = $receiptAvailable ? 'available' : 'unavailable';
 
         return $row;
     }

@@ -302,7 +302,16 @@ Route::middleware('auth.session')->group(function () {
     Route::get('vendor-payments/by-vendor', [VendorController::class, 'vendorPayments']);
     Route::get('vendor-payments/paid-by-vendor', [VendorController::class, 'paidPaymentsByVendor']);
     Route::get('vendor-payments/paid-by-vendor/{vendorId}', [VendorController::class, 'paidPaymentsForVendor'])->whereNumber('vendorId');
+    Route::get('vendor-payments/{id}', [VendorController::class, 'showPayment'])->whereNumber('id');
+    Route::get('vendor-payments/{id}/invoice', [VendorController::class, 'paymentInvoice'])
+        ->whereNumber('id')
+        ->name('vendor-payments.invoice');
     Route::post('vendor-payments', [VendorController::class, 'storePayment']);
+    Route::patch('vendor-payments/{id}', [VendorController::class, 'updatePayment'])->whereNumber('id');
+    Route::post('vendor-payments/{id}/cancel', [VendorController::class, 'cancelPayment'])->whereNumber('id');
+    Route::post('vendor-payments/{id}/resubmit', [VendorController::class, 'resubmitPayment'])->whereNumber('id');
+    Route::post('vendor-payments/{id}/transactions', [VendorController::class, 'recordPaymentTransaction'])->whereNumber('id');
+    Route::post('vendor-payments/{id}/transactions/{transactionId}/reverse', [VendorController::class, 'reversePaymentTransaction'])->whereNumber(['id', 'transactionId']);
     Route::patch('vendor-payments/{id}/check', [VendorController::class, 'checkPayment']);
     Route::patch('vendor-payments/{id}/approve', [VendorController::class, 'approvePayment']);
     Route::patch('vendor-payments/{id}/reject', [VendorController::class, 'rejectPayment']);

@@ -157,6 +157,249 @@ class IhCommercialDocumentCycleTest extends TestCase
         ]);
     }
 
+    public function test_ih_invoice_overage_is_guided_and_can_be_acknowledged(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload());
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-OVER',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $payload = $this->invoicePayload($projectId, $quoteId);
+        $payload['amount'] = 1300;
+        $payload['grand_total'] = 1300;
+        $payload['breakdown'][0]['unit_price'] = 1300;
+        $payload['breakdown'][0]['line_type'] = 'service';
+
+        $this->authenticated()->postJson('/invoices', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'invoice_over_project_value')
+            ->assertJsonPath('context.overage', 100)
+            ->assertJsonPath(
+                'field_errors.deviation_reason.0',
+                'Briefly explain why this invoice exceeds the project value.',
+            );
+
+        $payload['deviation_reason'] = 'Approved additional site attendance.';
+        $payload['deviation_acknowledged'] = true;
+        $this->authenticated()->postJson('/invoices', $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+    }
+
+    public function test_legacy_invoice_payload_without_sst_percent_preserves_its_sst(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload([
+            'sst_percent' => 8,
+        ]));
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-LEGACY-SST',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $payload = $this->invoicePayload($projectId, $quoteId);
+        unset($payload['sst_percent'], $payload['calculation_version']);
+        $payload['sst_amount'] = 96;
+        $payload['grand_total'] = 1296;
+
+        $created = $this->authenticated()->postJson('/invoices', $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('invoices', [
+            'id' => (int) $created->json('invoice_id'),
+            'sst_percent' => 8,
+            'sst_amount' => 96,
+            'grand_total' => 1296,
+            'calculation_version' => 'typed_lines_v1',
+        ]);
+    }
+
+    public function test_legacy_invoice_payload_records_overage_without_blocking_a_cached_tab(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload());
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-LEGACY-OVER',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $payload = $this->invoicePayload($projectId, $quoteId);
+        unset($payload['sst_percent'], $payload['calculation_version']);
+        $payload['amount'] = 1300;
+        $payload['grand_total'] = 1300;
+        $payload['breakdown'][0]['unit_price'] = 1300;
+
+        $created = $this->authenticated()->postJson('/invoices', $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $invoice = DB::table('invoices')->where('id', (int) $created->json('invoice_id'))->first();
+        $this->assertSame(10, (int) $invoice->deviation_acknowledged_by);
+        $this->assertStringContainsString('Legacy invoice client compatibility', $invoice->deviation_reason);
+    }
+
+    public function test_cached_current_invoice_payload_without_version_keeps_guided_overage_validation(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload());
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-CACHED-CURRENT',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $payload = $this->invoicePayload($projectId, $quoteId);
+        unset($payload['calculation_version']);
+        $payload['amount'] = 1300;
+        $payload['grand_total'] = 1300;
+        $payload['breakdown'][0]['unit_price'] = 1300;
+
+        $this->authenticated()->postJson('/invoices', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'invoice_over_project_value')
+            ->assertJsonPath('context.overage', 100)
+            ->assertJsonPath(
+                'field_errors.deviation_reason.0',
+                'Briefly explain why this invoice exceeds the project value.',
+            );
+    }
+
+    public function test_legacy_invoice_edit_without_sst_percent_preserves_its_sst(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload([
+            'sst_percent' => 8,
+        ]));
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-LEGACY-EDIT',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $currentPayload = $this->invoicePayload($projectId, $quoteId);
+        $currentPayload['sst_percent'] = 8;
+        $currentPayload['sst_amount'] = 96;
+        $currentPayload['grand_total'] = 1296;
+        $created = $this->authenticated()->postJson('/invoices', $currentPayload)->assertOk();
+        $invoice = DB::table('invoices')->where('id', (int) $created->json('invoice_id'))->first();
+
+        $legacyPayload = $currentPayload;
+        unset($legacyPayload['sst_percent'], $legacyPayload['calculation_version']);
+        $legacyPayload['invoice_ref_no'] = $invoice->invoice_ref_no;
+        $legacyPayload['status'] = 'Pending';
+        $legacyPayload['remarks'] = 'Saved from a cached invoice editor.';
+
+        $this->authenticated()->putJson('/invoices', $legacyPayload)
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('invoices', [
+            'id' => $invoice->id,
+            'sst_percent' => 8,
+            'sst_amount' => 96,
+            'grand_total' => 1296,
+        ]);
+    }
+
+    public function test_paid_ih_invoice_financials_are_locked_with_recovery_guidance(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload());
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-PAID',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $created = $this->authenticated()->postJson('/invoices', $this->invoicePayload($projectId, $quoteId));
+        $invoiceId = (int) $created->json('invoice_id');
+        $invoice = DB::table('invoices')->where('id', $invoiceId)->first();
+        DB::table('invoices')->where('id', $invoiceId)->update([
+            'status' => 'Paid',
+            'paid_amount' => 1200,
+            'paid_date' => '2026-07-28',
+        ]);
+
+        $payload = $this->invoicePayload($projectId, $quoteId);
+        $payload['invoice_ref_no'] = $invoice->invoice_ref_no;
+        $payload['status'] = 'Paid';
+        $payload['amount'] = 1100;
+        $payload['grand_total'] = 1100;
+        $payload['breakdown'][0]['unit_price'] = 1100;
+        $payload['breakdown'][0]['line_type'] = 'service';
+
+        $this->authenticated()->putJson('/invoices', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'invoice_financials_locked')
+            ->assertJsonPath(
+                'message',
+                'Financial values cannot be changed because payment has already been recorded.',
+            )
+            ->assertJsonPath('allowed_actions.0', 'view_invoice');
+    }
+
+    public function test_unpaid_ih_invoice_edit_overage_requires_a_guided_acknowledgement(): void
+    {
+        $create = $this->authenticated()->postJson('/quotes/ih', $this->quotePayload());
+        $quoteId = (int) $create->json('quote_id');
+        $award = $this->authenticated()->postJson("/quote-records/ih/{$quoteId}/award", [
+            'quote_id' => $quoteId,
+            'remarks' => 'Client awarded the work.',
+            'award_date' => '2026-07-27',
+            'description' => 'Industrial hygiene monitoring scope.',
+            'client_award_ref_no' => 'CLIENT-LOA-EDIT-OVER',
+        ]);
+        $projectId = (int) $award->json('project_id');
+        $created = $this->authenticated()->postJson('/invoices', $this->invoicePayload($projectId, $quoteId));
+        $invoice = DB::table('invoices')->where('id', (int) $created->json('invoice_id'))->first();
+
+        $payload = $this->invoicePayload($projectId, $quoteId);
+        $payload['invoice_ref_no'] = $invoice->invoice_ref_no;
+        $payload['status'] = 'Pending';
+        $payload['amount'] = 1300;
+        $payload['grand_total'] = 1300;
+        $payload['breakdown'][0]['unit_price'] = 1300;
+        $payload['breakdown'][0]['line_type'] = 'service';
+
+        $this->authenticated()->putJson('/invoices', $payload)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'invoice_over_project_value')
+            ->assertJsonPath('context.overage', 100)
+            ->assertJsonPath(
+                'field_errors.deviation_acknowledged.0',
+                'Confirm the project-value difference to continue.',
+            );
+
+        $payload['deviation_reason'] = 'Approved additional monitoring visit.';
+        $payload['deviation_acknowledged'] = true;
+        $this->authenticated()->putJson('/invoices', $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'success');
+
+        $this->assertDatabaseHas('invoices', [
+            'id' => $invoice->id,
+            'grand_total' => 1300,
+        ]);
+    }
+
     private function quotePayload(array $overrides = []): array
     {
         return array_replace_recursive([
@@ -218,7 +461,9 @@ class IhCommercialDocumentCycleTest extends TestCase
             'payment_method' => 'Bank Transfer',
             'amount' => 1200,
             'sst_amount' => 0,
+            'sst_percent' => 0,
             'grand_total' => 1200,
+            'calculation_version' => 'typed_lines_v1',
             'breakdown' => [[
                 'item_description' => 'Industrial hygiene services',
                 'description' => 'Awarded IH monitoring scope.',

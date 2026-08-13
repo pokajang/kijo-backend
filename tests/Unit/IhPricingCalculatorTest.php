@@ -100,4 +100,46 @@ class IhPricingCalculatorTest extends TestCase
 
         (new IhPricingCalculator)->calculate([], [], 'unknown-rule');
     }
+
+    public function test_resolves_the_legacy_gross_subtotal_storage_convention(): void
+    {
+        $totals = (new IhPricingCalculator)->resolveStoredHistoricalTotals([
+            'sample_counts' => 2,
+            'num_work_units' => 1,
+            'unit_price' => 1500,
+            'travel_charge' => 0,
+            'discount' => 50,
+            'sst_percent' => 0,
+            'sst_amount' => 0,
+            'sub_total' => 3000,
+            'grand_total' => 2950,
+        ], IhPricingCalculator::LEGACY_RULE, 1);
+
+        $this->assertSame('gross-before-discount', $totals['subtotal_convention']);
+        $this->assertSame(3000.0, $totals['service_total']);
+        $this->assertSame(3000.0, $totals['gross_subtotal']);
+        $this->assertSame(2950.0, $totals['taxable_total']);
+        $this->assertSame(3000.0, $totals['sub_total']);
+        $this->assertSame(2950.0, $totals['grand_total']);
+        $this->assertTrue($totals['is_reconciled']);
+    }
+
+    public function test_preserves_the_historical_net_subtotal_storage_convention(): void
+    {
+        $totals = (new IhPricingCalculator)->resolveStoredHistoricalTotals([
+            'travel_charge' => 0,
+            'discount' => 200,
+            'sst_percent' => 0,
+            'sst_amount' => 0,
+            'sub_total' => 9300,
+            'grand_total' => 9300,
+        ], IhPricingCalculator::INTERMEDIATE_RULE, 4);
+
+        $this->assertSame('net-after-discount', $totals['subtotal_convention']);
+        $this->assertSame(9500.0, $totals['gross_subtotal']);
+        $this->assertSame(9300.0, $totals['taxable_total']);
+        $this->assertSame(9300.0, $totals['sub_total']);
+        $this->assertSame(9300.0, $totals['grand_total']);
+        $this->assertTrue($totals['is_reconciled']);
+    }
 }

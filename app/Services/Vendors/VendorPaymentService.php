@@ -3,13 +3,18 @@
 namespace App\Services\Vendors;
 
 use App\Http\Requests\Vendor\ApproveVendorPaymentRequest;
+use App\Http\Requests\Vendor\CancelVendorPaymentRequest;
 use App\Http\Requests\Vendor\CheckVendorPaymentRequest;
 use App\Http\Requests\Vendor\DecideVendorPaymentRequest;
 use App\Http\Requests\Vendor\DeleteVendorPaymentRequest;
 use App\Http\Requests\Vendor\GetVendorPaymentsRequest;
 use App\Http\Requests\Vendor\ListVendorPaymentsRequest;
 use App\Http\Requests\Vendor\MarkVendorPaymentPaidRequest;
+use App\Http\Requests\Vendor\RecordVendorPaymentTransactionRequest;
+use App\Http\Requests\Vendor\ResubmitVendorPaymentRequest;
+use App\Http\Requests\Vendor\ReverseVendorPaymentTransactionRequest;
 use App\Http\Requests\Vendor\StoreVendorPaymentRequest;
+use App\Http\Requests\Vendor\UpdateVendorPaymentRequest;
 use App\Services\AppNotificationService;
 use App\Support\AppFilePaths;
 use Illuminate\Http\JsonResponse;
@@ -23,6 +28,10 @@ class VendorPaymentService extends VendorBaseService
     private ?VendorPaymentWorkflowService $workflowService = null;
 
     private ?VendorPaymentFlowPresenter $workflowFlowPresenter = null;
+
+    private ?VendorPaymentAuthorizationService $authorizationService = null;
+
+    private ?VendorPaymentLifecycleService $lifecycleService = null;
 
     private const NOTIFICATION_MODULE = 'vendor.payments';
 
@@ -43,6 +52,16 @@ class VendorPaymentService extends VendorBaseService
     private function workflowFlowPresenter(): VendorPaymentFlowPresenter
     {
         return $this->workflowFlowPresenter ??= app(VendorPaymentFlowPresenter::class);
+    }
+
+    private function authorization(): VendorPaymentAuthorizationService
+    {
+        return $this->authorizationService ??= app(VendorPaymentAuthorizationService::class);
+    }
+
+    private function lifecycle(): VendorPaymentLifecycleService
+    {
+        return $this->lifecycleService ??= app(VendorPaymentLifecycleService::class);
     }
 
     private function vendorPaymentColumn(string $column)
@@ -200,31 +219,16 @@ class VendorPaymentService extends VendorBaseService
 
     private function paymentPermissions(Request $request, object $payment): array
     {
-        $workflow = $this->workflow();
-        $staffId = (int) $request->session()->get('staff_id', 0);
-        $status = $this->normalizeStatus($payment->status ?? '');
-        $canReview = false;
-        $canApprove = false;
-
-        if ($status === 'pending' && $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_REVIEW)) {
-            $reviewLevel = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_REVIEW);
-            $canReview = $staffId > 0
-                && $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_REVIEW, $reviewLevel);
-        }
-
-        if ($status === 'checked' && $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL)) {
-            $approvalLevel = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_APPROVAL);
-            $canApprove = $staffId > 0
-                && $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_APPROVAL, $approvalLevel);
-        }
+        $permissions = $this->authorization()->permissions($request, $payment);
 
         return [
-            'can_check' => $canReview,
-            'can_approve' => $canApprove,
-            'can_return' => in_array($status, ['pending', 'checked'], true) && $this->canDecideCurrentStage($request, $payment),
-            'can_reject' => in_array($status, ['pending', 'checked'], true) && $this->canDecideCurrentStage($request, $payment),
-            'can_mark_paid' => $status === 'approved' && $this->canMarkPaid($request, $payment),
-            'can_delete' => in_array($status, ['pending', 'checked'], true) && $this->canRole($request, self::CHECK_APPROVE_ROLES),
+            'permissions' => $permissions,
+            'can_check' => $permissions['can_check'],
+            'can_approve' => $permissions['can_approve'],
+            'can_return' => $permissions['can_return'],
+            'can_reject' => $permissions['can_reject'],
+            'can_mark_paid' => $permissions['can_record_payment'],
+            'can_delete' => false,
         ];
     }
 
@@ -241,8 +245,85 @@ class VendorPaymentService extends VendorBaseService
                 'workflow_progress' => $progress,
                 'workflow_flow' => $this->paymentWorkflowFlow($row, $progress),
             ],
+            $this->paymentActors($row),
             $this->paymentPermissions($request, $payment),
         );
+    }
+
+    private function paymentActors(array $row): array
+    {
+        return [
+            'requested_by_actor' => $this->actorPayload(
+                (int) ($row['created_by'] ?? 0),
+                $row['created_by_full_name'] ?? null,
+                $row['created_by_name_code'] ?? null,
+            ),
+            'reviewed_by_actor' => $this->actorPayload(
+                (int) ($row['checked_by'] ?? 0),
+                $row['checked_by_full_name'] ?? null,
+                $row['checked_by_name_code'] ?? null,
+            ),
+            'approved_by_actor' => $this->actorPayload(
+                (int) ($row['approved_by'] ?? 0),
+                $row['approved_by_full_name'] ?? null,
+                $row['approved_by_name_code'] ?? null,
+            ),
+            'paid_by_actor' => $this->actorPayload(
+                (int) ($row['paid_by'] ?? 0),
+                $row['paid_by_full_name'] ?? null,
+                $row['paid_by_name_code'] ?? null,
+            ),
+        ];
+    }
+
+    private function actorPayload(int $staffId, mixed $fullName, mixed $nameCode): ?array
+    {
+        $fullName = trim((string) $fullName);
+        $nameCode = trim((string) $nameCode);
+        if ($staffId <= 0 && $fullName === '' && $nameCode === '') {
+            return null;
+        }
+
+        $display = match (true) {
+            $fullName !== '' && $nameCode !== '' => "{$fullName} ({$nameCode})",
+            $fullName !== '' => $fullName,
+            $nameCode !== '' => $nameCode,
+            default => "Historical actor unavailable (Staff #{$staffId})",
+        };
+
+        return [
+            'staff_id' => $staffId > 0 ? $staffId : null,
+            'full_name' => $fullName,
+            'name_code' => $nameCode,
+            'display' => $display,
+        ];
+    }
+
+    private function paymentDetailQuery(int $paymentId)
+    {
+        return DB::table('vendor_payments as vp')
+            ->leftJoin('vendor_main_details as vmd', 'vp.vendor_id', '=', 'vmd.vendor_id')
+            ->leftJoin('projects_main as pm', 'vp.project_id', '=', 'pm.id')
+            ->leftJoin('staff_general as sg_created', 'vp.created_by', '=', 'sg_created.staff_id')
+            ->leftJoin('staff_general as sg_checked', 'vp.checked_by', '=', 'sg_checked.staff_id')
+            ->leftJoin('staff_general as sg_approved', 'vp.approved_by', '=', 'sg_approved.staff_id')
+            ->leftJoin('staff_general as sg_paid', 'vp.paid_by', '=', 'sg_paid.staff_id')
+            ->where('vp.id', $paymentId)
+            ->whereNull('vp.deleted_at')
+            ->select([
+                'vp.*',
+                'vmd.vendor_name',
+                'pm.project_name',
+                $this->projectDescriptionColumn(),
+                DB::raw('COALESCE(vp.created_by_full_name, sg_created.full_name) as created_by_full_name'),
+                DB::raw('COALESCE(vp.created_by_name_code, sg_created.name_code) as created_by_name_code'),
+                DB::raw('sg_checked.full_name as checked_by_full_name'),
+                DB::raw('sg_checked.name_code as checked_by_name_code'),
+                DB::raw('sg_approved.full_name as approved_by_full_name'),
+                DB::raw('sg_approved.name_code as approved_by_name_code'),
+                DB::raw('sg_paid.full_name as paid_by_full_name'),
+                DB::raw('sg_paid.name_code as paid_by_name_code'),
+            ]);
     }
 
     private function paymentWorkflowProgress(array $row): array
@@ -418,7 +499,10 @@ class VendorPaymentService extends VendorBaseService
         $query = DB::table('vendor_payments as vp')
             ->leftJoin('vendor_main_details as vmd', 'vp.vendor_id', '=', 'vmd.vendor_id')
             ->leftJoin('projects_main as pm', 'vp.project_id', '=', 'pm.id')
+            ->leftJoin('staff_general as sg_created', 'vp.created_by', '=', 'sg_created.staff_id')
+            ->leftJoin('staff_general as sg_checked', 'vp.checked_by', '=', 'sg_checked.staff_id')
             ->leftJoin('staff_general as sg_approved', 'vp.approved_by', '=', 'sg_approved.staff_id')
+            ->leftJoin('staff_general as sg_paid', 'vp.paid_by', '=', 'sg_paid.staff_id')
             ->whereNull('vp.deleted_at')
             ->select([
                 'vp.id',
@@ -453,13 +537,35 @@ class VendorPaymentService extends VendorBaseService
                 $this->vendorPaymentColumn('current_approval_level'),
                 $this->vendorPaymentColumn('workflow_progress_json'),
                 $this->vendorPaymentColumn('workflow_settings_snapshot_json'),
+                $this->vendorPaymentColumn('version'),
+                $this->vendorPaymentColumn('project_vendor_assignment_id'),
+                $this->vendorPaymentColumn('parent_payment_id'),
+                $this->vendorPaymentColumn('revision_number'),
+                $this->vendorPaymentColumn('superseded_by_payment_id'),
+                $this->vendorPaymentColumn('cancelled_at'),
+                $this->vendorPaymentColumn('cancelled_by'),
+                $this->vendorPaymentColumn('cancellation_reason'),
+                $this->vendorPaymentColumn('vendor_name_snapshot'),
+                $this->vendorPaymentColumn('project_name_snapshot'),
+                $this->vendorPaymentColumn('client_name_snapshot'),
+                $this->vendorPaymentColumn('payment_terms_snapshot'),
+                $this->vendorPaymentColumn('award_value_snapshot'),
+                $this->vendorPaymentColumn('receipt_original_name'),
+                $this->vendorPaymentColumn('receipt_mime_type'),
+                $this->vendorPaymentColumn('receipt_size'),
+                $this->vendorPaymentColumn('receipt_state'),
                 'vp.payment_type',
                 'vp.receipt_path',
                 'vp.created_by',
-                'vp.created_by_full_name',
-                'vp.created_by_name_code',
+                DB::raw('COALESCE(vp.created_by_full_name, sg_created.full_name) as created_by_full_name'),
+                DB::raw('COALESCE(vp.created_by_name_code, sg_created.name_code) as created_by_name_code'),
                 'vp.approved_by',
+                DB::raw('sg_checked.full_name as checked_by_full_name'),
+                DB::raw('sg_checked.name_code as checked_by_name_code'),
+                DB::raw('sg_approved.full_name as approved_by_full_name'),
                 DB::raw('sg_approved.name_code as approved_by_name_code'),
+                DB::raw('sg_paid.full_name as paid_by_full_name'),
+                DB::raw('sg_paid.name_code as paid_by_name_code'),
             ]);
 
         if (! empty($data['year'])) {
@@ -504,7 +610,7 @@ class VendorPaymentService extends VendorBaseService
         $query = DB::table('vendor_payments as vp')
             ->leftJoin('vendor_main_details as vmd', 'vp.vendor_id', '=', 'vmd.vendor_id')
             ->whereNull('vp.deleted_at')
-            ->whereRaw("LOWER(COALESCE(vp.status, '')) = ?", ['paid'])
+            ->whereIn(DB::raw("LOWER(COALESCE(vp.status, ''))"), ['paid', 'partially paid'])
             ->when(Schema::hasColumn('vendor_payments', 'paid_date'), fn ($query) => $query->whereNotNull('vp.paid_date'))
             ->select([
                 'vp.vendor_id',
@@ -552,7 +658,7 @@ class VendorPaymentService extends VendorBaseService
             ->leftJoin('projects_main as pm', 'vp.project_id', '=', 'pm.id')
             ->where('vp.vendor_id', $vendorId)
             ->whereNull('vp.deleted_at')
-            ->whereRaw("LOWER(COALESCE(vp.status, '')) = ?", ['paid'])
+            ->whereIn(DB::raw("LOWER(COALESCE(vp.status, ''))"), ['paid', 'partially paid'])
             ->when(Schema::hasColumn('vendor_payments', 'paid_date'), fn ($query) => $query->whereNotNull('vp.paid_date'));
 
         if (Schema::hasColumn('vendor_payments', 'paid_by') && Schema::hasTable('staff_general')) {
@@ -610,82 +716,80 @@ class VendorPaymentService extends VendorBaseService
 
     public function storePayment(StoreVendorPaymentRequest $request)
     {
-        $data = $request->validated();
-        $staffId = (int) $request->session()->get('staff_id', 0);
-        $fullName = (string) $request->session()->get('full_name', '');
-        $nameCode = (string) $request->session()->get('name_code', '');
+        return $this->lifecycle()->store($request);
+    }
 
-        if ($staffId <= 0) {
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
+    public function showPayment(Request $request, int $paymentId): JsonResponse
+    {
+        $row = $this->paymentDetailQuery($paymentId)->first();
+        if (! $row) {
+            return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
         }
 
-        $receiptPath = null;
-        if ($request->hasFile('receipt')) {
-            $file = $request->file('receipt');
-            $year = now()->format('Y');
-            $month = now()->format('m');
-            $filename = 'receipt_'.Str::uuid()->toString().'.'.$file->getClientOriginalExtension();
-            $storedPath = "payments/{$year}/{$month}/{$filename}";
+        $payment = $this->normalizePaymentRowForRequest((array) $row, $request);
+        $payment['transactions'] = $this->lifecycle()->transactions($paymentId);
+        $payment['events'] = Schema::hasTable('vendor_payment_events')
+            ? DB::table('vendor_payment_events')->where('vendor_payment_id', $paymentId)->orderByDesc('created_at')->get()->map(fn ($event) => (array) $event)->all()
+            : [];
 
-            $receiptPath = AppFilePaths::storeFileAs("payments/{$year}/{$month}", $file, $filename);
+        return response()->json(['status' => 'success', 'data' => $payment]);
+    }
+
+    public function paymentInvoice(Request $request, int $paymentId)
+    {
+        $payment = DB::table('vendor_payments')->where('id', $paymentId)->whereNull('deleted_at')->first();
+        if (! $payment || empty($payment->receipt_path) || ! AppFilePaths::storedPathExists((string) $payment->receipt_path)) {
+            return response()->json(['status' => 'error', 'message' => 'Invoice attachment is unavailable.'], 404);
         }
 
-        $workflow = $this->workflow();
-        $initialStatus = $workflow->initialStatus();
-        $workflowColumns = $this->optionalUpdateColumns([
-            'current_review_level' => $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_REVIEW) ? 1 : null,
-            'current_approval_level' => $workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_APPROVAL) ? 1 : null,
-            'workflow_progress_json' => json_encode([]),
-            'workflow_settings_snapshot_json' => $workflow->snapshot(),
-        ]);
-
-        try {
-            $paymentId = DB::table('vendor_payments')->insertGetId(array_merge([
-                'vendor_id' => $data['vendor_id'],
-                'project_id' => $data['project_id'] ?? null,
-                'payment_context' => $data['payment_context'],
-                'payment_type' => $data['payment_type'],
-                'amount' => $data['amount'],
-                'method' => $data['method'],
-                'status' => $initialStatus,
-                'remarks' => $data['remarks'] ?? '',
-                'receipt_path' => $receiptPath,
-                'created_by' => $staffId,
-                'created_by_full_name' => $fullName,
-                'created_by_name_code' => $nameCode,
-            ], $workflowColumns));
-        } catch (\Throwable $e) {
-            report($e);
-
-            return response()->json(['status' => 'error', 'message' => 'Database error'], 500);
+        $localPath = AppFilePaths::storedPathLocalPath((string) $payment->receipt_path);
+        $expectedHash = strtolower(trim((string) ($payment->receipt_sha256 ?? '')));
+        if ($expectedHash !== '' && $localPath !== null) {
+            $actualHash = hash_file('sha256', $localPath);
+            if (! is_string($actualHash) || ! hash_equals($expectedHash, strtolower($actualHash))) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Invoice attachment failed integrity verification.',
+                ], 409);
+            }
         }
 
-        if ($workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_REVIEW)) {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_REVIEW, 1, [
-                'type' => 'vendor_payment_submitted',
-                'title' => 'Vendor payment requires review',
-                'message' => "Payment request #{$paymentId} is pending reviewer action.",
-                'severity' => 'warning',
-            ]);
-        } elseif ($workflow->stageEnabled(VendorPaymentWorkflowService::STAGE_APPROVAL)) {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_APPROVAL, 1, [
-                'type' => 'vendor_payment_checked',
-                'title' => 'Vendor payment ready for approval',
-                'message' => "Payment request #{$paymentId} is ready for approver action.",
-                'severity' => 'primary',
-            ]);
-        } else {
-            $workflow->notifyStage($request, $paymentId, VendorPaymentWorkflowService::STAGE_FINANCE, 1, [
-                'type' => 'vendor_payment_finance_requested',
-                'title' => 'Vendor payment ready for finance',
-                'message' => "Payment request #{$paymentId} is ready for finance payment.",
-                'severity' => 'primary',
-            ]);
-        }
+        $response = AppFilePaths::storedPathResponse(
+            (string) $payment->receipt_path,
+            (string) (($payment->receipt_original_name ?? null) ?: basename((string) $payment->receipt_path)),
+        );
+        $response->headers->set('Cache-Control', 'private, no-store, max-age=0');
+        $response->headers->set('X-Content-Type-Options', 'nosniff');
 
-        $this->auditLog->log($request, "Created vendor payment request #{$paymentId}");
+        return $response;
+    }
 
-        return response()->json(['status' => 'success', 'id' => $paymentId]);
+    public function updatePayment(UpdateVendorPaymentRequest $request, int $paymentId): JsonResponse
+    {
+        return $this->lifecycle()->update($request, $paymentId);
+    }
+
+    public function cancelPayment(CancelVendorPaymentRequest $request, int $paymentId): JsonResponse
+    {
+        return $this->lifecycle()->cancel($request, $paymentId);
+    }
+
+    public function resubmitPayment(ResubmitVendorPaymentRequest $request, int $paymentId): JsonResponse
+    {
+        return $this->lifecycle()->resubmit($request, $paymentId);
+    }
+
+    public function recordPaymentTransaction(RecordVendorPaymentTransactionRequest $request, int $paymentId): JsonResponse
+    {
+        return $this->lifecycle()->recordTransaction($request, $paymentId);
+    }
+
+    public function reversePaymentTransaction(
+        ReverseVendorPaymentTransactionRequest $request,
+        int $paymentId,
+        int $transactionId,
+    ): JsonResponse {
+        return $this->lifecycle()->reverseTransaction($request, $paymentId, $transactionId);
     }
 
     public function checkPayment(CheckVendorPaymentRequest $request, ?int $id = null)
@@ -712,12 +816,12 @@ class VendorPaymentService extends VendorBaseService
         if (! $workflow->stageEnabledForPayment($payment, VendorPaymentWorkflowService::STAGE_REVIEW)) {
             return response()->json(['status' => 'error', 'message' => 'Review is not enabled for vendor payments.'], 409);
         }
-        $level = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_REVIEW);
-        if (! $workflow->canActForPayment($request, $payment, VendorPaymentWorkflowService::STAGE_REVIEW, $level)) {
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
-        }
         if ($this->normalizeStatus($payment->status ?? '') !== 'pending') {
             return response()->json(['status' => 'error', 'message' => 'Only pending payments can be reviewed.'], 409);
+        }
+        $level = $workflow->currentLevel($payment, VendorPaymentWorkflowService::STAGE_REVIEW);
+        if (! $this->authorization()->can($request, $payment, 'can_check')) {
+            return response()->json(['status' => 'error', 'message' => 'You cannot review a payment you created or are not assigned to review.'], 403);
         }
 
         $remarks = trim((string) ($data['remarks'] ?? '')) ?: null;
@@ -743,6 +847,9 @@ class VendorPaymentService extends VendorBaseService
             'current_review_level' => $isFinalReview ? $level : $level + 1,
             'current_approval_level' => $isFinalReview && $approvalEnabled ? 1 : ($payment->current_approval_level ?? null),
             'workflow_progress_json' => $workflow->appendProgress($payment, VendorPaymentWorkflowService::STAGE_REVIEW, $level, $staffId, $remarks),
+            'version' => (int) ($payment->version ?? 1) + 1,
+            'updated_at' => now(),
+            'updated_by' => $staffId,
         ]));
 
         if (! $this->applyWorkflowTransition($paymentId, 'Pending', $updates, 'current_review_level', $level)) {
@@ -816,6 +923,9 @@ class VendorPaymentService extends VendorBaseService
         if ($this->normalizeStatus($payment->status ?? '') !== 'checked') {
             return response()->json(['status' => 'error', 'message' => 'Only checked payments can be approved.'], 409);
         }
+        if (! $this->authorization()->can($request, $payment, 'can_approve')) {
+            return response()->json(['status' => 'error', 'message' => 'The requester or a prior reviewer cannot approve this payment.'], 403);
+        }
 
         $remarks = trim((string) ($data['remarks'] ?? '')) ?: null;
         $approvalLevels = $workflow->stageLevelsForPayment($payment, VendorPaymentWorkflowService::STAGE_APPROVAL);
@@ -830,6 +940,9 @@ class VendorPaymentService extends VendorBaseService
             'approval_remarks' => $remarks,
             'current_approval_level' => $isFinalApproval ? $level : $level + 1,
             'workflow_progress_json' => $workflow->appendProgress($payment, VendorPaymentWorkflowService::STAGE_APPROVAL, $level, $staffId, $remarks),
+            'version' => (int) ($payment->version ?? 1) + 1,
+            'updated_at' => now(),
+            'updated_by' => $staffId,
         ]));
 
         if (! $this->applyWorkflowTransition($paymentId, 'Checked', $updates, 'current_approval_level', $level)) {
@@ -892,8 +1005,9 @@ class VendorPaymentService extends VendorBaseService
         if (! $payment) {
             return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
         }
-        if (! $this->canDecideCurrentStage($request, $payment)) {
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
+        $capability = $decision === 'Returned' ? 'can_return' : 'can_reject';
+        if (! $this->authorization()->can($request, $payment, $capability)) {
+            return response()->json(['status' => 'error', 'message' => 'You cannot decide a payment you created or are not assigned to act on.'], 403);
         }
         $status = $this->normalizeStatus($payment->status ?? '');
         if (! in_array($status, ['pending', 'checked'], true)) {
@@ -907,6 +1021,9 @@ class VendorPaymentService extends VendorBaseService
             "{$prefix}_by" => $staffId,
             "{$prefix}_at" => now(),
             "{$prefix}_remarks" => trim((string) ($data['remarks'] ?? '')) ?: null,
+            'version' => (int) ($payment->version ?? 1) + 1,
+            'updated_at' => now(),
+            'updated_by' => $staffId,
         ]));
 
         if (! $this->applyWorkflowTransition($paymentId, $status, $updates)) {
@@ -943,8 +1060,8 @@ class VendorPaymentService extends VendorBaseService
         if (! $payment) {
             return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
         }
-        if ($staffId <= 0 || ! $this->canMarkPaid($request, $payment)) {
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
+        if ($staffId <= 0 || ! $this->authorization()->can($request, $payment, 'can_record_payment')) {
+            return response()->json(['status' => 'error', 'message' => 'The requester or a prior reviewer cannot record this payment.'], 403);
         }
         if ($this->normalizeStatus($payment->status ?? '') !== 'approved') {
             return response()->json(['status' => 'error', 'message' => 'Only approved payments can be marked paid.'], 409);
@@ -958,10 +1075,27 @@ class VendorPaymentService extends VendorBaseService
             'paid_by' => $staffId,
             'paid_at' => now(),
             'paid_remarks' => trim((string) ($data['remarks'] ?? '')) ?: null,
+            'version' => (int) ($payment->version ?? 1) + 1,
+            'updated_at' => now(),
+            'updated_by' => $staffId,
         ]));
 
         if (! $this->applyWorkflowTransition($paymentId, 'Approved', $updates)) {
             return $this->transitionConflictResponse();
+        }
+
+        if (Schema::hasTable('vendor_payment_transactions')) {
+            DB::table('vendor_payment_transactions')->insert([
+                'vendor_payment_id' => $paymentId,
+                'idempotency_key' => (string) Str::uuid(),
+                'amount' => $data['paid_amount'] ?? $payment->amount,
+                'paid_date' => $data['paid_date'],
+                'method' => $payment->method ?? null,
+                'reference_number' => 'LEGACY-'.strtoupper(Str::random(12)),
+                'remarks' => trim((string) ($data['remarks'] ?? '')) ?: null,
+                'created_by' => $staffId,
+                'created_at' => now(),
+            ]);
         }
 
         $this->resolvePaymentNotifications($paymentId);
@@ -979,50 +1113,9 @@ class VendorPaymentService extends VendorBaseService
 
     public function deletePayment(DeleteVendorPaymentRequest $request, ?int $id = null)
     {
-        $data = $request->validated();
-        $staffId = (int) $request->session()->get('staff_id', 0);
-
-        if ($id !== null && $id > 0 && isset($data['id']) && (int) $data['id'] !== $id) {
-            return response()->json(['status' => 'error', 'message' => 'Payment ID mismatch.'], 409);
-        }
-
-        $paymentId = $this->resolveId($id, $data, 'id');
-
-        if (! $paymentId) {
-            return response()->json(['status' => 'error', 'message' => 'Missing payment ID'], 400);
-        }
-        if ($staffId <= 0) {
-            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
-        }
-
-        $payment = DB::table('vendor_payments')
-            ->where('id', $paymentId)
-            ->whereNull('deleted_at')
-            ->first();
-
-        if (! $payment) {
-            return response()->json(['status' => 'error', 'message' => 'Payment record not found.'], 404);
-        }
-
-        if (in_array($this->normalizeStatus($payment->status ?? ''), ['approved', 'paid'], true)) {
-            return response()->json(['status' => 'error', 'message' => 'Approved or paid payments cannot be deleted.'], 409);
-        }
-
-        $affected = DB::table('vendor_payments')
-            ->where('id', $paymentId)
-            ->whereNull('deleted_at')
-            ->update([
-                'deleted_at' => now(),
-                'deleted_by' => $staffId,
-            ]);
-
-        if ($affected < 1) {
-            return response()->json(['status' => 'error', 'message' => 'No payment deleted or already deleted.']);
-        }
-
-        $this->resolvePaymentNotifications($paymentId);
-        $this->auditLog->log($request, "Soft deleted payment ID #{$paymentId}");
-
-        return response()->json(['status' => 'success', 'message' => 'Payment soft deleted.']);
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Payment requests are retained for audit. Cancel an eligible request instead.',
+        ], 403);
     }
 }

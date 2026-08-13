@@ -1729,10 +1729,10 @@ class LeaveHrVendorAuthorizationTest extends TestCase
 
         $this->actingSession($this->managerSession())
             ->deleteJson("/vendor-payments/{$paymentId}")
-            ->assertOk()
-            ->assertJsonPath('status', 'success');
+            ->assertForbidden()
+            ->assertJsonPath('status', 'error');
 
-        $this->assertNotNull(DB::table('vendor_payments')->where('id', $paymentId)->value('deleted_at'));
+        $this->assertNull(DB::table('vendor_payments')->where('id', $paymentId)->value('deleted_at'));
     }
 
     public function test_vendor_payment_approve_rejects_route_body_id_mismatch(): void
