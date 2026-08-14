@@ -92,6 +92,15 @@ class QuoteRecordTrainingSpecialService
         return $this->trainingQuoteRecordService()->pdfTraining($request, $id);
     }
 
+    public function wordTraining(Request $request, int $id = 0): mixed
+    {
+        if ($denial = $this->approvalDenial($request, 'training', $id)) {
+            return $denial;
+        }
+
+        return $this->trainingQuoteRecordService()->wordTraining($request, $id);
+    }
+
     public function syncClientTraining(SyncClientRequest $request): JsonResponse
     {
         return $this->trainingQuoteRecordService()->syncClientTraining($request);
@@ -163,6 +172,15 @@ class QuoteRecordTrainingSpecialService
         }
 
         return $this->specialTrainingQuoteRecordService()->pdfSpecial($request, $id);
+    }
+
+    public function wordSpecial(Request $request, int $id = 0): mixed
+    {
+        if ($denial = $this->approvalDenial($request, 'special', $id)) {
+            return $denial;
+        }
+
+        return $this->specialTrainingQuoteRecordService()->wordSpecial($request, $id);
     }
 
     public function syncClientSpecial(SyncClientRequest $request): JsonResponse

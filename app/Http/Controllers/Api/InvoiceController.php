@@ -7,6 +7,7 @@ use App\Services\Invoices\InvoicePaymentService;
 use App\Services\Invoices\InvoicePdfService;
 use App\Services\Invoices\InvoiceQuoteLookupService;
 use App\Services\Invoices\InvoiceService;
+use App\Services\Invoices\InvoiceWordService;
 use App\Services\Invoices\Jd14Service;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -88,6 +89,16 @@ class InvoiceController extends Controller
     public function receiptPdf(Request $request, int $id = 0)
     {
         return $this->pdfService()->receiptPdf($request, $id);
+    }
+
+    public function invoiceWord(Request $request, int $id = 0)
+    {
+        return app(InvoiceWordService::class)->invoice($request, $id);
+    }
+
+    public function receiptWord(Request $request, int $id = 0)
+    {
+        return app(InvoiceWordService::class)->receipt($request, $id);
     }
 
     // Quote lookups for invoice form population

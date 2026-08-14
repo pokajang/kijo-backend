@@ -7,10 +7,8 @@ use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class IhQuoteRecordService
 {
@@ -32,6 +30,11 @@ class IhQuoteRecordService
     private function ihQuoteRecordPdfService(): IhQuoteRecordPdfService
     {
         return app(IhQuoteRecordPdfService::class);
+    }
+
+    private function wordService(): ServiceQuoteRecordWordService
+    {
+        return app(ServiceQuoteRecordWordService::class);
     }
 
     private function ihQuoteRecordClientSyncService(): IhQuoteRecordClientSyncService
@@ -82,6 +85,11 @@ class IhQuoteRecordService
     public function pdfIh(Request $request, int $id = 0)
     {
         return $this->ihQuoteRecordPdfService()->pdfIh($request, $id);
+    }
+
+    public function wordIh(Request $request, int $id = 0): mixed
+    {
+        return $this->wordService()->downloadQuote($request, 'ih', $id);
     }
 
     public function syncClientIh(SyncClientRequest $request): JsonResponse

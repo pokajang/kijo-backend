@@ -6,12 +6,12 @@
     <table class="header-table">
         <tr>
             <td class="header-left">
-                <div class="company-name">AMIOSH RESOURCES SDN BHD (1062417W)</div>
+                <div class="company-name">{{ \App\Support\EquipmentQuotationLayout::COMPANY_NAME }}</div>
                 <div class="company-address">
-                    No.5-2, Jalan Seri Putra 1/5, Bandar Seri Putra 1/5,<br>
-                    Bandar Seri Putra Bangi, 43000 Kajang Selangor, Malaysia.
+                    {{ \App\Support\EquipmentQuotationLayout::COMPANY_ADDRESS_LINE_1 }}<br>
+                    {{ \App\Support\EquipmentQuotationLayout::COMPANY_ADDRESS_LINE_2 }}
                 </div>
-                <div class="company-contact">amiosh.com&nbsp;&nbsp;03-8210 8726</div>
+                <div class="company-contact">{{ \App\Support\EquipmentQuotationLayout::COMPANY_CONTACT }}</div>
             </td>
             <td class="header-right">
                 @if(!empty($logoDataUri))

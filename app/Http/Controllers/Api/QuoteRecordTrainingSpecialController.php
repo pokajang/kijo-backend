@@ -9,11 +9,9 @@ use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SpecialLineItemsByServiceRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
+use App\Services\QuoteRecords\QuoteRecordTrainingSpecialService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use App\Services\QuoteRecords\QuoteRecordTrainingSpecialService;
 
 class QuoteRecordTrainingSpecialController extends Controller
 {
@@ -62,12 +60,18 @@ class QuoteRecordTrainingSpecialController extends Controller
         if ($id > 0) {
             $request->merge(['quote_id' => $id, 'id' => $id]);
         }
+
         return $this->quoteRecordTrainingSpecialService()->relatedDocsTraining($request);
     }
 
     public function pdfTraining(Request $request, int $id = 0)
     {
         return $this->quoteRecordTrainingSpecialService()->pdfTraining($request, $id);
+    }
+
+    public function wordTraining(Request $request, int $id = 0): mixed
+    {
+        return $this->quoteRecordTrainingSpecialService()->wordTraining($request, $id);
     }
 
     public function syncClientTraining(SyncClientRequest $request): JsonResponse
@@ -115,12 +119,18 @@ class QuoteRecordTrainingSpecialController extends Controller
         if ($id > 0) {
             $request->merge(['quote_id' => $id, 'id' => $id]);
         }
+
         return $this->quoteRecordTrainingSpecialService()->relatedDocsSpecial($request);
     }
 
     public function pdfSpecial(Request $request, int $id = 0)
     {
         return $this->quoteRecordTrainingSpecialService()->pdfSpecial($request, $id);
+    }
+
+    public function wordSpecial(Request $request, int $id = 0): mixed
+    {
+        return $this->quoteRecordTrainingSpecialService()->wordSpecial($request, $id);
     }
 
     public function syncClientSpecial(SyncClientRequest $request): JsonResponse

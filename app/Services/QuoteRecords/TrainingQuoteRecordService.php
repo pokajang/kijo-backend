@@ -5,13 +5,10 @@ namespace App\Services\QuoteRecords;
 use App\Http\Requests\QuoteRecord\AddFollowUpRequest;
 use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
-use App\Http\Requests\QuoteRecord\SpecialLineItemsByServiceRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class TrainingQuoteRecordService
 {
@@ -33,6 +30,11 @@ class TrainingQuoteRecordService
     private function trainingQuoteRecordPdfService(): TrainingQuoteRecordPdfService
     {
         return app(TrainingQuoteRecordPdfService::class);
+    }
+
+    private function wordService(): ServiceQuoteRecordWordService
+    {
+        return app(ServiceQuoteRecordWordService::class);
     }
 
     private function trainingQuoteRecordClientSyncService(): TrainingQuoteRecordClientSyncService
@@ -83,6 +85,11 @@ class TrainingQuoteRecordService
     public function pdfTraining(Request $request, int $id = 0)
     {
         return $this->trainingQuoteRecordPdfService()->pdfTraining($request, $id);
+    }
+
+    public function wordTraining(Request $request, int $id = 0): mixed
+    {
+        return $this->wordService()->downloadQuote($request, 'training', $id);
     }
 
     public function syncClientTraining(SyncClientRequest $request): JsonResponse

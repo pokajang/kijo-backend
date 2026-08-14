@@ -7,10 +7,8 @@ use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class ManpowerQuoteRecordService
 {
@@ -32,6 +30,11 @@ class ManpowerQuoteRecordService
     private function manpowerQuoteRecordPdfService(): ManpowerQuoteRecordPdfService
     {
         return app(ManpowerQuoteRecordPdfService::class);
+    }
+
+    private function wordService(): ServiceQuoteRecordWordService
+    {
+        return app(ServiceQuoteRecordWordService::class);
     }
 
     private function manpowerQuoteRecordClientSyncService(): ManpowerQuoteRecordClientSyncService
@@ -82,6 +85,11 @@ class ManpowerQuoteRecordService
     public function pdfManpower(Request $request, int $id = 0): mixed
     {
         return $this->manpowerQuoteRecordPdfService()->pdfManpower($request, $id);
+    }
+
+    public function wordManpower(Request $request, int $id = 0): mixed
+    {
+        return $this->wordService()->downloadQuote($request, 'manpower', $id);
     }
 
     public function syncClientManpower(SyncClientRequest $request): JsonResponse

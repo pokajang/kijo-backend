@@ -8,14 +8,9 @@ use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
+use App\Services\QuoteRecords\QuoteRecordService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use App\Services\QuoteRecords\QuoteRecordService;
 
 class QuoteRecordController extends Controller
 {
@@ -64,12 +59,18 @@ class QuoteRecordController extends Controller
         if ($id > 0) {
             $request->merge(['quote_id' => $id, 'id' => $id]);
         }
+
         return $this->quoteRecordService()->relatedDocsEquipment($request);
     }
 
     public function pdfEquipment(Request $request, int $id = 0): mixed
     {
         return $this->quoteRecordService()->pdfEquipment($request, $id);
+    }
+
+    public function wordEquipment(Request $request, int $id = 0): mixed
+    {
+        return $this->quoteRecordService()->wordEquipment($request, $id);
     }
 
     public function syncClientEquipment(SyncClientRequest $request): JsonResponse
@@ -117,12 +118,18 @@ class QuoteRecordController extends Controller
         if ($id > 0) {
             $request->merge(['quote_id' => $id, 'id' => $id]);
         }
+
         return $this->quoteRecordService()->relatedDocsIh($request);
     }
 
     public function pdfIh(Request $request, int $id = 0)
     {
         return $this->quoteRecordService()->pdfIh($request, $id);
+    }
+
+    public function wordIh(Request $request, int $id = 0): mixed
+    {
+        return $this->quoteRecordService()->wordIh($request, $id);
     }
 
     public function syncClientIh(SyncClientRequest $request): JsonResponse
@@ -170,12 +177,18 @@ class QuoteRecordController extends Controller
         if ($id > 0) {
             $request->merge(['quote_id' => $id, 'id' => $id]);
         }
+
         return $this->quoteRecordService()->relatedDocsManpower($request);
     }
 
     public function pdfManpower(Request $request, int $id = 0): mixed
     {
         return $this->quoteRecordService()->pdfManpower($request, $id);
+    }
+
+    public function wordManpower(Request $request, int $id = 0): mixed
+    {
+        return $this->quoteRecordService()->wordManpower($request, $id);
     }
 
     public function syncClientManpower(SyncClientRequest $request): JsonResponse

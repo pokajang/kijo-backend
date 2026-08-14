@@ -96,6 +96,15 @@ class QuoteRecordService
         return $this->equipmentQuoteRecordService()->pdfEquipment($request, $id);
     }
 
+    public function wordEquipment(Request $request, int $id = 0): mixed
+    {
+        if ($denial = $this->approvalDenial($request, 'equipment', $id)) {
+            return $denial;
+        }
+
+        return $this->equipmentQuoteRecordService()->wordEquipment($request, $id);
+    }
+
     public function syncClientEquipment(SyncClientRequest $request): JsonResponse
     {
         return $this->equipmentQuoteRecordService()->syncClientEquipment($request);
@@ -169,6 +178,15 @@ class QuoteRecordService
         return $this->ihQuoteRecordService()->pdfIh($request, $id);
     }
 
+    public function wordIh(Request $request, int $id = 0): mixed
+    {
+        if ($denial = $this->approvalDenial($request, 'ih', $id)) {
+            return $denial;
+        }
+
+        return $this->ihQuoteRecordService()->wordIh($request, $id);
+    }
+
     public function syncClientIh(SyncClientRequest $request): JsonResponse
     {
         return $this->ihQuoteRecordService()->syncClientIh($request);
@@ -240,6 +258,15 @@ class QuoteRecordService
         }
 
         return $this->manpowerQuoteRecordService()->pdfManpower($request, $id);
+    }
+
+    public function wordManpower(Request $request, int $id = 0): mixed
+    {
+        if ($denial = $this->approvalDenial($request, 'manpower', $id)) {
+            return $denial;
+        }
+
+        return $this->manpowerQuoteRecordService()->wordManpower($request, $id);
     }
 
     public function syncClientManpower(SyncClientRequest $request): JsonResponse

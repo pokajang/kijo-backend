@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\EquipmentQuotationTerms;
 use App\Support\PdfText;
 use Tests\TestCase;
 
@@ -46,6 +47,7 @@ class EquipmentCommercialPdfLongTextTest extends TestCase
             'preparedByName' => 'Test Staff',
             'signOffTitle' => 'Consultant',
             'logoDataUri' => null,
+            'terms' => EquipmentQuotationTerms::all(),
         ])->render();
 
         $this->assertSentinels($html);

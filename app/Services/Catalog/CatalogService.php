@@ -6,14 +6,7 @@ use App\Http\Requests\Catalog\MarkSupplierPoPaidRequest;
 use App\Http\Requests\Catalog\StoreCatalogItemRequest;
 use App\Http\Requests\Catalog\StoreSupplierPoRequest;
 use App\Http\Requests\Catalog\UpdateCatalogItemRequest;
-use App\Services\AuditLogService;
-use App\Support\AppFilePaths;
-use Dompdf\Dompdf;
-use Dompdf\Options;
 use Illuminate\Http\Request;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 
 class CatalogService
 {
@@ -30,6 +23,11 @@ class CatalogService
     private function supplierPurchaseOrderPdfService(): SupplierPurchaseOrderPdfService
     {
         return app(SupplierPurchaseOrderPdfService::class);
+    }
+
+    private function supplierPurchaseOrderWordService(): SupplierPurchaseOrderWordService
+    {
+        return app(SupplierPurchaseOrderWordService::class);
     }
 
     public function index(Request $request)
@@ -82,4 +80,8 @@ class CatalogService
         return $this->supplierPurchaseOrderPdfService()->purchaseOrderPdf($request, $poId);
     }
 
+    public function purchaseOrderWord(Request $request, ?int $poId = null)
+    {
+        return $this->supplierPurchaseOrderWordService()->generate($request, $poId);
+    }
 }

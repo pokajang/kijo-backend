@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\DeliveryOrder\StoreDeliveryOrderRequest;
 use App\Http\Requests\DeliveryOrder\UpdateDeliveryOrderRequest;
 use App\Services\AuditLogService;
+use App\Services\DeliveryOrders\DeliveryOrderWordService;
 use App\Services\Equipment\EquipmentCommercialSnapshotService;
 use App\Support\AppFilePaths;
 use Dompdf\Dompdf;
@@ -327,6 +328,11 @@ class DeliveryOrderController extends Controller
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => "inline; filename=\"delivery-order-{$safeDoNumber}.pdf\"",
         ]);
+    }
+
+    public function word(Request $request, int $id)
+    {
+        return app(DeliveryOrderWordService::class)->generate($request, $id);
     }
 
     /** @param array<int, array<string, mixed>> $breakdown */

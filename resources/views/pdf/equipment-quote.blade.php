@@ -4,19 +4,23 @@
     <meta charset="utf-8">
     <title>Quotation &mdash; {{ $quoteRefNo ?? 'Equipment Quote' }}</title>
     <style>
-        @page { margin: 36mm 20mm 16mm 20mm; }
+        @php
+            $layout = \App\Support\EquipmentQuotationLayout::class;
+            $itemColumnPercentages = $layout::ITEM_COLUMN_PERCENTAGES;
+        @endphp
+        @page { margin: {{ $layout::MARGIN_TOP_MM }}mm {{ $layout::MARGIN_SIDE_MM }}mm {{ $layout::MARGIN_BOTTOM_MM }}mm {{ $layout::MARGIN_SIDE_MM }}mm; }
         body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.35; }
         p { margin: 0 0 2mm 0; }
 
         .pdf-header { position: fixed; top: -26mm; left: 0; right: 0; height: 24mm; color: #696969; margin-bottom: 0; }
         .header-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .header-table td { vertical-align: top; padding: 0; }
-        .header-left { width: 68%; text-align: left; }
-        .header-right { width: 32%; text-align: right; }
+        .header-left { width: {{ $layout::HEADER_LEFT_PERCENT }}%; text-align: left; }
+        .header-right { width: {{ $layout::HEADER_RIGHT_PERCENT }}%; text-align: right; }
         .company-name { font-size: 10pt; font-weight: 700; margin-bottom: 1.5mm; }
         .company-address { font-size: 10pt; line-height: 1.2; margin-bottom: 1.5mm; }
         .company-contact { font-size: 10pt; font-weight: 700; }
-        .company-logo { width: 42mm; height: auto; display: inline-block; margin-top: -1mm; }
+        .company-logo { width: {{ $layout::LOGO_WIDTH_MM }}mm; height: auto; display: inline-block; margin-top: -1mm; }
         .document-type { font-size: 10pt; font-weight: 700; margin-top: 2.2mm; letter-spacing: 0.3px; }
         .header-separator { margin-top: 1.3mm; border-bottom: 0.7px solid #696969; }
 
@@ -70,11 +74,11 @@
         <table class="items-table">
             <thead>
                 <tr>
-                    <th style="width:5%;">#</th>
-                    <th style="width:40%; text-align:left;">Item Description</th>
-                    <th style="width:10%;">Qty</th>
-                    <th style="width:20%;">Unit Price (RM)</th>
-                    <th style="width:25%;">Amount (RM)</th>
+                    @foreach($itemColumnPercentages as $columnIndex => $columnWidth)
+                        <th style="width:{{ $columnWidth }}%;{{ $columnIndex === 1 ? ' text-align:left;' : '' }}">
+                            {{ ['#', 'Item Description', 'Qty', 'Unit Price (RM)', 'Amount (RM)'][$columnIndex] }}
+                        </th>
+                    @endforeach
                 </tr>
             </thead>
             <tbody>
@@ -193,15 +197,9 @@
 
         <p class="terms-title" style="margin-top: 4mm;">Terms and Conditions</p>
         <ol>
-            <li>This quotation is valid for thirty (30) calendar days from the date of issuance and is subject to equipment availability at the time of confirmation.</li>
-            <li>All equipment prices are exclusive of SST unless expressly stated otherwise in this quotation.</li>
-            <li>Payment terms are strictly thirty (30) days from the invoice date unless otherwise agreed in writing by both parties.</li>
-            <li>Delivery and installation charges, where applicable, are not included unless explicitly specified in this quotation.</li>
-            <li>All equipment supplied shall be covered under the respective manufacturer's warranty and maintenance conditions.</li>
-            <li>The Client shall inspect all delivered equipment upon receipt and notify AMIOSH Resources Sdn. Bhd. in writing within three (3) days of any defects, damages, or discrepancies identified.</li>
-            <li>Ownership of all equipment shall remain with AMIOSH Resources Sdn. Bhd. until full payment has been received and cleared.</li>
-            <li>Requests for customization or special packaging may incur additional charges, subject to prior approval and written confirmation.</li>
-            <li>Returns, exchanges, or cancellations by the Client are subject to prior written approval and may incur restocking or administrative fees.</li>
+            @foreach($terms as $term)
+                <li>{{ $term }}</li>
+            @endforeach
         </ol>
     </main>
 </body>

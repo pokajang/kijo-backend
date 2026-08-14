@@ -201,6 +201,7 @@ Route::middleware('auth.session')->group(function () {
     Route::post('receivable-payments/{paymentId}/reverse', [ReceivablePaymentController::class, 'reverse'])
         ->whereNumber('paymentId');
     Route::get('delivery-orders/{id}/pdf', [DeliveryOrderController::class, 'pdf']);
+    Route::get('delivery-orders/{id}/word', [DeliveryOrderController::class, 'word']);
 
     // Batch 2 — Staff (legacy-compatible paths)
     // Staff (clean paths)
@@ -286,6 +287,8 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('catalog/purchase-orders/{poId}', [CatalogController::class, 'destroyPurchaseOrder']);
     Route::get('catalog/purchase-orders/pdf', [CatalogController::class, 'purchaseOrderPdf']);
     Route::get('catalog/purchase-orders/{poId}/pdf', [CatalogController::class, 'purchaseOrderPdf']);
+    Route::get('catalog/purchase-orders/word', [CatalogController::class, 'purchaseOrderWord']);
+    Route::get('catalog/purchase-orders/{poId}/word', [CatalogController::class, 'purchaseOrderWord']);
 
     // Batch 2 — Vendor + Vendor LOA (legacy-compatible paths)
 
@@ -659,6 +662,7 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('quote-records/equipment/{id}', [QuoteRecordController::class, 'destroyEquipment']);
     Route::get('quote-records/equipment/{id}/related-docs', [QuoteRecordController::class, 'relatedDocsEquipment']);
     Route::get('quote-records/equipment/{id}/pdf', [QuoteRecordController::class, 'pdfEquipment']);
+    Route::get('quote-records/equipment/{id}/word', [QuoteRecordController::class, 'wordEquipment']);
     Route::post('quote-records/equipment/{id}/sync-client', [QuoteRecordController::class, 'syncClientEquipment']);
 
     // IH
@@ -671,6 +675,7 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('quote-records/ih/{id}', [QuoteRecordController::class, 'destroyIh']);
     Route::get('quote-records/ih/{id}/related-docs', [QuoteRecordController::class, 'relatedDocsIh']);
     Route::get('quote-records/ih/{id}/pdf', [QuoteRecordController::class, 'pdfIh']);
+    Route::get('quote-records/ih/{id}/word', [QuoteRecordController::class, 'wordIh']);
     Route::post('quote-records/ih/{id}/sync-client', [QuoteRecordController::class, 'syncClientIh']);
 
     // Manpower
@@ -683,6 +688,7 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('quote-records/manpower/{id}', [QuoteRecordController::class, 'destroyManpower']);
     Route::get('quote-records/manpower/{id}/related-docs', [QuoteRecordController::class, 'relatedDocsManpower']);
     Route::get('quote-records/manpower/{id}/pdf', [QuoteRecordController::class, 'pdfManpower']);
+    Route::get('quote-records/manpower/{id}/word', [QuoteRecordController::class, 'wordManpower']);
     Route::post('quote-records/manpower/{id}/sync-client', [QuoteRecordController::class, 'syncClientManpower']);
 
     // Training
@@ -695,6 +701,7 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('quote-records/training/{id}', [QuoteRecordTrainingSpecialController::class, 'destroyTraining']);
     Route::get('quote-records/training/{id}/related-docs', [QuoteRecordTrainingSpecialController::class, 'relatedDocsTraining']);
     Route::get('quote-records/training/{id}/pdf', [QuoteRecordTrainingSpecialController::class, 'pdfTraining']);
+    Route::get('quote-records/training/{id}/word', [QuoteRecordTrainingSpecialController::class, 'wordTraining']);
     Route::post('quote-records/training/{id}/sync-client', [QuoteRecordTrainingSpecialController::class, 'syncClientTraining']);
 
     // Special
@@ -708,6 +715,7 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('quote-records/special/{id}', [QuoteRecordTrainingSpecialController::class, 'destroySpecial']);
     Route::get('quote-records/special/{id}/related-docs', [QuoteRecordTrainingSpecialController::class, 'relatedDocsSpecial']);
     Route::get('quote-records/special/{id}/pdf', [QuoteRecordTrainingSpecialController::class, 'pdfSpecial']);
+    Route::get('quote-records/special/{id}/word', [QuoteRecordTrainingSpecialController::class, 'wordSpecial']);
     Route::post('quote-records/special/{id}/sync-client', [QuoteRecordTrainingSpecialController::class, 'syncClientSpecial']);
 
     // ─── Batch 8 — Google Places & Contacts (legacy paths) ──────────────────────
@@ -781,6 +789,8 @@ Route::middleware('auth.session')->group(function () {
     Route::patch('invoices/{id}/hrd-claim-ref', [InvoiceController::class, 'updateHrdClaimRef']);
     Route::get('invoices/{id}/pdf', [InvoiceController::class, 'invoicePdf']);
     Route::get('invoices/{id}/receipt-pdf', [InvoiceController::class, 'receiptPdf']);
+    Route::get('invoices/{id}/word', [InvoiceController::class, 'invoiceWord']);
+    Route::get('invoices/{id}/receipt-word', [InvoiceController::class, 'receiptWord']);
     Route::get('invoices/quote/training/{id}', [InvoiceController::class, 'quoteTraining']);
     Route::get('invoices/quote/equipment/{id}', [InvoiceController::class, 'quoteEquipment']);
     Route::get('invoices/quote/manpower/{id}', [InvoiceController::class, 'quoteManpower']);

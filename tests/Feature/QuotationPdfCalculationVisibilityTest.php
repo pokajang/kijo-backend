@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Support\EquipmentQuotationLayout;
+use App\Support\EquipmentQuotationTerms;
 use Tests\TestCase;
 
 class QuotationPdfCalculationVisibilityTest extends TestCase
@@ -31,6 +33,18 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
         $plain = $this->plainText($html);
 
         $this->assertStringContainsString('Unit Price (RM)', $plain);
+        $this->assertStringContainsString(EquipmentQuotationLayout::COMPANY_NAME, $plain);
+        $this->assertStringContainsString(EquipmentQuotationLayout::COMPANY_ADDRESS_LINE_1, $plain);
+        $this->assertStringContainsString(EquipmentQuotationLayout::COMPANY_ADDRESS_LINE_2, $plain);
+        $this->assertStringContainsString('amiosh.com', $plain);
+        $this->assertStringContainsString('03-8210 8726', $plain);
+        $this->assertStringContainsString('@page { margin: 36mm 20mm 16mm 20mm; }', $html);
+        $this->assertStringContainsString('.header-left { width: 68%;', $html);
+        $this->assertStringContainsString('.header-right { width: 32%;', $html);
+        $this->assertStringContainsString('.company-logo { width: 42mm;', $html);
+        foreach (EquipmentQuotationLayout::ITEM_COLUMN_PERCENTAGES as $columnWidth) {
+            $this->assertStringContainsString("width:{$columnWidth}%;", $html);
+        }
         $this->assertStringContainsString('Portable detector', $plain);
         $this->assertStringContainsString('Remarks: Colour: navy blue', $plain);
         $this->assertStringNotContainsString('Specifications:', $plain);
@@ -173,6 +187,7 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
                 'line_total' => 200,
             ]],
             'quotationRemarks' => 'Deliver all equipment together.',
+            'terms' => EquipmentQuotationTerms::all(),
             'lineItemsTotal' => 200,
             'deliveryCharge' => 0,
             'miscCharge' => 0,

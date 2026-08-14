@@ -7,10 +7,8 @@ use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class EquipmentQuoteRecordService
 {
@@ -32,6 +30,11 @@ class EquipmentQuoteRecordService
     private function equipmentQuoteRecordPdfService(): EquipmentQuoteRecordPdfService
     {
         return app(EquipmentQuoteRecordPdfService::class);
+    }
+
+    private function equipmentQuoteRecordWordService(): EquipmentQuoteRecordWordService
+    {
+        return app(EquipmentQuoteRecordWordService::class);
     }
 
     private function equipmentQuoteRecordClientSyncService(): EquipmentQuoteRecordClientSyncService
@@ -82,6 +85,11 @@ class EquipmentQuoteRecordService
     public function pdfEquipment(Request $request, int $id = 0): mixed
     {
         return $this->equipmentQuoteRecordPdfService()->pdfEquipment($request, $id);
+    }
+
+    public function wordEquipment(Request $request, int $id = 0): mixed
+    {
+        return $this->equipmentQuoteRecordWordService()->wordEquipment($request, $id);
     }
 
     public function syncClientEquipment(SyncClientRequest $request): JsonResponse

@@ -8,10 +8,8 @@ use App\Http\Requests\QuoteRecord\FailQuoteRequest;
 use App\Http\Requests\QuoteRecord\SpecialLineItemsByServiceRequest;
 use App\Http\Requests\QuoteRecord\SyncClientRequest;
 use App\Http\Requests\QuoteRecord\UnAwardQuoteRequest;
-use App\Services\AuditLogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class SpecialTrainingQuoteRecordService
 {
@@ -33,6 +31,11 @@ class SpecialTrainingQuoteRecordService
     private function specialQuoteRecordPdfService(): SpecialQuoteRecordPdfService
     {
         return app(SpecialQuoteRecordPdfService::class);
+    }
+
+    private function wordService(): ServiceQuoteRecordWordService
+    {
+        return app(ServiceQuoteRecordWordService::class);
     }
 
     private function specialQuoteRecordClientSyncService(): SpecialQuoteRecordClientSyncService
@@ -83,6 +86,11 @@ class SpecialTrainingQuoteRecordService
     public function pdfSpecial(Request $request, int $id = 0)
     {
         return $this->specialQuoteRecordPdfService()->pdfSpecial($request, $id);
+    }
+
+    public function wordSpecial(Request $request, int $id = 0): mixed
+    {
+        return $this->wordService()->downloadQuote($request, 'special', $id);
     }
 
     public function syncClientSpecial(SyncClientRequest $request): JsonResponse

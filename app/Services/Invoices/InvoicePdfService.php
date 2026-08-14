@@ -4,13 +4,16 @@ namespace App\Services\Invoices;
 
 use App\Services\AuditLogService;
 use App\Services\Pdf\PdfRenderer;
-use App\Support\AppFilePaths;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class InvoicePdfService extends PdfRenderer
 {
-    public function __construct(private AuditLogService $auditLog) {}
+    public function __construct(
+        private AuditLogService $auditLog,
+        private ReceiptNumberService $receiptNumbers,
+        private InvoiceDocumentAssetService $assets,
+    ) {}
 
     public function invoicePdf(Request $request, int $id = 0)
     {
@@ -70,7 +73,7 @@ class InvoicePdfService extends PdfRenderer
             $generatorId = (string) $request->session()->get('staff_id', 'Unknown');
             $generatorCode = (string) $request->session()->get('name_code', '');
             $logoDataUri = $this->companyLogoDataUri();
-            [$signDataUri, $stampDataUri] = $this->invoiceSignatureAndStampDataUris($request, $inv, $creator);
+            [$signDataUri, $stampDataUri] = $this->assets->dataUris($request, $inv, $creator);
 
             $isTraining = strcasecmp((string) ($inv->service_type ?? ''), 'Training') === 0;
             $template = $isTraining ? 'pdf.invoice-training' : 'pdf.invoice';
@@ -111,42 +114,16 @@ class InvoicePdfService extends PdfRenderer
         }
 
         try {
-            DB::beginTransaction();
-            $inv = DB::table('invoices')->where('id', $invoiceId)->lockForUpdate()->first();
-
-            if (! $inv) {
-                DB::rollBack();
-
-                return response()->json(['status' => 'error', 'message' => 'Invoice not found'], 404);
-            }
-
-            $status = strtolower(trim((string) ($inv->status ?? '')));
-            $paidDate = trim((string) ($inv->paid_date ?? ''));
-            $paidAmount = $inv->paid_amount;
-            $isPaidValid = $paidAmount !== null && is_numeric($paidAmount) && (float) $paidAmount > 0;
-
-            if ($status !== 'paid' || $paidDate === '' || ! $isPaidValid) {
-                DB::rollBack();
-
+            try {
+                $inv = $this->receiptNumbers->resolvePaidInvoice($invoiceId);
+            } catch (\OutOfBoundsException $exception) {
+                return response()->json(['status' => 'error', 'message' => $exception->getMessage()], 404);
+            } catch (\DomainException $exception) {
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Only paid invoices with payment date and amount can generate receipt PDF.',
                 ], 422);
             }
-
-            if (empty($inv->receipt_no)) {
-                $currentYear = date('Y');
-                $maxReceipt = DB::table('invoices')
-                    ->where('receipt_no', 'LIKE', "RCPT{$currentYear}-%")
-                    ->max('receipt_no');
-                $nextNum = $maxReceipt ? ((int) substr($maxReceipt, -4)) + 1 : 1;
-                $receiptNo = sprintf('RCPT%s-%04d', $currentYear, $nextNum);
-
-                DB::table('invoices')->where('id', $invoiceId)->update(['receipt_no' => $receiptNo]);
-                $inv = DB::table('invoices')->where('id', $invoiceId)->first();
-            }
-
-            DB::commit();
 
             $items = DB::table('invoice_breakdown')
                 ->where('invoice_id', $invoiceId)
@@ -175,9 +152,6 @@ class InvoicePdfService extends PdfRenderer
                 'Content-Disposition' => "inline; filename=\"{$safeName}.pdf\"",
             ]);
         } catch (\Throwable $e) {
-            if (DB::transactionLevel() > 0) {
-                DB::rollBack();
-            }
             report($e);
 
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
@@ -201,100 +175,5 @@ class InvoicePdfService extends PdfRenderer
         return $this->normalizeDocumentLanguage($language) === 'ms-MY' && view()->exists($bmView)
             ? $bmView
             : $baseView;
-    }
-
-    private function fileDataUri(string $path, string $ext): ?string
-    {
-        $bytes = @file_get_contents($path);
-        if ($bytes === false) {
-            return null;
-        }
-        $mime = match (strtolower($ext)) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            default => 'image/png',
-        };
-
-        return "data:{$mime};base64,".base64_encode($bytes);
-    }
-
-    private function invoiceSignatureAndStampDataUris(Request $request, object $inv, ?object $creator): array
-    {
-        $candidates = [];
-        if (! empty($inv->created_by) && ! empty($creator?->name_code)) {
-            $candidates[] = [(string) $inv->created_by, (string) $creator->name_code];
-        }
-
-        $sessionId = (string) $request->session()->get('staff_id', '');
-        $sessionCode = (string) $request->session()->get('name_code', '');
-        if ($sessionId !== '' && $sessionCode !== '') {
-            $candidates[] = [$sessionId, $sessionCode];
-        }
-
-        $stampPaths = [];
-        foreach (['png', 'jpg', 'jpeg'] as $ext) {
-            $stampPaths[$ext] = "invoice-assets/stamp.{$ext}";
-        }
-        foreach (['png', 'jpg', 'jpeg'] as $ext) {
-            $stampPaths[$ext.'-signature'] = "signatures/stamp.{$ext}";
-        }
-
-        return [
-            $this->invoiceSignatureDataUriForCandidates($candidates),
-            $this->publicDiskImageDataUri($stampPaths),
-        ];
-    }
-
-    private function invoiceSignatureDataUriForCandidates(array $candidates): ?string
-    {
-        foreach ($candidates as [$sid, $code]) {
-            $sid = preg_replace('/[^A-Za-z0-9_-]/', '', (string) $sid);
-            $code = preg_replace('/[^A-Za-z0-9_-]/', '', (string) $code);
-            if ($sid === '' || $code === '') {
-                continue;
-            }
-
-            $paths = [];
-            foreach (['png', 'jpg', 'jpeg'] as $ext) {
-                $paths[$ext] = "signatures/{$sid}-{$code}.{$ext}";
-            }
-            foreach (['png', 'jpg', 'jpeg'] as $ext) {
-                $paths[$ext.'-invoice'] = "invoice-assets/{$sid}-{$code}.{$ext}";
-            }
-
-            $dataUri = $this->publicDiskImageDataUri($paths);
-            if ($dataUri !== null) {
-                return $dataUri;
-            }
-        }
-
-        return null;
-    }
-
-    private function publicDiskImageDataUri(array $pathsByExt): ?string
-    {
-        foreach ($pathsByExt as $key => $relativePath) {
-            $relativePath = AppFilePaths::publicStorageRelativePath((string) $relativePath);
-            if ($relativePath === null) {
-                continue;
-            }
-
-            $path = AppFilePaths::storedPathLocalPath($relativePath);
-            if ($path === null) {
-                continue;
-            }
-
-            if (! is_file($path) || ! is_readable($path)) {
-                continue;
-            }
-
-            $ext = strtolower((string) pathinfo((string) $relativePath, PATHINFO_EXTENSION));
-            if ($ext === '') {
-                $ext = strtolower(preg_replace('/-.+$/', '', (string) $key));
-            }
-
-            return $this->fileDataUri($path, $ext);
-        }
-
-        return null;
     }
 }
