@@ -23,6 +23,15 @@ class QuotationPdfCalculationVisibilityTest extends TestCase
         $this->assertStringContainsString('RM 200.00', $plain);
         $this->assertStringContainsString('Notes: Client-facing note', $plain);
         $this->assertStringNotContainsString('2.00 day x RM 100.00', $plain);
+        $this->assertMatchesRegularExpression(
+            '/<th class="col-no">#<\/th>\s*<th class="col-item">.*Line Item.*<\/th>\s*<th class="col-amount">.*Amount \(RM\).*<\/th>/s',
+            $html,
+        );
+        $this->assertMatchesRegularExpression(
+            '/<td class="col-no">1<\/td>\s*<td class="col-item">.*Inspection service.*<\/td>\s*<td class="col-amount">200\.00<\/td>/s',
+            $html,
+        );
+        $this->assertStringContainsString('.totals-value { text-align: right; }', $html);
     }
 
     public function test_equipment_pdf_keeps_commercial_columns_without_an_inline_formula(): void

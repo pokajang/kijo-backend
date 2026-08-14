@@ -28,10 +28,12 @@
         .quote-table th, .quote-table td { border: 0.5px solid #000; padding: 2mm 2.2mm; vertical-align: top; }
         .quote-table th { background: #f0f0f0; text-align: center; font-weight: 700; }
         .col-no { width: 5%; text-align: center; }
+        .col-item { width: 75%; }
         .col-amount { width: 20%; }
-        .col-item { width: 72%; }
+        .quote-table th.col-item, .quote-table td.col-item { text-align: left; }
+        .quote-table th.col-amount, .quote-table td.col-amount { text-align: right; }
         .totals-label { text-align: right; font-weight: 400; }
-        .totals-value { text-align: center; }
+        .totals-value { text-align: right; }
         .muted { font-size: 9pt; color: #6c757d; }
         .small-note { font-size: 8pt; color: #666; font-style: italic; }
 
@@ -116,8 +118,8 @@
             <thead>
                 <tr>
                     <th class="col-no">#</th>
-                    <th class="col-amount">{{ $L('amount_rm', 'Amount (RM)') }}</th>
                     <th class="col-item">{{ $L('line_item', 'Line Item') }}</th>
+                    <th class="col-amount">{{ $L('amount_rm', 'Amount (RM)') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -134,13 +136,13 @@
                 @foreach($items as $index => $item)
                     <tr>
                         <td class="col-no">{{ $index + 1 }}</td>
-                        <td class="col-amount">{{ number_format((float) $item->line_total, 2) }}</td>
                         <td class="col-item">
                             <strong>{{ $item->title }}</strong>
                             @if(!empty($item->description))
                                 <span class="small-note">Notes: {{ $item->description }}</span>
                             @endif
                         </td>
+                        <td class="col-amount">{{ number_format((float) $item->line_total, 2) }}</td>
                     </tr>
                 @endforeach
 
