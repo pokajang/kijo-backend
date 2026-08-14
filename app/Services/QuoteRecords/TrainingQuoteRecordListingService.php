@@ -3,6 +3,7 @@
 namespace App\Services\QuoteRecords;
 
 use App\Services\AuditLogService;
+use App\Services\QuoteApprovals\QuoteApprovalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -148,6 +149,10 @@ class TrainingQuoteRecordListingService
 
         ProjectOutcomeSummary::attach($quotes, $awardHistory);
         QuoteRecordProposalPayload::attach($quotes, 'training');
+        $approvalService = app(QuoteApprovalService::class);
+        foreach ($quotes as $quote) {
+            $quote->issuance_context = $approvalService->contextForQuote('training', $quote);
+        }
 
         return response()->json([
             'status' => 'success',

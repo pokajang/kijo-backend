@@ -5,6 +5,8 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreTrainingQuoteRequest;
 use App\Http\Requests\Quote\UpdateTrainingQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\QuoteApprovals\QuoteApprovalService;
+use App\Services\QuoteApprovals\TrainingQuoteLegacyPolicy;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -26,6 +28,9 @@ class TrainingQuoteService
         if (! $quote) {
             return response()->json(['status' => 'error', 'message' => 'Quote not found.'], 404);
         }
+
+        $quote->issuance_context = app(QuoteApprovalService::class)
+            ->contextForQuote('training', $quote);
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
@@ -120,7 +125,7 @@ class TrainingQuoteService
                     ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                     : []),
                 ...(Schema::hasColumn($table, 'traffic_light_rule_version')
-                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? 'v1']
+                    ? ['traffic_light_rule_version' => app(TrainingQuoteLegacyPolicy::class)->currentRuleVersion()]
                     : []),
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'proposal_id' => $data['proposal_id'] ?? null,
@@ -244,7 +249,7 @@ class TrainingQuoteService
                     ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                     : []),
                 ...(Schema::hasColumn('quotes_training', 'traffic_light_rule_version')
-                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? $quote->traffic_light_rule_version ?? 'v1']
+                    ? ['traffic_light_rule_version' => app(TrainingQuoteLegacyPolicy::class)->currentRuleVersion()]
                     : []),
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
                 'proposal_id' => $data['proposal_id'] ?? null,
