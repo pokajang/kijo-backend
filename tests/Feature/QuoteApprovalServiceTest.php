@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Http\Requests\QuoteRecord\AwardQuoteRequest;
 use App\Jobs\SendHtmlMailJob;
+use App\Services\QuoteApprovals\LegacyEstimatedCostCandidateService;
 use App\Services\QuoteApprovals\QuoteApprovalRecipientService;
 use App\Services\QuoteApprovals\QuoteApprovalService;
 use App\Services\QuoteRecords\QuoteRecordTrainingSpecialService;
@@ -11,6 +12,7 @@ use App\Services\QuoteRecords\TrainingQuoteRecordService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -30,6 +32,7 @@ class QuoteApprovalServiceTest extends TestCase
         Schema::dropIfExists('quotes_ih');
         Schema::dropIfExists('quotes_equipment_items');
         Schema::dropIfExists('quotes_equipment');
+        Schema::dropIfExists('quotes_manpower');
         Schema::dropIfExists('quotes_training');
 
         Schema::create('quotes_training', function (Blueprint $table): void {
@@ -38,6 +41,7 @@ class QuoteApprovalServiceTest extends TestCase
             $table->unsignedInteger('revision_no')->default(0);
             $table->decimal('grand_total', 15, 2);
             $table->decimal('estimated_total_cost', 15, 2)->nullable();
+            $table->string('traffic_light_rule_version', 50)->nullable();
             $table->string('discount_type')->nullable();
             $table->decimal('discount_value', 8, 2)->nullable();
             $table->decimal('discount_amount', 15, 2)->nullable();
@@ -50,6 +54,7 @@ class QuoteApprovalServiceTest extends TestCase
             $table->string('approval_zone')->nullable();
             $table->string('approval_status')->nullable();
             $table->string('approval_fingerprint', 64)->nullable();
+            $table->timestamps();
         });
 
         Schema::create('quotes_ih', function (Blueprint $table): void {
@@ -70,12 +75,31 @@ class QuoteApprovalServiceTest extends TestCase
             $table->string('approval_fingerprint', 64)->nullable();
         });
 
+        Schema::create('quotes_manpower', function (Blueprint $table): void {
+            $table->id();
+            $table->string('quote_ref_no')->nullable();
+            $table->unsignedInteger('revision_no')->default(0);
+            $table->decimal('grand_total', 15, 2);
+            $table->decimal('estimated_total_cost', 15, 2)->nullable();
+            $table->string('traffic_light_rule_version', 50)->nullable();
+            $table->boolean('requires_management_approval')->default(false);
+            $table->unsignedBigInteger('created_by_id')->nullable();
+            $table->string('created_by_code')->nullable();
+            $table->string('status')->default('Open');
+            $table->unsignedBigInteger('approval_request_id')->nullable();
+            $table->string('approval_zone')->nullable();
+            $table->string('approval_status')->nullable();
+            $table->string('approval_fingerprint', 64)->nullable();
+            $table->timestamps();
+        });
+
         Schema::create('quotes_equipment', function (Blueprint $table): void {
             $table->id();
             $table->string('quote_ref_no')->nullable();
             $table->unsignedInteger('revision_no')->default(0);
             $table->decimal('grand_total', 15, 2);
             $table->decimal('estimated_total_cost', 15, 2)->nullable();
+            $table->string('traffic_light_rule_version', 50)->nullable();
             $table->text('quotation_remarks')->nullable();
             $table->unsignedBigInteger('created_by_id')->nullable();
             $table->string('created_by_code')->nullable();
@@ -84,6 +108,7 @@ class QuoteApprovalServiceTest extends TestCase
             $table->string('approval_zone')->nullable();
             $table->string('approval_status')->nullable();
             $table->string('approval_fingerprint', 64)->nullable();
+            $table->timestamps();
         });
 
         Schema::create('quotes_equipment_items', function (Blueprint $table): void {
@@ -180,6 +205,7 @@ class QuoteApprovalServiceTest extends TestCase
         Schema::dropIfExists('quote_approval_requests');
         Schema::dropIfExists('quotes_equipment_items');
         Schema::dropIfExists('quotes_equipment');
+        Schema::dropIfExists('quotes_manpower');
         Schema::dropIfExists('quotes_ih');
         Schema::dropIfExists('in_app_notifications');
         Schema::dropIfExists('system_users');
@@ -329,6 +355,320 @@ class QuoteApprovalServiceTest extends TestCase
         $this->assertSame([], $items);
         $this->assertSame(0, DB::table('quote_approval_requests')->count());
         $this->assertSame(0, DB::table('in_app_notifications')->count());
+    }
+
+    public function test_grandfathered_training_quote_without_cost_retains_original_approval_basis(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-LEGACY-GREEN',
+            'grand_total' => 4500,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_normal',
+            'discount_amount' => 0,
+            'subtotal' => 4500,
+            'created_at' => '2026-06-04 10:00:00',
+            'updated_at' => '2026-06-04 10:00:00',
+        ]);
+
+        $service = app(QuoteApprovalService::class);
+        $approval = $service->current('training', $quoteId, false);
+
+        $this->assertSame('green', $approval->zone);
+        $this->assertSame('approved', $approval->status);
+        $this->assertSame('traffic-light-training-202608-v2', $approval->rule_version);
+        $this->assertContains(
+            'Historical Training quotation retains its original approval basis.',
+            json_decode($approval->trigger_reasons, true),
+        );
+        $this->assertNull($service->issuanceDenial('training', $quoteId));
+    }
+
+    public function test_grandfathered_training_quote_keeps_special_pricing_approval_trigger(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-LEGACY-SPECIAL',
+            'grand_total' => 2400,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_special_approval',
+            'discount_amount' => 0,
+            'subtotal' => 2400,
+            'created_at' => '2026-06-05 10:00:00',
+            'updated_at' => '2026-06-05 10:00:00',
+        ]);
+
+        $approval = app(QuoteApprovalService::class)->current('training', $quoteId, false);
+        $reasons = json_decode($approval->trigger_reasons, true);
+
+        $this->assertSame('red', $approval->zone);
+        $this->assertSame('pending', $approval->status);
+        $this->assertSame('bd', $approval->required_step);
+        $this->assertContains(
+            'Special training or special-client pricing requires BD final approval.',
+            $reasons,
+        );
+        $this->assertNotContains(
+            'Estimated total cost is missing; profitability cannot be validated.',
+            $reasons,
+        );
+    }
+
+    public function test_post_rollout_training_quote_without_cost_is_not_grandfathered(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-CURRENT-MISSING-COST',
+            'grand_total' => 4500,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_normal',
+            'discount_amount' => 0,
+            'subtotal' => 4500,
+            'created_at' => '2026-07-17 10:00:00',
+            'updated_at' => '2026-07-17 10:00:00',
+        ]);
+
+        $denial = app(QuoteApprovalService::class)->issuanceDenial('training', $quoteId);
+
+        $this->assertSame('QUOTE_ESTIMATED_COST_REQUIRED', $denial['code']);
+        $this->assertTrue($denial['issuance_context']['estimated_cost_required']);
+        $this->assertSame(0, DB::table('quote_approval_requests')->count());
+    }
+
+    public function test_legacy_cost_reconciliation_requires_a_matching_preview_fingerprint_and_is_idempotent(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-LEGACY-RECONCILE',
+            'grand_total' => 4500,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_normal',
+            'discount_amount' => 0,
+            'subtotal' => 4500,
+            'created_at' => '2026-06-04 10:00:00',
+            'updated_at' => '2026-06-04 10:00:00',
+        ]);
+
+        config([
+            'quote_approval.legacy_cost_policy.training.cutoff' => '2026-01-01 00:00:00',
+            'quote_approval.rule_versions.training' => 'traffic-light-training-old-v1',
+        ]);
+        $oldApproval = app(QuoteApprovalService::class)->current('training', $quoteId, false);
+        $this->assertSame('red', $oldApproval->zone);
+
+        config([
+            'quote_approval.legacy_cost_policy.training.cutoff' => '2026-07-16 01:00:00',
+            'quote_approval.rule_versions.training' => 'traffic-light-training-202608-v2',
+        ]);
+
+        $this->assertSame(0, Artisan::call(
+            'quotes:reconcile-legacy-cost-approvals',
+            ['--service' => 'training', '--quote-id' => $quoteId],
+        ));
+        $this->assertSame(1, DB::table('quote_approval_requests')->count());
+
+        $candidateService = app(LegacyEstimatedCostCandidateService::class);
+        $fingerprint = $candidateService->fingerprint(
+            $candidateService->collect('training', $quoteId),
+        );
+
+        $this->assertSame(0, Artisan::call(
+            'quotes:reconcile-legacy-cost-approvals',
+            [
+                '--service' => 'training',
+                '--quote-id' => $quoteId,
+                '--commit' => true,
+                '--confirm' => $fingerprint,
+            ],
+        ));
+        $newApproval = DB::table('quote_approval_requests')
+            ->where('service', 'training')
+            ->where('quote_id', $quoteId)
+            ->where('is_current', true)
+            ->first();
+        $this->assertSame('green', $newApproval->zone);
+        $this->assertSame('approved', $newApproval->status);
+        $this->assertFalse((bool) DB::table('quote_approval_requests')
+            ->where('id', $oldApproval->id)
+            ->value('is_current'));
+
+        $this->assertSame(0, Artisan::call(
+            'quotes:reconcile-legacy-cost-approvals',
+            [
+                '--service' => 'training',
+                '--quote-id' => $quoteId,
+                '--commit' => true,
+                '--confirm' => $candidateService->fingerprint(
+                    $candidateService->collect('training', $quoteId),
+                ),
+            ],
+        ));
+        $this->assertSame(2, DB::table('quote_approval_requests')->count());
+    }
+
+    public function test_legacy_training_reconciliation_carries_forward_an_unchanged_bd_approval(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-LEGACY-SPECIAL-APPROVED',
+            'grand_total' => 2400,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_special_approval',
+            'discount_amount' => 0,
+            'subtotal' => 2400,
+            'created_at' => '2026-06-05 10:00:00',
+            'updated_at' => '2026-06-05 10:00:00',
+        ]);
+        config([
+            'quote_approval.legacy_cost_policy.training.cutoff' => '2026-01-01 00:00:00',
+            'quote_approval.rule_versions.training' => 'traffic-light-220626-v1',
+        ]);
+        $oldApproval = app(QuoteApprovalService::class)->current('training', $quoteId, false);
+        DB::table('quote_approval_requests')->where('id', $oldApproval->id)->update([
+            'status' => 'approved',
+            'decided_by_id' => 51,
+            'decided_by_name' => 'Existing BD Approver',
+            'decision_remarks' => 'Approved under the original policy.',
+            'decided_at' => '2026-07-22 09:53:23',
+        ]);
+
+        config([
+            'quote_approval.legacy_cost_policy.training.cutoff' => '2026-07-16 01:00:00',
+            'quote_approval.rule_versions.training' => 'traffic-light-training-202608-v2',
+        ]);
+        $this->assertSame(0, Artisan::call(
+            'quotes:reconcile-legacy-cost-approvals',
+            ['--service' => 'training', '--quote-id' => $quoteId],
+        ));
+        $this->assertStringContainsString('red/approved', Artisan::output());
+        $newApproval = app(QuoteApprovalService::class)->current('training', $quoteId, false);
+
+        $this->assertNotSame($oldApproval->id, $newApproval->id);
+        $this->assertSame('red', $newApproval->zone);
+        $this->assertSame('approved', $newApproval->status);
+        $this->assertSame('bd', $newApproval->required_step);
+        $this->assertSame(51, (int) $newApproval->decided_by_id);
+        $this->assertSame('Existing BD Approver', $newApproval->decided_by_name);
+        $this->assertSame('Approved under the original policy.', $newApproval->decision_remarks);
+        $this->assertSame('2026-07-22 09:53:23', $newApproval->decided_at);
+        $this->assertFalse((bool) DB::table('quote_approval_requests')
+            ->where('id', $oldApproval->id)
+            ->value('is_current'));
+        $this->assertNull(app(QuoteApprovalService::class)->issuanceDenial('training', $quoteId));
+    }
+
+    public function test_legacy_equipment_and_manpower_quotes_are_green_without_cost(): void
+    {
+        foreach ([
+            'equipment' => 'quotes_equipment',
+            'manpower' => 'quotes_manpower',
+        ] as $serviceName => $table) {
+            $quoteId = DB::table($table)->insertGetId([
+                'quote_ref_no' => strtoupper($serviceName).'-LEGACY',
+                'grand_total' => 4500,
+                'estimated_total_cost' => null,
+                'traffic_light_rule_version' => null,
+                'created_at' => '2026-06-04 10:00:00',
+                'updated_at' => '2026-06-04 10:00:00',
+            ]);
+
+            $context = app(QuoteApprovalService::class)->contextForQuote(
+                $serviceName,
+                DB::table($table)->where('id', $quoteId)->first(),
+            );
+
+            $this->assertTrue($context['is_grandfathered']);
+            $this->assertTrue($context['can_generate_under_legacy_policy']);
+            $this->assertFalse($context['requires_approval']);
+            $this->assertFalse($context['estimated_cost_required']);
+        }
+    }
+
+    public function test_legacy_manpower_management_trigger_still_requires_approval(): void
+    {
+        $quoteId = DB::table('quotes_manpower')->insertGetId([
+            'quote_ref_no' => 'MANPOWER-LEGACY-MANAGEMENT',
+            'grand_total' => 4500,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'requires_management_approval' => true,
+            'created_at' => '2026-06-04 10:00:00',
+            'updated_at' => '2026-06-04 10:00:00',
+        ]);
+
+        $context = app(QuoteApprovalService::class)->contextForQuote(
+            'manpower',
+            DB::table('quotes_manpower')->where('id', $quoteId)->first(),
+        );
+
+        $this->assertTrue($context['is_grandfathered']);
+        $this->assertTrue($context['requires_approval']);
+        $this->assertFalse($context['can_generate_under_legacy_policy']);
+        $this->assertSame('bd', $context['required_step']);
+    }
+
+    public function test_reconciliation_preview_does_not_materialize_an_approval(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-LEGACY-NOT-MATERIALIZED',
+            'grand_total' => 4500,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_normal',
+            'discount_amount' => 0,
+            'subtotal' => 4500,
+            'status' => 'Open',
+            'created_at' => '2026-06-04 10:00:00',
+            'updated_at' => '2026-06-04 10:00:00',
+        ]);
+
+        $this->assertSame(0, Artisan::call(
+            'quotes:reconcile-legacy-cost-approvals',
+            ['--service' => 'training', '--quote-id' => $quoteId],
+        ));
+        $this->assertSame(0, DB::table('quote_approval_requests')->count());
+
+        $candidateService = app(LegacyEstimatedCostCandidateService::class);
+        $this->assertSame(0, Artisan::call(
+            'quotes:reconcile-legacy-cost-approvals',
+            [
+                '--service' => 'training',
+                '--quote-id' => $quoteId,
+                '--commit' => true,
+                '--confirm' => $candidateService->fingerprint(
+                    $candidateService->collect('training', $quoteId),
+                ),
+            ],
+        ));
+        $this->assertSame(1, DB::table('quote_approval_requests')->count());
+        $this->assertSame('approved', DB::table('quote_approval_requests')->value('status'));
+    }
+
+    public function test_issuance_context_does_not_load_line_items(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-CONTEXT',
+            'grand_total' => 4500,
+            'estimated_total_cost' => null,
+            'traffic_light_rule_version' => null,
+            'training_rate_type' => 'client_site_normal',
+            'discount_amount' => 0,
+            'subtotal' => 4500,
+            'created_at' => '2026-06-04 10:00:00',
+            'updated_at' => '2026-06-04 10:00:00',
+        ]);
+        $quote = DB::table('quotes_training')->where('id', $quoteId)->first();
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $context = app(QuoteApprovalService::class)->contextForQuote('training', $quote);
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertTrue($context['can_issue']);
+        $this->assertFalse(collect($queries)->contains(
+            fn (array $query): bool => str_contains($query['query'], 'quotes_training_items'),
+        ));
     }
 
     public function test_yellow_quote_requires_hod_and_commercial_change_supersedes_it(): void

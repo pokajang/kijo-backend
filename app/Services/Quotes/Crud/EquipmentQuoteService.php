@@ -5,6 +5,8 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreEquipmentQuoteRequest;
 use App\Http\Requests\Quote\UpdateEquipmentQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\QuoteApprovals\LegacyEstimatedCostPolicy;
+use App\Services\QuoteApprovals\QuoteApprovalService;
 use App\Support\EquipmentItemSnapshot;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -47,6 +49,8 @@ class EquipmentQuoteService
 
         $quote->items = $items;
         $quote->subtotal = $quote->sub_total ?? null;
+        $quote->issuance_context = app(QuoteApprovalService::class)
+            ->contextForQuote('equipment', $quote);
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
@@ -127,7 +131,7 @@ class EquipmentQuoteService
                     ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                     : []),
                 ...(Schema::hasColumn($table, 'traffic_light_rule_version')
-                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? 'v1']
+                    ? ['traffic_light_rule_version' => app(LegacyEstimatedCostPolicy::class)->currentRuleVersion('equipment')]
                     : []),
                 'status' => 'Open',
                 'revision_no' => 0,
@@ -247,7 +251,7 @@ class EquipmentQuoteService
                 ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                 : []),
             ...(Schema::hasColumn('quotes_equipment', 'traffic_light_rule_version')
-                ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? $quote->traffic_light_rule_version ?? 'v1']
+                ? ['traffic_light_rule_version' => app(LegacyEstimatedCostPolicy::class)->currentRuleVersion('equipment')]
                 : []),
             'updated_at' => now(),
         ];

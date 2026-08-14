@@ -52,7 +52,6 @@ class UpdateIhQuoteRequest extends FormRequest
             'attach_proposal' => ['nullable', 'boolean'],
             'proposal_language' => ['nullable', 'in:en,ms-MY'],
             'estimated_total_cost' => ['nullable', 'numeric', 'min:0.01'],
-            'traffic_light_rule_version' => ['nullable', 'string', 'max:50'],
             'upgrade_pricing_rule' => ['nullable', 'boolean'],
             'isRevision' => ['nullable', 'boolean'],
         ];
