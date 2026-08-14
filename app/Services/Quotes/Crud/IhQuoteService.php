@@ -5,6 +5,8 @@ namespace App\Services\Quotes\Crud;
 use App\Http\Requests\Quote\StoreIhQuoteRequest;
 use App\Http\Requests\Quote\UpdateIhQuoteRequest;
 use App\Services\AuditLogService;
+use App\Services\QuoteApprovals\LegacyEstimatedCostPolicy;
+use App\Services\QuoteApprovals\QuoteApprovalService;
 use App\Services\Quotes\Pricing\IhPricingCalculator;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -44,6 +46,8 @@ class IhQuoteService
                     'secondary' => 'contact_administrator',
                 ],
             ];
+            $quote->issuance_context = app(QuoteApprovalService::class)
+                ->contextForQuote('ih', $quote);
 
             return response()->json(['status' => 'success', 'data' => $quote]);
         }
@@ -58,6 +62,8 @@ class IhQuoteService
                 : 'CURRENT_PRICING',
             'historical' => $this->pricingCalculator->isHistoricalRule($quote->pricing_rule_version),
         ];
+        $quote->issuance_context = app(QuoteApprovalService::class)
+            ->contextForQuote('ih', $quote);
 
         return response()->json(['status' => 'success', 'data' => $quote]);
     }
@@ -134,7 +140,7 @@ class IhQuoteService
                     ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                     : []),
                 ...(Schema::hasColumn($table, 'traffic_light_rule_version')
-                    ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? 'v1']
+                    ? ['traffic_light_rule_version' => app(LegacyEstimatedCostPolicy::class)->currentRuleVersion('ih')]
                     : []),
                 'inquiry_remarks' => $data['inquiry_remarks'] ?? null,
                 'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,
@@ -210,6 +216,18 @@ class IhQuoteService
         }
         $upgradePricingRule = $request->boolean('upgrade_pricing_rule');
         if (
+            ! $this->pricingCalculator->isHistoricalRule($storedPricingRule)
+            && (float) ($data['estimated_total_cost'] ?? 0) <= 0
+        ) {
+            return $this->lifecycleError(
+                'ESTIMATED_COST_REQUIRED',
+                'Estimated total cost is required for current IH pricing.',
+                422,
+                'enter_estimated_cost',
+                'return_to_quote',
+            );
+        }
+        if (
             $upgradePricingRule
             && $this->pricingCalculator->isHistoricalRule($storedPricingRule)
             && (float) ($data['estimated_total_cost'] ?? 0) <= 0
@@ -276,7 +294,9 @@ class IhQuoteService
                 ? ['estimated_total_cost' => $this->nd($data['estimated_total_cost'] ?? null)]
                 : []),
             ...(Schema::hasColumn('quotes_ih', 'traffic_light_rule_version')
-                ? ['traffic_light_rule_version' => $data['traffic_light_rule_version'] ?? $quote->traffic_light_rule_version ?? 'v1']
+                ? ['traffic_light_rule_version' => $this->pricingCalculator->isHistoricalRule($pricingRule)
+                    ? ($quote->traffic_light_rule_version ?? null)
+                    : app(LegacyEstimatedCostPolicy::class)->currentRuleVersion('ih')]
                 : []),
             'inquiry_remarks' => $data['inquiry_remarks'] ?? null,
             'attach_proposal' => isset($data['attach_proposal']) ? (int) $data['attach_proposal'] : 0,

@@ -20,7 +20,7 @@ class QuoteApprovalService
         'special' => 'quotes_special',
     ];
 
-    public function __construct(private TrainingQuoteLegacyPolicy $trainingLegacyPolicy) {}
+    public function __construct(private LegacyEstimatedCostPolicy $legacyCostPolicy) {}
 
     public function current(string $service, int $quoteId, bool $notify = true): ?object
     {
@@ -71,12 +71,21 @@ class QuoteApprovalService
                 ->where('service', $service)->where('quote_id', $quoteId)->where('is_current', true)
                 ->update(['is_current' => false, 'updated_at' => now()]);
 
-            $status = $evaluation['zone'] === 'green' ? 'approved' : 'pending';
             $step = match ($evaluation['zone']) {
                 'yellow' => 'hod',
                 'red' => 'bd',
                 default => null,
             };
+            $carriedApproval = $this->approvedDecisionToCarryForward(
+                $service,
+                $quote,
+                $existing,
+                $evaluation,
+                $step,
+            );
+            $status = $evaluation['zone'] === 'green' || $carriedApproval
+                ? 'approved'
+                : 'pending';
             $requesterId = $this->requesterId($quote);
             $id = DB::table('quote_approval_requests')->insertGetId([
                 'service' => $service,
@@ -93,10 +102,16 @@ class QuoteApprovalService
                 'margin_percent' => $evaluation['margin'],
                 'trigger_reasons' => json_encode($evaluation['reasons']),
                 'is_current' => true,
-                'requested_by_id' => $requesterId,
-                'requested_at' => now(),
-                'decided_at' => $status === 'approved' ? now() : null,
-                'decision_remarks' => $status === 'approved' ? 'Automatically approved by the traffic-light policy.' : null,
+                'requested_by_id' => $carriedApproval->requested_by_id ?? $requesterId,
+                'requested_at' => $carriedApproval->requested_at ?? now(),
+                'decided_by_id' => $carriedApproval->decided_by_id ?? null,
+                'decided_by_name' => $carriedApproval->decided_by_name ?? null,
+                'decided_at' => $carriedApproval->decided_at
+                    ?? ($status === 'approved' ? now() : null),
+                'decision_remarks' => $carriedApproval
+                    ? ($carriedApproval->decision_remarks
+                        ?: 'Approval carried forward from request #'.$carriedApproval->id.' during legacy cost-policy reconciliation.')
+                    : ($status === 'approved' ? 'Automatically approved by the traffic-light policy.' : null),
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
@@ -301,7 +316,7 @@ class QuoteApprovalService
         $quote = $table && Schema::hasTable($table)
             ? DB::table($table)->where('id', $quoteId)->first()
             : null;
-        if ($service === 'training' && $quote) {
+        if ($quote) {
             $context = $this->contextForQuote($service, $quote);
             if ($context['estimated_cost_required']) {
                 return [
@@ -345,11 +360,13 @@ class QuoteApprovalService
     public function contextForQuote(string $service, object $quote): array
     {
         $service = strtolower($service);
-        $evaluation = $this->evaluate($service, $quote);
-        $isGrandfathered = $service === 'training'
-            && $this->trainingLegacyPolicy->isGrandfathered($quote);
-        $missingCost = $service === 'training'
-            && $this->trainingLegacyPolicy->hasMissingCost($quote);
+        $evaluation = $this->evaluate($service, $quote, false);
+        $isHistoricalIh = $this->isGrandfatheredHistoricalIh($service, $quote);
+        $isGrandfathered = $isHistoricalIh
+            || $this->legacyCostPolicy->isGrandfathered($service, $quote);
+        $missingCost = $service !== 'special'
+            && $this->legacyCostPolicy->hasMissingCost($quote);
+        $requiresCurrentCost = $service === 'ih' || $this->legacyCostPolicy->supports($service);
         $requiredStep = match ($evaluation['zone']) {
             'yellow' => 'hod',
             'red' => 'bd',
@@ -362,7 +379,7 @@ class QuoteApprovalService
             'is_grandfathered' => $isGrandfathered,
             'can_generate_under_legacy_policy' => $isGrandfathered && $evaluation['zone'] === 'green',
             'requires_cost_on_edit' => $isGrandfathered,
-            'estimated_cost_required' => $missingCost && ! $isGrandfathered,
+            'estimated_cost_required' => $requiresCurrentCost && $missingCost && ! $isGrandfathered,
             'requires_approval' => $evaluation['zone'] !== 'green',
             'required_step' => $requiredStep,
             'policy_zone' => $evaluation['zone'],
@@ -371,22 +388,49 @@ class QuoteApprovalService
         ];
     }
 
-    private function evaluate(string $service, object $quote): array
+    public function previewCurrent(string $service, object $quote, ?object $existing = null): array
     {
+        $service = strtolower($service);
+        $evaluation = $this->evaluate($service, $quote);
+        $requiredStep = match ($evaluation['zone']) {
+            'yellow' => 'hod',
+            'red' => 'bd',
+            default => null,
+        };
+        $carriedApproval = $this->approvedDecisionToCarryForward(
+            $service,
+            $quote,
+            $existing,
+            $evaluation,
+            $requiredStep,
+        );
+
+        return [
+            'zone' => $evaluation['zone'],
+            'status' => $evaluation['zone'] === 'green' || $carriedApproval
+                ? 'approved'
+                : 'pending',
+            'required_step' => $requiredStep,
+            'carries_existing_decision' => (bool) $carriedApproval,
+        ];
+    }
+
+    private function evaluate(
+        string $service,
+        object $quote,
+        bool $includeFingerprint = true,
+        ?string $ruleVersion = null,
+        ?bool $grandfatherHistoricalCost = null,
+    ): array {
+        $effectiveRuleVersion = $ruleVersion ?? $this->ruleVersion($service);
         $total = isset($quote->grand_total) ? (float) $quote->grand_total : 0.0;
         $cost = isset($quote->estimated_total_cost) && $quote->estimated_total_cost !== null
             ? (float) $quote->estimated_total_cost : null;
         $margin = $cost !== null && $cost > 0 ? (($total - $cost) / $cost) * 100 : null;
         $reasons = [];
-        $isGrandfatheredHistoricalIh = $service === 'ih'
-            && in_array(
-                $quote->pricing_rule_version ?? null,
-                ['ih_complexity_v1', 'ih_standard_v1'],
-                true,
-            )
-            && ($cost === null || $cost <= 0);
-        $isGrandfatheredHistoricalTraining = $service === 'training'
-            && $this->trainingLegacyPolicy->isGrandfathered($quote);
+        $isGrandfatheredHistoricalIh = $this->isGrandfatheredHistoricalIh($service, $quote);
+        $isGrandfatheredHistoricalCost = $grandfatherHistoricalCost
+            ?? $this->legacyCostPolicy->isGrandfathered($service, $quote);
 
         if ($service === 'special') {
             $zone = 'red';
@@ -394,9 +438,9 @@ class QuoteApprovalService
         } elseif ($isGrandfatheredHistoricalIh) {
             $zone = 'green';
             $reasons[] = 'Historical IH quotation retains its original approval basis.';
-        } elseif ($isGrandfatheredHistoricalTraining) {
+        } elseif ($isGrandfatheredHistoricalCost) {
             $zone = 'green';
-            $reasons[] = TrainingQuoteLegacyPolicy::HISTORICAL_REASON;
+            $reasons[] = $this->legacyCostPolicy->historicalReason($service);
         } elseif ($cost === null || $cost <= 0) {
             $zone = 'red';
             $reasons[] = 'Estimated total cost is missing; profitability cannot be validated.';
@@ -445,6 +489,18 @@ class QuoteApprovalService
             $reasons[] = 'Industrial Hygiene quotation includes travel/outstation charges.';
         }
 
+        if (! $includeFingerprint) {
+            return [
+                'zone' => $zone,
+                'total' => $total,
+                'cost' => $cost,
+                'margin' => $margin,
+                'reasons' => $reasons,
+                'rule_version' => $effectiveRuleVersion,
+                'fingerprint' => null,
+            ];
+        }
+
         $commercial = [
             'service' => $service,
             'quote_id' => (int) $quote->id,
@@ -452,7 +508,7 @@ class QuoteApprovalService
             'estimated_total_cost' => $cost === null ? null : round($cost, 2),
             'discount_type' => $quote->discount_type ?? null,
             'discount_value' => $quote->discount_value ?? ($quote->discount ?? null),
-            'rule_version' => $this->ruleVersion($service),
+            'rule_version' => $effectiveRuleVersion,
             'line_items' => $this->commercialLineItems($service, (int) $quote->id),
         ];
         $quotationRemarks = trim((string) ($quote->quotation_remarks ?? ''));
@@ -480,9 +536,41 @@ class QuoteApprovalService
             'cost' => $cost,
             'margin' => $margin,
             'reasons' => $reasons,
-            'rule_version' => $this->ruleVersion($service),
+            'rule_version' => $effectiveRuleVersion,
             'fingerprint' => hash('sha256', json_encode($commercial, JSON_PRESERVE_ZERO_FRACTION)),
         ];
+    }
+
+    private function approvedDecisionToCarryForward(
+        string $service,
+        object $quote,
+        ?object $existing,
+        array $evaluation,
+        ?string $requiredStep,
+    ): ?object {
+        if (
+            ! $this->legacyCostPolicy->supports($service)
+            || ! $existing
+            || $existing->status !== 'approved'
+            || ! $this->legacyCostPolicy->isGrandfathered($service, $quote)
+            || (string) $existing->rule_version === (string) $evaluation['rule_version']
+            || (string) $existing->zone !== (string) $evaluation['zone']
+            || (string) ($existing->required_step ?? '') !== (string) ($requiredStep ?? '')
+        ) {
+            return null;
+        }
+
+        $previousEvaluation = $this->evaluate(
+            $service,
+            $quote,
+            ruleVersion: (string) $existing->rule_version,
+            grandfatherHistoricalCost: false,
+        );
+
+        return hash_equals(
+            (string) $existing->commercial_fingerprint,
+            (string) $previousEvaluation['fingerprint'],
+        ) ? $existing : null;
     }
 
     private function ruleVersion(string $service): string
@@ -491,6 +579,17 @@ class QuoteApprovalService
             "quote_approval.rule_versions.{$service}",
             config('quote_approval.rule_version'),
         );
+    }
+
+    private function isGrandfatheredHistoricalIh(string $service, object $quote): bool
+    {
+        return $service === 'ih'
+            && in_array(
+                $quote->pricing_rule_version ?? null,
+                ['ih_complexity_v1', 'ih_standard_v1'],
+                true,
+            )
+            && $this->legacyCostPolicy->hasMissingCost($quote);
     }
 
     private function trainingDiscountPercent(object $quote): float
