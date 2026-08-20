@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\QuoteApprovals\LegacyEstimatedCostPolicy;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -34,6 +35,7 @@ class IhQuoteAdditionalFeesTest extends TestCase
 
     public function test_ih_quote_create_update_show_and_invoice_lookup_include_additional_fees(): void
     {
+        $ruleVersion = app(LegacyEstimatedCostPolicy::class)->currentRuleVersion('ih');
         $create = $this->authenticated()->postJson('/quotes/ih', $this->payload([
             'estimated_total_cost' => 1200.45,
             'traffic_light_rule_version' => 'v1',
@@ -60,14 +62,14 @@ class IhQuoteAdditionalFeesTest extends TestCase
         $quoteId = (int) $create->json('quote_id');
         $this->assertSame(1540.0, (float) DB::table('quotes_ih')->where('id', $quoteId)->value('sub_total'));
         $this->assertSame(1200.45, (float) DB::table('quotes_ih')->where('id', $quoteId)->value('estimated_total_cost'));
-        $this->assertSame('v1', DB::table('quotes_ih')->where('id', $quoteId)->value('traffic_light_rule_version'));
+        $this->assertSame($ruleVersion, DB::table('quotes_ih')->where('id', $quoteId)->value('traffic_light_rule_version'));
         $this->assertSame('ih_standard_v2', DB::table('quotes_ih')->where('id', $quoteId)->value('pricing_rule_version'));
         $this->assertSame(2, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
 
         $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
             ->assertOk()
             ->assertJsonPath('data.estimated_total_cost', 1200.45)
-            ->assertJsonPath('data.traffic_light_rule_version', 'v1')
+            ->assertJsonPath('data.traffic_light_rule_version', $ruleVersion)
             ->assertJsonPath('data.hygiene_items.0.item_description', 'Sample analysis');
 
         $this->authenticated()->getJson("/invoices/quote/ih/{$quoteId}")
@@ -102,13 +104,13 @@ class IhQuoteAdditionalFeesTest extends TestCase
         $this->assertSame(116.8, (float) $quote->sst_amount);
         $this->assertSame(1576.8, (float) $quote->grand_total);
         $this->assertSame(1300.55, (float) $quote->estimated_total_cost);
-        $this->assertSame('v1', $quote->traffic_light_rule_version);
+        $this->assertSame($ruleVersion, $quote->traffic_light_rule_version);
         $this->assertSame(1, DB::table('quotes_ih_items')->where('quote_id', $quoteId)->count());
 
         $this->authenticated()->getJson("/quotes/ih/{$quoteId}")
             ->assertOk()
             ->assertJsonPath('data.estimated_total_cost', 1300.55)
-            ->assertJsonPath('data.traffic_light_rule_version', 'v1');
+            ->assertJsonPath('data.traffic_light_rule_version', $ruleVersion);
 
         $this->authenticated()->deleteJson("/quote-records/ih/{$quoteId}")
             ->assertOk()
@@ -598,6 +600,7 @@ class IhQuoteAdditionalFeesTest extends TestCase
             'sst_amount' => 0,
             'sub_total' => 0,
             'grand_total' => 0,
+            'estimated_total_cost' => 800,
             'inquiry_remarks' => '',
             'attach_proposal' => 1,
             'proposal_language' => 'en',

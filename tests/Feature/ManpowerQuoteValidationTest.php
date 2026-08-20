@@ -68,6 +68,7 @@ class ManpowerQuoteValidationTest extends TestCase
             'duration_months' => 1,
             'no_of_pax' => 1,
             'unit_cost' => 8000,
+            'estimated_total_cost' => 8000,
         ];
     }
 }

@@ -38,6 +38,8 @@ class QuoteApprovalServiceTest extends TestCase
         Schema::create('quotes_training', function (Blueprint $table): void {
             $table->id();
             $table->string('quote_ref_no')->nullable();
+            $table->string('training_title')->nullable();
+            $table->string('client_name')->nullable();
             $table->unsignedInteger('revision_no')->default(0);
             $table->decimal('grand_total', 15, 2);
             $table->decimal('estimated_total_cost', 15, 2)->nullable();
@@ -129,6 +131,9 @@ class QuoteApprovalServiceTest extends TestCase
             $table->string('service');
             $table->unsignedBigInteger('quote_id');
             $table->string('quote_ref_no')->nullable();
+            $table->string('quote_title')->nullable();
+            $table->timestamp('quote_date')->nullable();
+            $table->string('client_name')->nullable();
             $table->unsignedInteger('revision_no')->default(0);
             $table->string('commercial_fingerprint', 64);
             $table->string('rule_version');
@@ -228,6 +233,93 @@ class QuoteApprovalServiceTest extends TestCase
         $this->assertSame('approved', $approval->status);
         $this->assertNull($approval->required_step);
         $this->assertNull(app(QuoteApprovalService::class)->issuanceDenial('training', $quoteId));
+    }
+
+    public function test_approval_response_uses_the_immutable_quote_metadata_snapshot(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-SNAPSHOT-001',
+            'training_title' => 'Confined Space Training',
+            'client_name' => 'Original Client Sdn Bhd',
+            'grand_total' => 130,
+            'estimated_total_cost' => 100,
+            'created_by_id' => 33,
+            'created_at' => '2026-08-20 09:30:00',
+            'updated_at' => '2026-08-20 09:30:00',
+        ]);
+        $service = app(QuoteApprovalService::class);
+        $approval = $service->current('training', $quoteId, false);
+
+        $payload = $service->show((int) $approval->id, $this->requestForStaff(33));
+
+        $this->assertSame('QTR-SNAPSHOT-001', $payload['quote_ref_no']);
+        $this->assertSame('Confined Space Training', $payload['quote_title']);
+        $this->assertSame('Original Client Sdn Bhd', $payload['client_name']);
+        $this->assertSame('2026-08-20 09:30:00', $payload['quote_date']);
+        $this->assertSame(130.0, $payload['quoted_total']);
+        $this->assertSame(100.0, $payload['estimated_cost']);
+        $this->assertSame(30.0, $payload['margin_percent']);
+
+        $listPayload = $service->listFor($this->requestForStaff(33));
+        $this->assertSame('Original Client Sdn Bhd', $listPayload[0]['client_name']);
+        $this->assertSame('Confined Space Training', $listPayload[0]['quote_title']);
+
+        DB::table('quotes_training')->where('id', $quoteId)->update([
+            'quote_ref_no' => 'QTR-CHANGED',
+            'training_title' => 'Changed Training Title',
+            'client_name' => 'Changed Client Sdn Bhd',
+            'updated_at' => '2026-08-21 09:30:00',
+        ]);
+
+        $snapshotPayload = $service->show((int) $approval->id, $this->requestForStaff(33));
+
+        $this->assertSame('QTR-SNAPSHOT-001', $snapshotPayload['quote_ref_no']);
+        $this->assertSame('Confined Space Training', $snapshotPayload['quote_title']);
+        $this->assertSame('Original Client Sdn Bhd', $snapshotPayload['client_name']);
+        $this->assertSame('2026-08-20 09:30:00', $snapshotPayload['quote_date']);
+    }
+
+    public function test_legacy_approval_response_falls_back_to_the_linked_quote_metadata(): void
+    {
+        $quoteId = DB::table('quotes_training')->insertGetId([
+            'quote_ref_no' => 'QTR-LEGACY-001',
+            'training_title' => 'Legacy Training',
+            'client_name' => 'Legacy Client Sdn Bhd',
+            'grand_total' => 130,
+            'estimated_total_cost' => 100,
+            'created_at' => '2026-08-20 10:00:00',
+            'updated_at' => '2026-08-20 10:00:00',
+        ]);
+        $approvalId = DB::table('quote_approval_requests')->insertGetId([
+            'service' => 'training',
+            'quote_id' => $quoteId,
+            'quote_ref_no' => null,
+            'quote_title' => null,
+            'quote_date' => null,
+            'client_name' => null,
+            'revision_no' => 0,
+            'commercial_fingerprint' => str_repeat('a', 64),
+            'rule_version' => 'legacy',
+            'zone' => 'yellow',
+            'status' => 'pending',
+            'required_step' => 'hod',
+            'quoted_total' => 130,
+            'estimated_cost' => 100,
+            'margin_percent' => 30,
+            'trigger_reasons' => json_encode(['Legacy approval request.']),
+            'is_current' => true,
+            'requested_by_id' => 33,
+            'requested_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $payload = app(QuoteApprovalService::class)->show($approvalId, $this->requestForStaff(33));
+
+        $this->assertSame('QTR-LEGACY-001', $payload['quote_ref_no']);
+        $this->assertSame('Legacy Training', $payload['quote_title']);
+        $this->assertSame('Legacy Client Sdn Bhd', $payload['client_name']);
+        $this->assertSame('2026-08-20 10:00:00', $payload['quote_date']);
     }
 
     public function test_equipment_remarks_preserve_legacy_fingerprints_but_substantive_changes_supersede_them(): void

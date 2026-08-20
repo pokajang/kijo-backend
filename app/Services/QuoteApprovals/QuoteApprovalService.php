@@ -87,10 +87,11 @@ class QuoteApprovalService
                 ? 'approved'
                 : 'pending';
             $requesterId = $this->requesterId($quote);
-            $id = DB::table('quote_approval_requests')->insertGetId([
+            $snapshot = $this->quoteMetadata($service, $quote);
+            $approvalData = [
                 'service' => $service,
                 'quote_id' => $quoteId,
-                'quote_ref_no' => $quote->quote_ref_no ?? null,
+                'quote_ref_no' => $snapshot['quote_ref_no'],
                 'revision_no' => (int) ($quote->revision_no ?? 0),
                 'commercial_fingerprint' => $evaluation['fingerprint'],
                 'rule_version' => $evaluation['rule_version'],
@@ -114,7 +115,13 @@ class QuoteApprovalService
                     : ($status === 'approved' ? 'Automatically approved by the traffic-light policy.' : null),
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            foreach (['quote_title', 'quote_date', 'client_name'] as $column) {
+                if (Schema::hasColumn('quote_approval_requests', $column)) {
+                    $approvalData[$column] = $snapshot[$column];
+                }
+            }
+            $id = DB::table('quote_approval_requests')->insertGetId($approvalData);
 
             $quoteUpdates = [
                 'approval_request_id' => $id,
@@ -695,8 +702,105 @@ class QuoteApprovalService
         }
     }
 
+    /**
+     * Capture the identifying quotation details that an approver reviewed.
+     * Financial values are already stored on the approval request separately.
+     *
+     * @return array{quote_ref_no: ?string, quote_title: ?string, quote_date: mixed, client_name: ?string}
+     */
+    private function quoteMetadata(string $service, object $quote): array
+    {
+        $title = $this->firstQuoteValue($quote, [
+            'quote_title',
+            'quotation_title',
+            'training_title',
+            'service_title',
+            'title',
+            'name',
+        ]);
+
+        return [
+            'quote_ref_no' => $this->firstQuoteValue($quote, [
+                'quote_ref_no',
+                'quote_ref',
+                'quote_number',
+            ]),
+            'quote_title' => $title ?: match ($service) {
+                'training' => 'Training Quotation',
+                'ih' => 'Industrial Hygiene Quotation',
+                'manpower' => 'Manpower Supply Quotation',
+                'equipment' => 'Equipment Supply Quotation',
+                'special' => 'Special Quotation',
+                default => 'Quotation',
+            },
+            'quote_date' => $this->firstQuoteValue($quote, [
+                'quote_date',
+                'quotation_date',
+                'created_at',
+                'updated_at',
+            ]),
+            'client_name' => $this->firstQuoteValue($quote, [
+                'client_name',
+                'company_name',
+                'customer_name',
+            ]),
+        ];
+    }
+
+    /**
+     * Prefer immutable snapshot fields. Existing approval requests created before
+     * the snapshot migration use their linked quotation as a read-time fallback.
+     *
+     * @return array{quote_ref_no: ?string, quote_title: ?string, quote_date: mixed, client_name: ?string}
+     */
+    private function approvalMetadata(object $approval): array
+    {
+        $metadata = [
+            'quote_ref_no' => $this->firstQuoteValue($approval, ['quote_ref_no']),
+            'quote_title' => $this->firstQuoteValue($approval, ['quote_title']),
+            'quote_date' => $this->firstQuoteValue($approval, ['quote_date']),
+            'client_name' => $this->firstQuoteValue($approval, ['client_name']),
+        ];
+        if (! in_array(null, $metadata, true)) {
+            return $metadata;
+        }
+
+        $table = self::TABLES[(string) ($approval->service ?? '')] ?? null;
+        $quote = $table && Schema::hasTable($table)
+            ? DB::table($table)->where('id', (int) $approval->quote_id)->first()
+            : null;
+        if (! $quote) {
+            return $metadata;
+        }
+
+        $fallback = $this->quoteMetadata((string) $approval->service, $quote);
+        foreach ($metadata as $key => $value) {
+            if ($value === null) {
+                $metadata[$key] = $fallback[$key];
+            }
+        }
+
+        return $metadata;
+    }
+
+    private function firstQuoteValue(object $quote, array $fields): ?string
+    {
+        foreach ($fields as $field) {
+            if (! property_exists($quote, $field) || $quote->{$field} === null) {
+                continue;
+            }
+            $value = trim((string) $quote->{$field});
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
     private function payload(object $row, ?Request $request = null): array
     {
+        $metadata = $this->approvalMetadata($row);
         $reasons = is_array($row->trigger_reasons ?? null)
             ? $row->trigger_reasons
             : (json_decode((string) ($row->trigger_reasons ?? '[]'), true) ?: []);
@@ -709,7 +813,10 @@ class QuoteApprovalService
             'request_id' => (int) $row->id,
             'service' => (string) $row->service,
             'quote_id' => (int) $row->quote_id,
-            'quote_ref_no' => $row->quote_ref_no,
+            'quote_ref_no' => $metadata['quote_ref_no'],
+            'quote_title' => $metadata['quote_title'],
+            'quote_date' => $metadata['quote_date'],
+            'client_name' => $metadata['client_name'],
             'revision_no' => (int) $row->revision_no,
             'rule_version' => (string) $row->rule_version,
             'zone' => (string) $row->zone,
