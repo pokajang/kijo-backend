@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -487,9 +488,9 @@ class OtherClaimService extends PdfRenderer
                 }
                 if ($existingStatus === 'Rejected') {
                     $isRevision = true;
-                } elseif ($existingStatus !== 'Draft') {
+                } elseif (! in_array($existingStatus, ['Draft', 'Submitted', 'Prepared'], true)) {
                     throw ValidationException::withMessages([
-                        'application_id' => ['Withdraw this submitted claim before changing it. Rejected claims can be revised and resubmitted.'],
+                        'application_id' => ['This other claim has already been reviewed and can no longer be edited.'],
                     ]);
                 }
                 if ($isRevision) {
@@ -513,6 +514,17 @@ class OtherClaimService extends PdfRenderer
                         $existingStatus,
                         'Revised',
                         $reason,
+                        $this->snapshotRecord($existing, includeClaims: true),
+                    );
+                } elseif (in_array($existingStatus, ['Submitted', 'Prepared'], true)) {
+                    $this->recordWorkflowEvent(
+                        self::SUBJECT_TYPE,
+                        (int) $existing->id,
+                        'edit',
+                        $staffId,
+                        $existingStatus,
+                        'Submitted',
+                        'Claim edited and resubmitted before review.',
                         $this->snapshotRecord($existing, includeClaims: true),
                     );
                 }
@@ -608,7 +620,15 @@ class OtherClaimService extends PdfRenderer
                 ]);
             }
 
-            $this->storeClaims($claims, $files, $preservedAttachments, $applicationId, $staffId, $data['claim_month']);
+            $this->storeClaims(
+                $claims,
+                $files,
+                $preservedAttachments,
+                $applicationId,
+                $staffId,
+                $data['claim_month'],
+                reattachPreserved: ! $isRevision,
+            );
             $record = DB::table('hr_other_claim_applications')->where('id', $applicationId)->first();
             $this->workflowService->createOrResetOtherClaimWorkflow($applicationId, $staffId);
             $savedRecord = $this->recordPayload($record, includeClaims: true, request: $request);
@@ -864,8 +884,17 @@ class OtherClaimService extends PdfRenderer
             ->all();
     }
 
-    private function storeClaims(array $claims, array $files, $preservedAttachments, int $applicationId, int $staffId, string $claimMonth): void
-    {
+    private function storeClaims(
+        array $claims,
+        array $files,
+        $preservedAttachments,
+        int $applicationId,
+        int $staffId,
+        string $claimMonth,
+        bool $reattachPreserved = true,
+    ): void {
+        $reattachedIds = [];
+
         foreach ($claims as $index => $claim) {
             $claimId = (int) DB::table('hr_other_claim_items')->insertGetId([
                 'application_id' => $applicationId,
@@ -923,7 +952,19 @@ class OtherClaimService extends PdfRenderer
                         (string) $attachment['purpose'],
                     );
                 } elseif ($attachment['id'] !== null && $preservedAttachments->has((int) $attachment['id'])) {
-                    $this->copyClaimAttachment($preservedAttachments->get((int) $attachment['id']), $claimId);
+                    $preserved = $preservedAttachments->get((int) $attachment['id']);
+                    if (in_array((int) $preserved->id, $reattachedIds, true)) {
+                        continue;
+                    }
+
+                    $reattachedIds[] = (int) $preserved->id;
+                    // In-place saves keep the attachment id stable so the client never holds a
+                    // stale reference. Revisions copy, because the superseded record keeps its rows.
+                    if ($reattachPreserved) {
+                        $this->reattachClaimAttachment($preserved, $claimId);
+                    } else {
+                        $this->copyClaimAttachment($preserved, $claimId);
+                    }
                 }
             }
         }
@@ -984,12 +1025,51 @@ class OtherClaimService extends PdfRenderer
         if ($includeClaims) {
             $payload['claims'] = $this->claimsForApplication((int) $record->id, $financialView);
             $payload['paymentHistory'] = $this->paymentHistoryForApplication((int) $record->id, $financialView);
+            $payload['auditEvents'] = $this->auditEventsForApplication((int) $record->id);
         }
         $payload['workflow'] = (string) $record->status === 'Draft'
             ? null
             : ($workflowPayload ?? $this->workflowService->otherClaimWorkflowPayload((int) $record->id, $request));
 
         return $payload;
+    }
+
+    private function auditEventsForApplication(int $applicationId): array
+    {
+        if (! Schema::hasTable('hr_salary_workflow_events')) {
+            return [];
+        }
+
+        return DB::table('hr_salary_workflow_events as event')
+            ->leftJoin('staff_general as actor', 'actor.staff_id', '=', 'event.actor_staff_id')
+            ->where('event.subject_type', self::SUBJECT_TYPE)
+            ->where('event.subject_id', $applicationId)
+            ->orderByDesc('event.acted_at')
+            ->orderByDesc('event.id')
+            ->select([
+                'event.id',
+                'event.action',
+                'event.status_from',
+                'event.status_to',
+                'event.reason',
+                'event.previous_snapshot_json',
+                'event.acted_at',
+                'actor.full_name as actor_name',
+                'actor.name_code as actor_code',
+            ])
+            ->get()
+            ->map(fn (object $event): array => [
+                'id' => (int) $event->id,
+                'action' => (string) $event->action,
+                'statusFrom' => (string) ($event->status_from ?? ''),
+                'statusTo' => (string) ($event->status_to ?? ''),
+                'reason' => (string) ($event->reason ?? ''),
+                'previousSnapshot' => $this->decodeJson($event->previous_snapshot_json ?? null),
+                'actedAt' => $event->acted_at,
+                'actorName' => (string) ($event->actor_name ?? ''),
+                'actorCode' => (string) ($event->actor_code ?? ''),
+            ])
+            ->all();
     }
 
     private function claimsForApplication(int $applicationId, bool $financialView = false): array
@@ -1423,14 +1503,36 @@ class OtherClaimService extends PdfRenderer
             return collect();
         }
 
-        return DB::table('hr_other_claim_attachments as attachment')
+        $hasLineage = Schema::hasColumn('hr_other_claim_attachments', 'source_attachment_id');
+        $rows = DB::table('hr_other_claim_attachments as attachment')
             ->join('hr_other_claim_items as claim', 'claim.id', '=', 'attachment.claim_id')
             ->where('claim.application_id', $applicationId)
             ->where('attachment.staff_id', $staffId)
-            ->whereIn('attachment.id', $attachmentIds)
+            ->where(function ($query) use ($attachmentIds, $hasLineage): void {
+                $query->whereIn('attachment.id', $attachmentIds);
+                if ($hasLineage) {
+                    // A client holding an id from an earlier save still resolves to the live row.
+                    $query->orWhereIn('attachment.source_attachment_id', $attachmentIds);
+                }
+            })
             ->select('attachment.*')
-            ->get()
-            ->keyBy('id');
+            ->get();
+
+        $preserved = $rows->keyBy('id');
+        foreach ($rows as $row) {
+            $sourceId = $hasLineage ? (int) ($row->source_attachment_id ?? 0) : 0;
+            if ($sourceId > 0 && in_array($sourceId, $attachmentIds, true) && ! $preserved->has($sourceId)) {
+                $preserved->put($sourceId, $row);
+                Log::warning('Other claim attachment resolved through a superseded id.', [
+                    'applicationId' => $applicationId,
+                    'staffId' => $staffId,
+                    'staleAttachmentId' => $sourceId,
+                    'attachmentId' => (int) $row->id,
+                ]);
+            }
+        }
+
+        return $preserved;
     }
 
     private function deleteApplicationClaims(int $applicationId, array $preserveAttachmentIds = []): void
@@ -1441,9 +1543,30 @@ class OtherClaimService extends PdfRenderer
             ->where('claim.application_id', $applicationId)
             ->select('attachment.id', 'attachment.stored_path')
             ->get();
+        $discardedIds = $attachments
+            ->reject(fn (object $attachment): bool => in_array((int) $attachment->id, $preserveAttachmentIds, true))
+            ->map(fn (object $attachment): int => (int) $attachment->id)
+            ->values()
+            ->all();
+
         foreach ($attachments as $attachment) {
-            if (! in_array((int) $attachment->id, $preserveAttachmentIds, true)) {
-                AppFilePaths::deleteStoredPath((string) $attachment->stored_path);
+            if (in_array((int) $attachment->id, $preserveAttachmentIds, true)) {
+                continue;
+            }
+
+            $storedPath = (string) $attachment->stored_path;
+            if ($storedPath === '') {
+                continue;
+            }
+
+            // Preserved rows and revision copies reuse the same stored path, so only the
+            // last reference may unlink the file.
+            $stillReferenced = DB::table('hr_other_claim_attachments')
+                ->where('stored_path', $storedPath)
+                ->whereNotIn('id', $discardedIds)
+                ->exists();
+            if (! $stillReferenced) {
+                AppFilePaths::deleteStoredPath($storedPath);
             }
         }
 
@@ -1480,6 +1603,17 @@ class OtherClaimService extends PdfRenderer
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+    }
+
+    private function reattachClaimAttachment(object $attachment, int $claimId): void
+    {
+        // The row was cascade-deleted with its claim item, so the id is free to reclaim.
+        $payload = array_merge((array) $attachment, [
+            'claim_id' => $claimId,
+            'updated_at' => now(),
+        ]);
+
+        DB::table('hr_other_claim_attachments')->insert($payload);
     }
 
     private function copyClaimAttachment(object $attachment, int $claimId): void

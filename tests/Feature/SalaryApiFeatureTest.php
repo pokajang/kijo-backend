@@ -1113,7 +1113,7 @@ class SalaryApiFeatureTest extends TestCase
             ->assertHeader('Content-Disposition', 'inline; filename="other-claims-may-2026.pdf"');
         $this->assertStringStartsWith('%PDF', $pdf->getContent());
 
-        $this->submitOtherClaim([
+        $updated = $this->submitOtherClaim([
             [
                 'id' => 'other-expense-replaced',
                 'type' => 'Expense',
@@ -1123,8 +1123,28 @@ class SalaryApiFeatureTest extends TestCase
                 'attachmentId' => $attachmentId,
             ],
         ], [], ['application_id' => $recordId])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['application_id']);
+            ->assertOk()
+            ->assertJsonPath('record.id', $recordId)
+            ->assertJsonPath('record.status', 'Submitted')
+            ->assertJsonPath('record.claimsTotal', 75)
+            ->assertJsonPath('record.claims.0.description', 'Updated parking claim')
+            ->assertJsonPath('record.claims.0.attachment.id', $attachmentId);
+
+        $this->assertDatabaseHas('hr_salary_workflow_events', [
+            'subject_type' => 'other_claim_application',
+            'subject_id' => $recordId,
+            'action' => 'edit',
+            'status_from' => 'Submitted',
+            'status_to' => 'Submitted',
+            'reason' => 'Claim edited and resubmitted before review.',
+        ]);
+        $this->assertSame(
+            'Submitted',
+            DB::table('workflow_instances')
+                ->where('subject_type', 'other_claim_application')
+                ->where('subject_id', $recordId)
+                ->value('status'),
+        );
 
         $currentVersion = (int) DB::table('hr_other_claim_applications')
             ->where('id', $recordId)
