@@ -582,6 +582,9 @@ Route::middleware('auth.session')->group(function () {
     Route::get('hr/salary/other-claims/{id}/claims-pdf', [SalaryController::class, 'otherClaimClaimsPdf'])->whereNumber('id');
     Route::get('hr/salary/other-claims/{id}', [SalaryController::class, 'otherClaimRecord'])->whereNumber('id');
     Route::delete('hr/salary/other-claims/{id}', [SalaryController::class, 'destroyOtherClaimRecord'])->whereNumber('id');
+    Route::post('hr/salary/other-claims/{id}/withdraw', [SalaryController::class, 'withdrawOtherClaimRecord'])->whereNumber('id');
+    Route::post('hr/salary/other-claims/{id}/archive', [SalaryController::class, 'archiveOtherClaimRecord'])->whereNumber('id');
+    Route::post('hr/salary/other-claims/financial-records/{id}/restore-archive', [SalaryController::class, 'restoreArchivedOtherClaimRecord'])->whereNumber('id')->middleware('role:HR,System Admin');
     Route::get('hr/salary/other-claims/draft', [SalaryController::class, 'otherClaimDraftApplication']);
     Route::put('hr/salary/other-claims/draft', [SalaryController::class, 'storeOtherClaimDraftApplication']);
     Route::delete('hr/salary/other-claims/draft', [SalaryController::class, 'destroyOtherClaimDraftApplication']);

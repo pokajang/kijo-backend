@@ -168,6 +168,21 @@ class SalaryController extends Controller
         return $this->otherClaimService->destroyRecord($request, $id);
     }
 
+    public function withdrawOtherClaimRecord(Request $request, int $id): JsonResponse
+    {
+        return $this->otherClaimService->withdrawRecord($request, $id);
+    }
+
+    public function archiveOtherClaimRecord(Request $request, int $id): JsonResponse
+    {
+        return $this->otherClaimService->archiveRecord($request, $id);
+    }
+
+    public function restoreArchivedOtherClaimRecord(Request $request, int $id): JsonResponse
+    {
+        return $this->otherClaimService->restoreArchivedRecord($request, $id);
+    }
+
     public function otherClaimDraftApplication(Request $request): JsonResponse
     {
         return $this->otherClaimService->draftApplication($request);

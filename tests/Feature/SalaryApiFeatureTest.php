@@ -73,6 +73,10 @@ class SalaryApiFeatureTest extends TestCase
             '--path' => 'database/migrations/2026_06_17_230000_harden_salary_payment_run_voids.php',
             '--realpath' => false,
         ])->run();
+        $this->artisan('migrate', [
+            '--path' => 'database/migrations/2026_08_20_110000_add_other_claim_archive_fields.php',
+            '--realpath' => false,
+        ])->run();
     }
 
     protected function tearDown(): void
@@ -1025,9 +1029,22 @@ class SalaryApiFeatureTest extends TestCase
             ->assertJsonPath('record.claims.0.description', 'Parking')
             ->assertJsonPath('record.claims.0.attachments.0.name', 'parking.pdf');
 
+        $recordId = (int) $response->json('record.id');
         $storedPath = DB::table('hr_other_claim_attachments')->value('stored_path');
         $this->assertNotEmpty($storedPath);
         Storage::disk('private')->assertExists($storedPath);
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'confirmation' => 'DELETE',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Other claim permanently deleted.');
+
+        $this->assertDatabaseMissing('hr_other_claim_applications', ['id' => $recordId]);
+        Storage::disk('private')->assertMissing($storedPath);
     }
 
     public function test_other_claim_application_create_replace_attachment_owner_access_and_pdf(): void
@@ -1151,7 +1168,7 @@ class SalaryApiFeatureTest extends TestCase
             ->value('record_version');
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
-            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+            ->postJson("/hr/salary/other-claims/{$recordId}/withdraw", [
                 'reason' => 'Stale browser attempt',
                 'record_version' => $currentVersion + 1,
             ])
@@ -1163,7 +1180,7 @@ class SalaryApiFeatureTest extends TestCase
 
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
-            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+            ->postJson("/hr/salary/other-claims/{$recordId}/withdraw", [
                 'reason' => 'Submitted with an incorrect receipt',
                 'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
             ])
@@ -1610,7 +1627,7 @@ class SalaryApiFeatureTest extends TestCase
 
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
-            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+            ->postJson("/hr/salary/other-claims/{$recordId}/withdraw", [
                 'reason' => 'The approved amount needs correction before payment.',
                 'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
             ])
@@ -1624,6 +1641,152 @@ class SalaryApiFeatureTest extends TestCase
             'status_from' => 'Approved',
             'status_to' => 'Cancelled',
             'reason' => 'The approved amount needs correction before payment.',
+        ]);
+    }
+
+    public function test_withdrawn_other_claim_can_be_archived_and_restored_without_losing_audit_history(): void
+    {
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'archive-allowance',
+                'type' => 'Allowance',
+                'date' => '2026-05-10',
+                'description' => 'Archive lifecycle allowance',
+                'amount' => 100,
+            ],
+        ])->assertOk();
+        $recordId = (int) $response->json('record.id');
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/{$recordId}/withdraw", [
+                'reason' => 'Submitted in error.',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Other claim withdrawn.');
+
+        $withdrawnVersion = (int) DB::table('hr_other_claim_applications')
+            ->where('id', $recordId)
+            ->value('record_version');
+        $this->actingSession(2, 20, ['Staff'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/{$recordId}/archive", [
+                'record_version' => $withdrawnVersion,
+            ])
+            ->assertNotFound();
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/{$recordId}/archive", [
+                'reason' => 'No longer needed in my record list.',
+                'record_version' => $withdrawnVersion,
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Withdrawn other claim archived.');
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/{$recordId}/archive", [
+                'record_version' => $withdrawnVersion,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'This claim changed or was already archived. Refresh before continuing.');
+
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $recordId,
+            'status' => 'Cancelled',
+            'archived_by' => 10,
+            'archive_reason' => 'No longer needed in my record list.',
+        ]);
+        $this->assertDatabaseHas('hr_salary_workflow_events', [
+            'subject_type' => 'other_claim_application',
+            'subject_id' => $recordId,
+            'action' => 'archive',
+            'status_from' => 'Cancelled',
+            'status_to' => 'Cancelled',
+        ]);
+
+        $this->actingSession()
+            ->getJson('/hr/salary/other-claims')
+            ->assertOk()
+            ->assertJsonCount(0, 'records');
+        $this->actingSession()
+            ->getJson('/hr/salary/other-claims?scope=archived')
+            ->assertOk()
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.id', $recordId)
+            ->assertJsonPath('records.0.archivedBy', 10)
+            ->assertJsonPath('records.0.archiveReason', 'No longer needed in my record list.');
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->getJson('/hr/salary/other-claims/financial-records?scope=archived')
+            ->assertForbidden();
+        $this->actingSession(4, 40, ['System Admin'])
+            ->getJson('/hr/salary/other-claims/financial-records?scope=archived')
+            ->assertOk()
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.id', $recordId);
+
+        $this->actingSession(1, 10, ['Staff'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/restore-archive", [
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
+            ->assertForbidden();
+        $this->actingSession(4, 40, ['System Admin'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/restore-archive", [
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Archived other claim restored to withdrawn records.');
+
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $recordId,
+            'status' => 'Cancelled',
+            'archived_at' => null,
+            'archived_by' => null,
+            'archive_reason' => null,
+        ]);
+        $this->assertDatabaseHas('hr_salary_workflow_events', [
+            'subject_type' => 'other_claim_application',
+            'subject_id' => $recordId,
+            'action' => 'restore_archive',
+            'status_from' => 'Cancelled',
+            'status_to' => 'Cancelled',
+        ]);
+        $this->actingSession()
+            ->getJson('/hr/salary/other-claims')
+            ->assertOk()
+            ->assertJsonCount(1, 'records')
+            ->assertJsonPath('records.0.status', 'Cancelled');
+
+        $deleteVersion = (int) DB::table('hr_other_claim_applications')
+            ->where('id', $recordId)
+            ->value('record_version');
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'confirmation' => 'DELETE',
+                'record_version' => $deleteVersion,
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Other claim permanently deleted.');
+
+        $this->assertDatabaseMissing('hr_other_claim_applications', ['id' => $recordId]);
+        $this->assertDatabaseMissing('hr_other_claim_items', ['application_id' => $recordId]);
+        $this->assertDatabaseMissing('workflow_instances', [
+            'subject_type' => 'other_claim_application',
+            'subject_id' => $recordId,
+        ]);
+        $this->assertDatabaseMissing('hr_salary_workflow_events', [
+            'subject_type' => 'other_claim_application',
+            'subject_id' => $recordId,
+        ]);
+        $this->assertDatabaseMissing('in_app_notifications', [
+            'entity_type' => 'other_claim_application',
+            'entity_id' => $recordId,
         ]);
     }
 
@@ -1665,11 +1828,39 @@ class SalaryApiFeatureTest extends TestCase
         $this->actingSession()
             ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
             ->deleteJson("/hr/salary/other-claims/{$recordId}", [
-                'reason' => 'Try delete paid',
+                'confirmation' => 'DELETE',
                 'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
             ])
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Paid other claim records cannot be changed.');
+            ->assertJsonPath('message', 'Financially processed other claim records cannot be permanently deleted.');
+    }
+
+    public function test_submitted_other_claim_must_be_withdrawn_before_hard_deletion(): void
+    {
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'delete-submitted-claim',
+                'type' => 'Allowance',
+                'date' => '2026-05-10',
+                'description' => 'Submitted claim pending withdrawal',
+                'amount' => 100,
+            ],
+        ])->assertOk();
+        $recordId = (int) $response->json('record.id');
+
+        $this->actingSession()
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->deleteJson("/hr/salary/other-claims/{$recordId}", [
+                'confirmation' => 'DELETE',
+                'record_version' => (int) DB::table('hr_other_claim_applications')->where('id', $recordId)->value('record_version'),
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Withdraw this other claim before permanently deleting it.');
+
+        $this->assertDatabaseHas('hr_other_claim_applications', [
+            'id' => $recordId,
+            'status' => 'Submitted',
+        ]);
     }
 
     public function test_rejected_other_claim_creates_a_linked_revision(): void
@@ -1726,6 +1917,60 @@ class SalaryApiFeatureTest extends TestCase
             'status_to' => 'Revised',
             'reason' => 'Corrected the amount after finance feedback.',
         ]);
+    }
+
+    public function test_financial_other_claim_worklist_redacts_unassigned_roles_but_keeps_workflow_progress_visible(): void
+    {
+        $response = $this->submitOtherClaim([
+            [
+                'id' => 'other-allowance',
+                'type' => 'Allowance',
+                'date' => '2026-05-10',
+                'description' => 'Meal allowance',
+                'amount' => 100,
+            ],
+        ])->assertOk();
+        $recordId = $response->json('record.id');
+        $this->assignSalaryWorkflowRecipient('check', 30);
+
+        $readOnlyResponse = $this->actingSession(5, 50, ['Bank'])
+            ->getJson('/hr/salary/other-claims/financial-records')
+            ->assertOk()
+            ->assertJsonPath('records.0.id', $recordId)
+            ->assertJsonPath('records.0.canViewFinancialDetails', false)
+            ->assertJsonPath('records.0.financialDetailsRestricted', true)
+            ->assertJsonPath('records.0.workflow.availableActions', [])
+            ->assertJsonPath('records.0.workflow.summary', 'Pending review by Manager Example (MGR)');
+
+        $readOnlyRecord = $readOnlyResponse->json('records.0');
+        $this->assertArrayNotHasKey('claimsTotal', $readOnlyRecord);
+        $this->assertArrayNotHasKey('recordVersion', $readOnlyRecord);
+        $this->assertArrayNotHasKey('checkedRemarks', $readOnlyRecord);
+
+        $this->actingSession(5, 50, ['Bank'])
+            ->getJson("/hr/salary/other-claims/financial-records/{$recordId}")
+            ->assertNotFound();
+        $this->actingSession(5, 50, ['Bank'])
+            ->withHeader('X-CSRF-TOKEN', 'test-csrf-token')
+            ->postJson("/hr/salary/other-claims/financial-records/{$recordId}/action", [
+                'action' => 'check',
+                'remarks' => 'Not assigned.',
+                'record_version' => 1,
+            ])
+            ->assertNotFound();
+
+        $this->actingSession(3, 30, ['Manager'])
+            ->getJson('/hr/salary/other-claims/financial-records')
+            ->assertOk()
+            ->assertJsonPath('records.0.canViewFinancialDetails', true)
+            ->assertJsonPath('records.0.claimsTotal', 100)
+            ->assertJsonPath('records.0.workflow.availableActions.0.action', 'check');
+
+        $this->actingSession(4, 40, ['System Admin'])
+            ->getJson('/hr/salary/other-claims/financial-records')
+            ->assertOk()
+            ->assertJsonPath('records.0.canViewFinancialDetails', false)
+            ->assertJsonPath('records.0.workflow.availableActions', []);
     }
 
     public function test_financial_other_claim_records_can_be_checked_and_approved(): void

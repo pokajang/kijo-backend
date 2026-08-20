@@ -43,8 +43,18 @@ class OtherClaimService extends PdfRenderer
 
     public function records(Request $request): JsonResponse
     {
+        $scope = Validator::make($request->query(), [
+            'scope' => ['nullable', 'string', 'in:current,archived'],
+        ])->validate()['scope'] ?? 'current';
+
         $records = DB::table('hr_other_claim_applications')
             ->where('staff_id', $this->staffId($request))
+            ->when(
+                $this->supportsArchiving(),
+                fn ($query) => $scope === 'archived'
+                    ? $query->whereNotNull('archived_at')
+                    : $query->whereNull('archived_at'),
+            )
             ->when(
                 Schema::hasColumn('hr_other_claim_applications', 'superseded_at'),
                 fn ($query) => $query->whereNull('superseded_at'),
@@ -60,6 +70,13 @@ class OtherClaimService extends PdfRenderer
 
     public function financialRecords(Request $request): JsonResponse
     {
+        $scope = Validator::make($request->query(), [
+            'scope' => ['nullable', 'string', 'in:current,archived'],
+        ])->validate()['scope'] ?? 'current';
+        if ($scope === 'archived' && ! $this->canManageArchivedClaims($request)) {
+            abort(response()->json(['status' => 'error', 'message' => 'Only HR or System Admin can view archived other claims.'], 403));
+        }
+
         $records = DB::table('hr_other_claim_applications as application')
             ->leftJoin('staff_general as staff', 'staff.staff_id', '=', 'application.staff_id')
             ->leftJoin('staff_general as checker', 'checker.staff_id', '=', 'application.checked_by')
@@ -73,7 +90,15 @@ class OtherClaimService extends PdfRenderer
                 'approver.full_name as approver_name',
                 'approver.name_code as approver_code',
             ])
-            ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
+            ->when(
+                $scope === 'archived',
+                fn ($query) => $query
+                    ->where('application.status', self::CANCELLED_STATUS)
+                    ->whereNotNull('application.archived_at'),
+                fn ($query) => $query
+                    ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
+                    ->when($this->supportsArchiving(), fn ($nested) => $nested->whereNull('application.archived_at')),
+            )
             ->when(
                 Schema::hasColumn('hr_other_claim_applications', 'superseded_at'),
                 fn ($query) => $query->whereNull('application.superseded_at'),
@@ -95,12 +120,10 @@ class OtherClaimService extends PdfRenderer
         return response()->json([
             'status' => 'success',
             'records' => $records
-                ->filter(fn (object $record): bool => $this->canViewFinancialRecord($request, $record))
-                ->map(fn (object $record): array => $this->recordPayload(
+                ->map(fn (object $record): array => $this->financialWorklistPayload(
                     $record,
-                    includeClaims: false,
-                    request: $request,
-                    workflowPayload: $workflowPayloads[(int) $record->id] ?? null,
+                    $request,
+                    $workflowPayloads[(int) $record->id] ?? null,
                 ))
                 ->all(),
         ]);
@@ -114,7 +137,7 @@ class OtherClaimService extends PdfRenderer
         }
 
         $this->workflowService->ensureOtherClaimWorkflowForExistingRecord($record);
-        if (! $this->canViewFinancialRecord($request, $record)) {
+        if (! $this->canViewFinancialDetails($request, $record)) {
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
         }
 
@@ -142,7 +165,7 @@ class OtherClaimService extends PdfRenderer
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
         }
         $this->workflowService->ensureOtherClaimWorkflowForExistingRecord($record);
-        if ((string) $record->status === self::CANCELLED_STATUS || ! $this->canViewFinancialRecord($request, $record)) {
+        if ((string) $record->status === self::CANCELLED_STATUS || ! $this->canViewFinancialDetails($request, $record)) {
             return response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404);
         }
         if ((string) $record->status === 'Draft') {
@@ -199,14 +222,14 @@ class OtherClaimService extends PdfRenderer
             ->whereNotIn('application.status', ['Draft', self::CANCELLED_STATUS])
             ->first();
 
-        if (! $record || ! $this->canViewFinancialRecord($request, $record)) {
+        if (! $record || ! $this->canViewFinancialDetails($request, $record)) {
             abort(404, 'Other claim record not found.');
         }
 
         return $this->claimPdfResponse($request, $record);
     }
 
-    public function destroyRecord(Request $request, int $id): JsonResponse
+    public function withdrawRecord(Request $request, int $id): JsonResponse
     {
         $data = Validator::make($request->all(), [
             'reason' => ['nullable', 'string', 'max:1000'],
@@ -215,10 +238,9 @@ class OtherClaimService extends PdfRenderer
         $staffId = $this->staffId($request);
         $record = null;
         $recipientIds = [];
-        $draftDeleted = false;
         $withdrawReason = '';
 
-        DB::transaction(function () use ($data, $id, $staffId, &$record, &$recipientIds, &$draftDeleted, &$withdrawReason): void {
+        DB::transaction(function () use ($data, $id, $staffId, &$record, &$recipientIds, &$withdrawReason): void {
             $instances = DB::table('workflow_instances')
                 ->where('subject_type', self::SUBJECT_TYPE)
                 ->where('subject_id', $id)
@@ -248,21 +270,6 @@ class OtherClaimService extends PdfRenderer
                     'status' => 'error',
                     'message' => 'Paid other claim records cannot be changed.',
                 ], 422));
-            }
-            if ((string) $record->status === 'Draft') {
-                $this->deleteApplicationClaims($id);
-                $workflowInstanceIds = $instances
-                    ->pluck('id')
-                    ->map(fn ($workflowInstanceId): int => (int) $workflowInstanceId)
-                    ->all();
-                if ($workflowInstanceIds !== []) {
-                    DB::table('workflow_actions')->whereIn('instance_id', $workflowInstanceIds)->delete();
-                    DB::table('workflow_instances')->whereIn('id', $workflowInstanceIds)->delete();
-                }
-                DB::table('hr_other_claim_applications')->where('id', $id)->delete();
-                $draftDeleted = true;
-
-                return;
             }
             if (! in_array((string) $record->status, ['Submitted', 'Prepared', 'Checked', 'Approved', 'Rejected'], true)) {
                 abort(response()->json([
@@ -315,10 +322,6 @@ class OtherClaimService extends PdfRenderer
             ]);
         });
 
-        if ($draftDeleted) {
-            return response()->json(['status' => 'success', 'message' => 'Other claim draft deleted.']);
-        }
-
         try {
             $this->workflowNotifications->notifyRecordCancelled($request, self::SUBJECT_TYPE, $id, $recipientIds, $withdrawReason);
         } catch (\Throwable $e) {
@@ -326,6 +329,160 @@ class OtherClaimService extends PdfRenderer
         }
 
         return response()->json(['status' => 'success', 'message' => 'Other claim withdrawn.']);
+    }
+
+    public function destroyRecord(Request $request, int $id): JsonResponse
+    {
+        $data = Validator::make($request->all(), [
+            'confirmation' => ['required', 'string', 'in:DELETE'],
+            'record_version' => ['required', 'integer', 'min:1'],
+        ])->validate();
+        $staffId = $this->staffId($request);
+
+        DB::transaction(function () use ($data, $id, $staffId): void {
+            $record = DB::table('hr_other_claim_applications')
+                ->where('staff_id', $staffId)
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->first();
+            if (! $record) {
+                abort(response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404));
+            }
+            $this->assertCurrentRecordVersion($record, (int) $data['record_version']);
+            if ($this->isPaidStatus((string) $record->status) || $this->hasPaymentRunReference($id)) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Financially processed other claim records cannot be permanently deleted.',
+                ], 422));
+            }
+            if (! in_array((string) $record->status, ['Draft', self::CANCELLED_STATUS], true)) {
+                abort(response()->json([
+                    'status' => 'error',
+                    'message' => 'Withdraw this other claim before permanently deleting it.',
+                ], 422));
+            }
+
+            $instances = DB::table('workflow_instances')
+                ->where('subject_type', self::SUBJECT_TYPE)
+                ->where('subject_id', $id)
+                ->lockForUpdate()
+                ->get(['id']);
+            $this->deleteApplicationClaims($id);
+            $workflowInstanceIds = $instances->pluck('id')->map(fn ($instanceId): int => (int) $instanceId)->all();
+            if ($workflowInstanceIds !== []) {
+                DB::table('workflow_actions')->whereIn('instance_id', $workflowInstanceIds)->delete();
+                DB::table('workflow_instances')->whereIn('id', $workflowInstanceIds)->delete();
+            }
+            if (Schema::hasTable('hr_salary_workflow_events')) {
+                DB::table('hr_salary_workflow_events')
+                    ->where('subject_type', self::SUBJECT_TYPE)
+                    ->where('subject_id', $id)
+                    ->delete();
+            }
+            if (Schema::hasTable('in_app_notifications')) {
+                DB::table('in_app_notifications')
+                    ->where('entity_type', self::SUBJECT_TYPE)
+                    ->where('entity_id', $id)
+                    ->delete();
+            }
+            DB::table('hr_other_claim_applications')->where('id', $id)->delete();
+        });
+
+        return response()->json(['status' => 'success', 'message' => 'Other claim permanently deleted.']);
+    }
+
+    public function archiveRecord(Request $request, int $id): JsonResponse
+    {
+        $data = Validator::make($request->all(), [
+            'reason' => ['nullable', 'string', 'max:1000'],
+            'record_version' => ['required', 'integer', 'min:1'],
+        ])->validate();
+        $staffId = $this->staffId($request);
+
+        DB::transaction(function () use ($data, $id, $staffId): void {
+            $record = DB::table('hr_other_claim_applications')
+                ->where('id', $id)
+                ->where('staff_id', $staffId)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $record) {
+                abort(response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404));
+            }
+            $this->assertCurrentRecordVersion($record, (int) $data['record_version']);
+            if ((string) $record->status !== self::CANCELLED_STATUS) {
+                abort(response()->json(['status' => 'error', 'message' => 'Only withdrawn other claims can be archived.'], 422));
+            }
+            if (! empty($record->archived_at)) {
+                abort(response()->json(['status' => 'error', 'message' => 'This withdrawn other claim is already archived.'], 409));
+            }
+            if ($this->isPaidStatus((string) $record->status)) {
+                abort(response()->json(['status' => 'error', 'message' => 'Paid other claim records cannot be archived.'], 422));
+            }
+
+            $reason = trim((string) ($data['reason'] ?? ''));
+            $this->recordWorkflowEvent(
+                self::SUBJECT_TYPE,
+                $id,
+                'archive',
+                $staffId,
+                self::CANCELLED_STATUS,
+                self::CANCELLED_STATUS,
+                $reason,
+                $this->snapshotRecord($record, includeClaims: true),
+            );
+            DB::table('hr_other_claim_applications')->where('id', $id)->update([
+                'archived_at' => now(),
+                'archived_by' => $staffId,
+                'archive_reason' => $reason ?: null,
+                'record_version' => DB::raw('record_version + 1'),
+                'updated_at' => now(),
+            ]);
+        });
+
+        return response()->json(['status' => 'success', 'message' => 'Withdrawn other claim archived.']);
+    }
+
+    public function restoreArchivedRecord(Request $request, int $id): JsonResponse
+    {
+        $data = Validator::make($request->all(), [
+            'record_version' => ['required', 'integer', 'min:1'],
+        ])->validate();
+        if (! $this->canManageArchivedClaims($request)) {
+            abort(response()->json(['status' => 'error', 'message' => 'Only HR or System Admin can restore archived other claims.'], 403));
+        }
+        $staffId = $this->staffId($request);
+
+        DB::transaction(function () use ($data, $id, $staffId): void {
+            $record = DB::table('hr_other_claim_applications')->where('id', $id)->lockForUpdate()->first();
+            if (! $record) {
+                abort(response()->json(['status' => 'error', 'message' => 'Other claim record not found.'], 404));
+            }
+            $this->assertCurrentRecordVersion($record, (int) $data['record_version']);
+            if ((string) $record->status !== self::CANCELLED_STATUS || empty($record->archived_at)) {
+                abort(response()->json(['status' => 'error', 'message' => 'Only archived withdrawn other claims can be restored.'], 422));
+            }
+
+            $this->recordWorkflowEvent(
+                self::SUBJECT_TYPE,
+                $id,
+                'restore_archive',
+                $staffId,
+                self::CANCELLED_STATUS,
+                self::CANCELLED_STATUS,
+                'Restored to withdrawn claim records.',
+                $this->snapshotRecord($record, includeClaims: true),
+            );
+            DB::table('hr_other_claim_applications')->where('id', $id)->update([
+                'archived_at' => null,
+                'archived_by' => null,
+                'archive_reason' => null,
+                'record_version' => DB::raw('record_version + 1'),
+                'updated_at' => now(),
+            ]);
+        });
+
+        return response()->json(['status' => 'success', 'message' => 'Archived other claim restored to withdrawn records.']);
     }
 
     public function draftApplication(Request $request): JsonResponse
@@ -691,7 +848,7 @@ class OtherClaimService extends PdfRenderer
             abort(404);
         }
         $this->workflowService->ensureOtherClaimWorkflowForExistingRecord($record);
-        if (! $this->canViewFinancialRecord($request, $record)) {
+        if (! $this->canViewFinancialDetails($request, $record)) {
             abort(404);
         }
 
@@ -1001,6 +1158,13 @@ class OtherClaimService extends PdfRenderer
             'cancelledAt' => $record->cancelled_at ?? null,
             'cancelledBy' => isset($record->cancelled_by) ? (int) $record->cancelled_by : null,
             'cancelReason' => (string) ($record->cancel_reason ?? ''),
+            'archivedAt' => $record->archived_at ?? null,
+            'archivedBy' => isset($record->archived_by) ? (int) $record->archived_by : null,
+            'archiveReason' => (string) ($record->archive_reason ?? ''),
+            'canRestoreArchived' => $financialView
+                && ! empty($record->archived_at)
+                && $request !== null
+                && $this->canManageArchivedClaims($request),
             'claimReference' => (string) ($record->claim_reference ?? sprintf('OC-%06d', (int) $record->id)),
             'revisionNo' => max(1, (int) ($record->revision_no ?? 1)),
             'parentApplicationId' => $record->parent_application_id ?? null,
@@ -1032,6 +1196,129 @@ class OtherClaimService extends PdfRenderer
             : ($workflowPayload ?? $this->workflowService->otherClaimWorkflowPayload((int) $record->id, $request));
 
         return $payload;
+    }
+
+    private function financialWorklistPayload(
+        object $record,
+        Request $request,
+        ?array $workflowPayload,
+    ): array {
+        $canViewFinancialDetails = $this->canViewFinancialDetails($request, $record);
+        $payload = [
+            'id' => (int) $record->id,
+            'staffName' => (string) ($record->staff_name ?? ''),
+            'staffCode' => (string) ($record->staff_code ?? ''),
+            'claimMonth' => (string) $record->claim_month_label,
+            'claimMonthValue' => (string) $record->claim_month,
+            'status' => $this->displayStatus((string) $record->status),
+            'submittedAt' => $record->submitted_at,
+            'claimReference' => (string) ($record->claim_reference ?? sprintf('OC-%06d', (int) $record->id)),
+            'revisionNo' => max(1, (int) ($record->revision_no ?? 1)),
+            'workflow' => $this->worklistWorkflowPayload($workflowPayload),
+            'canViewFinancialDetails' => $canViewFinancialDetails,
+            'financialDetailsRestricted' => ! $canViewFinancialDetails,
+        ];
+
+        if (! $canViewFinancialDetails) {
+            return $payload;
+        }
+
+        return $payload + [
+            'claimsTotal' => (float) $record->claims_total,
+            'medicalClaimsTotal' => property_exists($record, 'medical_claims_total')
+                ? (float) $record->medical_claims_total
+                : $this->medicalClaimsTotalForApplication((int) $record->id),
+            'checkedBy' => isset($record->checked_by) ? (int) $record->checked_by : null,
+            'checkedAt' => $record->checked_at ?? null,
+            'checkedStatus' => (string) ($record->checked_status ?? ''),
+            'checkerName' => (string) ($record->checker_name ?? ''),
+            'checkerCode' => (string) ($record->checker_code ?? ''),
+            'approvedBy' => isset($record->approved_by) ? (int) $record->approved_by : null,
+            'approvedAt' => $record->approved_at ?? null,
+            'approvedStatus' => (string) ($record->approved_status ?? ''),
+            'approverName' => (string) ($record->approver_name ?? ''),
+            'approverCode' => (string) ($record->approver_code ?? ''),
+            'recordVersion' => max(1, (int) ($record->record_version ?? 1)),
+        ];
+    }
+
+    private function worklistWorkflowPayload(?array $workflow): ?array
+    {
+        if (! is_array($workflow)) {
+            return null;
+        }
+
+        $history = collect($workflow['history'] ?? [])
+            ->filter(fn (mixed $entry): bool => is_array($entry) && ($entry['action'] ?? '') !== 'submit')
+            ->map(fn (array $entry): array => [
+                'action' => (string) ($entry['action'] ?? ''),
+                'label' => (string) ($entry['label'] ?? ''),
+                'statusTo' => (string) ($entry['statusTo'] ?? ''),
+                'actorName' => (string) ($entry['actorName'] ?? ''),
+                'actorCode' => (string) ($entry['actorCode'] ?? ''),
+                'actedAt' => $entry['actedAt'] ?? null,
+            ])
+            ->values()
+            ->all();
+        $currentRecipients = collect($workflow['currentStepRecipients'] ?? [])
+            ->filter(fn (mixed $recipient): bool => is_array($recipient))
+            ->map(fn (array $recipient): array => [
+                'name' => (string) ($recipient['full_name'] ?? ''),
+                'code' => (string) ($recipient['name_code'] ?? ''),
+            ])
+            ->values()
+            ->all();
+
+        return [
+            'status' => (string) ($workflow['status'] ?? ''),
+            'currentStepKey' => (string) ($workflow['currentStepKey'] ?? ''),
+            'currentStepLabel' => (string) ($workflow['currentStepLabel'] ?? ''),
+            'currentStepRecipients' => $currentRecipients,
+            'history' => $history,
+            'summary' => $this->worklistWorkflowSummary($workflow, $history, $currentRecipients),
+            'availableActions' => is_array($workflow['availableActions'] ?? null)
+                ? $workflow['availableActions']
+                : [],
+        ];
+    }
+
+    private function worklistWorkflowSummary(array $workflow, array $history, array $currentRecipients): string
+    {
+        $steps = [];
+        foreach ($history as $entry) {
+            $actor = $this->workflowActorLabel($entry['actorName'] ?? '', $entry['actorCode'] ?? '');
+            $action = (string) ($entry['action'] ?? '');
+            $steps[] = match ($action) {
+                'check' => $actor !== '' ? "Reviewed by {$actor}" : 'Reviewed',
+                'approve' => $actor !== '' ? "Approved by {$actor}" : 'Approved',
+                'reject' => $actor !== '' ? "Rejected by {$actor}" : 'Rejected',
+                default => trim((string) ($entry['label'] ?? $action)),
+            };
+        }
+
+        $stepKey = (string) ($workflow['currentStepKey'] ?? '');
+        if ($stepKey !== '') {
+            $recipients = collect($currentRecipients)
+                ->map(fn (array $recipient): string => $this->workflowActorLabel($recipient['name'] ?? '', $recipient['code'] ?? ''))
+                ->filter()
+                ->implode(', ');
+            $pendingLabel = match ($stepKey) {
+                'check' => 'Pending review',
+                'approve' => 'Pending approval',
+                default => 'Pending '.strtolower((string) ($workflow['currentStepLabel'] ?? $stepKey)),
+            };
+            $steps[] = $recipients !== '' ? "{$pendingLabel} by {$recipients}" : $pendingLabel;
+        }
+
+        return implode(' • ', array_values(array_filter($steps))) ?: (string) ($workflow['status'] ?? 'Workflow pending');
+    }
+
+    private function workflowActorLabel(string $name, string $code): string
+    {
+        $name = trim($name);
+        $code = trim($code);
+
+        return $name !== '' && $code !== '' ? "{$name} ({$code})" : ($name !== '' ? $name : $code);
     }
 
     private function auditEventsForApplication(int $applicationId): array
@@ -1345,8 +1632,12 @@ class OtherClaimService extends PdfRenderer
             ]);
     }
 
-    private function canViewFinancialRecord(Request $request, object $record): bool
+    private function canViewFinancialDetails(Request $request, object $record): bool
     {
+        if (! empty($record->archived_at) && $this->canManageArchivedClaims($request)) {
+            return true;
+        }
+
         $actorId = $this->staffId($request);
         if ($actorId <= 0 || $actorId === (int) $record->staff_id) {
             return false;
@@ -1372,6 +1663,44 @@ class OtherClaimService extends PdfRenderer
         $workflow = $this->workflowService->otherClaimWorkflowPayload((int) $record->id, $request);
 
         return ! empty($workflow['availableActions']);
+    }
+
+    private function supportsArchiving(): bool
+    {
+        return Schema::hasColumn('hr_other_claim_applications', 'archived_at');
+    }
+
+    private function hasPaymentRunReference(int $applicationId): bool
+    {
+        return Schema::hasTable('hr_salary_payment_run_items')
+            && DB::table('hr_salary_payment_run_items')
+                ->where('subject_type', self::SUBJECT_TYPE)
+                ->where('subject_id', $applicationId)
+                ->exists();
+    }
+
+    private function canManageArchivedClaims(Request $request): bool
+    {
+        $roles = $request->attributes->get('auth.roles', $request->session()->get('roles', []));
+        $normalizedRoles = array_map(
+            static fn ($role): string => strtolower(trim((string) $role)),
+            is_array($roles) ? $roles : [$roles],
+        );
+
+        return (bool) array_intersect($normalizedRoles, ['hr', 'system admin', 'system administrator']);
+    }
+
+    private function assertCurrentRecordVersion(object $record, int $recordVersion): void
+    {
+        if (
+            Schema::hasColumn('hr_other_claim_applications', 'record_version')
+            && $recordVersion !== (int) ($record->record_version ?? 1)
+        ) {
+            abort(response()->json([
+                'status' => 'error',
+                'message' => 'This claim changed or was already archived. Refresh before continuing.',
+            ], 409));
+        }
     }
 
     private function claimAttachmentPdfSources(object $record, array $claims, Carbon $generatedAt, string $generatorCode, string $generatorId): array

@@ -888,7 +888,7 @@ class WorkflowService
         if ($actorId <= 0 || $actorId === (int) $instance->maker_staff_id) {
             abort(response()->json(['status' => 'error', 'message' => 'The maker cannot check or approve their own other claim application.'], 403));
         }
-        if (! $this->canActOnStep($request, $step)) {
+        if (! $this->canActOnStep($request, $step, allowSystemAdminOverride: false)) {
             abort(response()->json(['status' => 'error', 'message' => 'You are not assigned to this workflow step.'], 403));
         }
         if ($action === 'approve' && (string) $step->step_key !== 'approve') {
@@ -1020,6 +1020,7 @@ class WorkflowService
             'status' => (string) $instance->status,
             'currentStepKey' => (string) ($step->step_key ?? $instance->step_key ?? ''),
             'currentStepLabel' => (string) ($step->label ?? $instance->step_label ?? ''),
+            'currentStepRecipients' => $step ? $this->stepRecipients($step) : [],
             'makerStaffId' => $instance->maker_staff_id ? (int) $instance->maker_staff_id : null,
             'submittedAt' => $instance->submitted_at,
             'history' => $history,
@@ -1036,7 +1037,7 @@ class WorkflowService
         $isSalary = (string) $instance->subject_type === self::SALARY_SUBJECT_TYPE;
         $canActOnStep = $isSalary
             ? $this->canActOnSalaryStep($request, $step)
-            : $this->canActOnStep($request, $step);
+            : $this->canActOnStep($request, $step, allowSystemAdminOverride: false);
         if ($actorId <= 0 || $actorId === (int) $instance->maker_staff_id || ! $canActOnStep) {
             return [];
         }
@@ -1057,14 +1058,14 @@ class WorkflowService
         ];
     }
 
-    private function canActOnStep(Request $request, object $step): bool
+    private function canActOnStep(Request $request, object $step, bool $allowSystemAdminOverride = true): bool
     {
         $actorId = $this->staffId($request);
         if ($actorId <= 0) {
             return false;
         }
 
-        if ($this->hasAnyRole($request, ['System Admin'])) {
+        if ($allowSystemAdminOverride && $this->hasAnyRole($request, ['System Admin'])) {
             return true;
         }
 
@@ -1078,7 +1079,9 @@ class WorkflowService
             return in_array($actorId, $recipients, true);
         }
 
-        return $this->hasAnyRole($request, $this->decodeJsonArray($step->fallback_roles));
+        return $allowSystemAdminOverride
+            ? $this->hasAnyRole($request, $this->decodeJsonArray($step->fallback_roles))
+            : $this->hasExplicitRole($request, $this->decodeJsonArray($step->fallback_roles));
     }
 
     private function canActOnSalaryStep(Request $request, object $step): bool
@@ -1297,6 +1300,16 @@ class WorkflowService
             ->map(fn (object $row): array => $this->formatStaff($row))
             ->values()
             ->all();
+    }
+
+    private function stepRecipients(object $step): array
+    {
+        $configured = $this->configuredStepRecipients((int) $step->id);
+        if ($configured !== []) {
+            return $configured;
+        }
+
+        return $this->activeStaffForRoles($this->decodeJsonArray($step->fallback_roles));
     }
 
     private function vendorSettingsFromSteps(array $steps): array
@@ -1962,6 +1975,16 @@ class WorkflowService
         }
 
         return false;
+    }
+
+    private function hasExplicitRole(Request $request, array $allowedRoles): bool
+    {
+        $roles = $request->session()->get('roles', []);
+        $roles = is_array($roles) ? $roles : [$roles];
+        $roleKeys = array_map(static fn ($role): string => strtolower(trim((string) $role)), $roles);
+        $allowed = array_map(static fn ($role): string => strtolower(trim((string) $role)), $allowedRoles);
+
+        return ! empty(array_intersect($roleKeys, $allowed));
     }
 
     private function rolesMatch(mixed $rawRoles, array $allowedRoles): bool
