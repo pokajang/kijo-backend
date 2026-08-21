@@ -129,23 +129,176 @@ final class CommercialWordDocumentBuilder
 
     private function addInvoice(Section $section, array $data): void
     {
+        if (($data['layout'] ?? 'standard') === 'training') {
+            $this->addTrainingInvoice($section, $data);
+
+            return;
+        }
         $l = fn (string $key, string $fallback): string => PdfLabels::get($data['language'], $key, $fallback);
-        $section->addText($l('invoice_number', 'Invoice Number').": {$data['reference']}    ".$l('date', 'Date').": {$data['date']}");
-        $this->addAddressBlock($section, $l('billed_to', 'Billed To'), $data['recipient']);
-        $section->addText($data['intro']);
-        $this->addLabelledText($section, $l('service', 'Service'), $data['service']);
-        $this->addItemsTable($section, $data['items'], ['#', $l('description', 'Description'), $l('unit_price_rm', 'Unit Price (RM)'), $l('qty', 'Qty'), $l('unit', 'Unit'), $l('subtotal_rm', 'Subtotal (RM)')], [5, 40, 15, 10, 10, 20]);
+        $section->addText($l('invoice_number', 'Invoice Number').": {$data['reference']}    ".$l('date', 'Date').": {$data['date']}", ['size' => 11], ['spaceBefore' => $this->mm(3), 'spaceAfter' => $this->mm(2)]);
+        $this->addAddressBlock($section, $data['attentionLabel'] ?? $l('attention_to', 'Attention To'), $data['recipient'], ['size' => 11]);
+        $greeting = $section->addTextRun(['spaceAfter' => $this->mm(2)]);
+        $greeting->addText(($data['greetingPrefix'] ?? ($data['language'] === 'ms-MY' ? 'Kepada' : 'Dear')).' ', ['size' => 11]);
+        $greeting->addText($data['greetingName'] ?? $l('dear_valued_customer', 'Valued Customer'), ['bold' => true, 'size' => 11]);
+        $greeting->addText(',', ['size' => 11]);
+        $section->addText($data['intro'], ['size' => 11], ['lineHeight' => 1.4, 'spaceAfter' => $this->mm(3)]);
+        $this->addInvoiceItemsTable($section, $data, ['#', $l('description', 'Description'), 'U/P (RM)', $l('qty', 'Qty'), $l('unit', 'Unit'), $l('subtotal_rm', 'Subtotal (RM)')]);
         $this->addTotals($section, $data['totals']);
         if ($data['remarks'] !== '') {
-            $this->addLabelledText($section, $l('quotation_remarks', 'Quotation Remarks'), $data['remarks']);
+            $section->addText($l('quotation_remarks', 'Quotation Remarks').':', ['bold' => true], ['spaceBefore' => $this->mm(3), 'spaceAfter' => 0]);
+            foreach (preg_split('/\R/u', WordText::clean($data['remarks'])) ?: [] as $line) {
+                $section->addText($line, null, ['spaceAfter' => 0]);
+            }
         }
-        foreach ($data['paymentLines'] as $line) {
-            $section->addText($line);
-        }
+        $this->addPaymentDetails($section, $data);
         $this->addInvoiceSignOff($section, $data);
         $section->addText($data['termsHeading'], ['bold' => true, 'size' => 11], ['spaceBefore' => $this->mm(3), 'keepNext' => true]);
         foreach ($data['terms'] as $term) {
-            $section->addListItem(WordText::clean($term), 0, null, 'commercialTerms', ['spaceAfter' => $this->mm(1), 'lineHeight' => 1.2]);
+            $section->addListItem(WordText::clean($term), 0, ['size' => 9], 'commercialTerms', ['spaceAfter' => 0, 'lineHeight' => 1.2]);
+        }
+    }
+
+    private function addTrainingInvoice(Section $section, array $data): void
+    {
+        $l = fn (string $key, string $fallback): string => PdfLabels::get($data['language'], $key, $fallback);
+        $section->addText($l('invoice_number', 'Invoice Number').": {$data['reference']}    ".$l('date', 'Date').": {$data['date']}", ['size' => 11], ['spaceBefore' => $this->mm(3), 'spaceAfter' => $this->mm(2)]);
+        $this->addAddressBlock($section, $data['attentionLabel'], $data['recipient'], ['size' => 11]);
+        $greeting = $section->addTextRun(['spaceAfter' => $this->mm(2)]);
+        $greeting->addText($data['greetingPrefix'].' ', ['size' => 11]);
+        $greeting->addText($data['greetingName'], ['bold' => true, 'size' => 11]);
+        $greeting->addText(',', ['size' => 11]);
+        $section->addText($data['intro'], ['size' => 11], ['lineHeight' => 1.4, 'spaceAfter' => $this->mm(3)]);
+
+        $table = $section->addTable('commercialTable');
+        $widths = array_map(fn (int $value): int => $this->percent($value), [5, 50, 15, 10, 20]);
+        $table->addRow(null, ['tblHeader' => true, 'cantSplit' => true]);
+        foreach (['#', $l('description', 'Description'), $l('unit_price_rm', 'Unit Price (RM)'), $l('qty', 'Qty'), $l('subtotal_rm', 'Subtotal (RM)')] as $index => $header) {
+            $table->addCell($widths[$index])->addText($header, ['bold' => true], ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+        }
+        foreach ($data['items'] as $index => $item) {
+            $table->addRow();
+            $table->addCell($widths[0])->addText($item['number'], null, ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+            $description = $table->addCell($widths[1]);
+            $description->addText(WordText::clean($item['name']), null, ['spaceAfter' => 0]);
+            foreach ($item['segments'] as $segment) {
+                $value = trim((string) ($segment['description'] ?? ''));
+                if ($value !== '') {
+                    $description->addText(WordText::clean($value), ['size' => 9, 'color' => '555555'], ['spaceAfter' => 0]);
+                }
+            }
+            if ($index === 0) {
+                $description->addText('', null, ['spaceAfter' => $this->mm(2)]);
+                foreach ($data['trainingDetails'] as $detail) {
+                    $run = $description->addTextRun(['spaceAfter' => 0]);
+                    $run->addText($detail['label'].': ', ['bold' => true]);
+                    $run->addText(WordText::clean($detail['value']));
+                }
+            }
+            foreach (['unitPrice', 'quantity', 'subtotal'] as $column => $key) {
+                $table->addCell($widths[$column + 2])->addText(WordText::clean($item[$key]), null, ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+            }
+        }
+        $this->addTotals($section, $data['totals']);
+        $this->addPaymentDetails($section, $data);
+        $this->addInvoiceSignOff($section, $data);
+        $section->addText($data['termsHeading'], ['bold' => true, 'size' => 11], ['spaceBefore' => $this->mm(3), 'keepNext' => true]);
+        foreach ($data['terms'] as $term) {
+            $section->addListItem(WordText::clean($term), 0, ['size' => 9], 'commercialTerms', ['spaceAfter' => 0, 'lineHeight' => 1.2]);
+        }
+    }
+
+    private function addInvoiceItemsTable(Section $section, array $data, array $headers): void
+    {
+        $table = $section->addTable('commercialTable');
+        $widths = array_map(fn (int $value): int => $this->percent($value), [5, 40, 15, 10, 10, 20]);
+        $table->addRow(null, ['tblHeader' => true, 'cantSplit' => true]);
+        foreach ($headers as $index => $header) {
+            $table->addCell($widths[$index])->addText($header, ['bold' => true], ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+        }
+
+        $table->addRow(null, ['cantSplit' => true]);
+        $table->addCell($widths[0]);
+        $serviceCell = $table->addCell(array_sum(array_slice($widths, 1)), ['gridSpan' => 5]);
+        foreach ($data['serviceLines'] ?? [$data['service']] as $serviceLine) {
+            $serviceCell->addText(WordText::clean($serviceLine), null, ['spaceAfter' => 0]);
+        }
+
+        foreach ($data['items'] as $item) {
+            if (! is_array($item) || ! array_key_exists('segments', $item)) {
+                $this->addLegacyInvoiceItemRow($table, $widths, $item);
+                continue;
+            }
+            foreach ($item['segments'] as $segmentIndex => $segment) {
+                $table->addRow();
+                $table->addCell($widths[0])->addText($segmentIndex === 0 ? $item['number'] : '', null, ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+                $description = $table->addCell($widths[1]);
+                if (($item['manpowerBase'] ?? false) === true) {
+                    $description->addText(WordText::clean($item['claimLabel']), null, ['spaceAfter' => 0]);
+                    $run = $description->addTextRun(['spaceAfter' => 0]);
+                    $run->addText(PdfLabels::get($data['language'], 'remarks', 'Remarks').': ', ['italic' => true]);
+                    $run->addText(WordText::clean($item['invoiceRemarks']));
+                } elseif ($segmentIndex === 0) {
+                    $description->addText(WordText::clean($item['name']) ?: '-', ['bold' => true], ['spaceAfter' => 0]);
+                }
+                if (($item['manpowerBase'] ?? false) !== true) {
+                    $this->addInvoiceDescriptionSegment($description, $segment, $data['language']);
+                }
+                foreach (['unitPrice', 'quantity', 'unit', 'subtotal'] as $column => $key) {
+                    $table->addCell($widths[$column + 2])->addText($segmentIndex === 0 ? WordText::clean($item[$key]) : '', null, ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+                }
+            }
+        }
+    }
+
+    private function addLegacyInvoiceItemRow($table, array $widths, array $item): void
+    {
+        $table->addRow();
+        foreach ($item as $index => $value) {
+            $cell = $table->addCell($widths[$index]);
+            if (is_array($value)) {
+                foreach ($value as $lineIndex => $line) {
+                    $cell->addText(WordText::clean($line), $lineIndex === 0 ? ['bold' => true] : null, ['spaceAfter' => 0]);
+                }
+                continue;
+            }
+            $cell->addText(WordText::clean($value), null, ['alignment' => $index === 1 ? Jc::LEFT : Jc::CENTER, 'spaceAfter' => 0]);
+        }
+    }
+
+    private function addInvoiceDescriptionSegment(Cell $cell, array $segment, string $language): void
+    {
+        foreach ([['description', 'show_description_label', 'description', 'Description'], ['remarks', 'show_remarks_label', 'remarks', 'Remarks']] as [$valueKey, $showKey, $labelKey, $fallback]) {
+            $value = trim((string) ($segment[$valueKey] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            $run = $cell->addTextRun(['spaceAfter' => 0, 'lineHeight' => 1.25]);
+            if (($segment[$showKey] ?? false) === true) {
+                $run->addText(PdfLabels::get($language, $labelKey, $fallback).': ', ['bold' => true, 'size' => 8.5, 'color' => '444444']);
+            }
+            $run->addText(WordText::clean($value), ['size' => 8.5, 'color' => '666666']);
+        }
+    }
+
+    private function addPaymentDetails(Section $section, array $data): void
+    {
+        if (! isset($data['paymentDetails'])) {
+            foreach ($data['paymentLines'] as $line) {
+                $section->addText($line);
+            }
+
+            return;
+        }
+        $section->addText($data['paymentLines'][0], ['size' => 11], ['spaceBefore' => $this->mm(3), 'spaceAfter' => 0]);
+        foreach ($data['paymentDetails'] as $detail) {
+            $run = $section->addTextRun(['spaceAfter' => 0]);
+            $run->addText($detail['label'].': ', ['bold' => true, 'size' => 11]);
+            $run->addText($detail['value'], ['size' => 11]);
+            if (isset($detail['suffix'])) {
+                [$label, $value] = explode(': ', ltrim($detail['suffix']), 2);
+                $run->addText('    '.$label.': ', ['bold' => true, 'size' => 11]);
+                $run->addText($value, ['size' => 11]);
+            }
         }
     }
 
@@ -207,6 +360,18 @@ final class CommercialWordDocumentBuilder
             $table->addCell($widths[$index])->addText($header, ['bold' => true], ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
         }
         foreach ($items as $item) {
+            if (is_array($item) && array_key_exists('segments', $item)) {
+                $description = [WordText::clean($item['name']) ?: '-'];
+                foreach ($item['segments'] as $segment) {
+                    if (trim((string) ($segment['description'] ?? '')) !== '') {
+                        $description[] = PdfLabels::get('', 'description', 'Description').': '.WordText::clean($segment['description']);
+                    }
+                    if (trim((string) ($segment['remarks'] ?? '')) !== '') {
+                        $description[] = PdfLabels::get('', 'remarks', 'Remarks').': '.WordText::clean($segment['remarks']);
+                    }
+                }
+                $item = [$item['number'], $description, $item['unitPrice'], $item['quantity'], $item['unit'], $item['subtotal']];
+            }
             $table->addRow();
             foreach ($item as $index => $value) {
                 $cell = $table->addCell($widths[$index]);
@@ -229,21 +394,22 @@ final class CommercialWordDocumentBuilder
                 continue;
             }
             $table->addRow(null, ['cantSplit' => true]);
-            $table->addCell($this->percent(80))->addText($total['label'], ['bold' => true], ['alignment' => Jc::RIGHT, 'spaceAfter' => 0]);
-            $table->addCell($this->percent(20))->addText(number_format((float) $total['value'], 2), ['bold' => $total['bold'] ?? false], ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+            $shade = ($total['shade'] ?? false) ? ['bgColor' => 'F9F9F9'] : [];
+            $table->addCell($this->percent(80), $shade)->addText($total['label'], ['bold' => true], ['alignment' => Jc::RIGHT, 'spaceAfter' => 0]);
+            $table->addCell($this->percent(20), $shade)->addText(number_format((float) $total['value'], 2), ['bold' => $total['bold'] ?? false], ['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
         }
     }
 
-    private function addAddressBlock(Section $section, string $label, array $lines): void
+    private function addAddressBlock(Section $section, string $label, array $lines, ?array $font = null): void
     {
         $run = $section->addTextRun(['spaceAfter' => $this->mm(3)]);
-        $run->addText($label.':', ['bold' => true]);
+        $run->addText($label.':', ['bold' => true, ...($font ?? [])]);
         foreach ($lines as $line) {
             if (trim((string) $line) === '') {
                 continue;
             }
             $run->addTextBreak();
-            $run->addText(WordText::clean($line));
+            $run->addText(WordText::clean($line), $font);
         }
     }
 
@@ -304,14 +470,14 @@ final class CommercialWordDocumentBuilder
     {
         $table = $section->addTable(['width' => 5000, 'unit' => TblWidth::PERCENT, 'layout' => TableStyle::LAYOUT_FIXED]);
         $table->addRow(null, ['cantSplit' => true]);
-        $left = $table->addCell($this->percent(58));
+        $left = $table->addCell($this->percent(50));
         $left->addText($data['preparedByLabel'].':', null, ['spaceAfter' => 0]);
         foreach ($data['preparedBy'] as $index => $line) {
             $left->addText(WordText::clean($line), $index === 0 ? ['bold' => true] : null, ['spaceAfter' => 0]);
         }
-        $right = $table->addCell($this->percent(42), ['valign' => 'center']);
+        $right = $table->addCell($this->percent(50), ['valign' => 'center']);
         $hasAsset = false;
-        foreach ([[$data['signaturePath'], 30], [$data['stampPath'], 24]] as [$path, $width]) {
+        foreach ([[$data['signaturePath'], 22], [$data['stampPath'], 40]] as [$path, $width]) {
             if (is_string($path) && is_file($path) && is_readable($path)) {
                 $right->addImage($path, ['width' => $width * 72 / 25.4, 'alignment' => Jc::RIGHT]);
                 $hasAsset = true;
