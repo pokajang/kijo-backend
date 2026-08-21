@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <title>JD14 Declaration Form</title>
     <style>
-        @page { margin: 10mm 15mm 32mm 15mm; }
+        @page { margin: 10mm 10mm 32mm 10mm; }
         body {
             margin: 0;
             color: #000;
@@ -91,11 +91,11 @@
             width: 100%;
             border-collapse: collapse;
             border: 0.5px solid #000;
-            font-size: 10pt;
+            font-size: 9pt;
         }
         .part3 > tbody > tr > td {
             border: none;
-            padding: 6px 4px;
+            padding: 3px;
             vertical-align: top;
         }
         .inner {
@@ -104,16 +104,16 @@
         }
         .inner td {
             border: none;
-            padding: 2px 3px;
+            padding: 1px 2px;
             vertical-align: top;
         }
         .label { width: 35%; font-weight: 700; }
         .colon { width: 3%; text-align: center; }
         .value { width: 62%; }
-        .signature-cell { height: 45px; }
-        .stamp-cell { height: 55px; }
+        .signature-cell { height: 35px; }
+        .stamp-cell { height: 42px; }
         .employer-stamp-hint {
-            height: 40px;
+            height: 32px;
             color: rgb(182, 182, 182);
             font-size: 8pt;
             line-height: 1.15;
@@ -162,7 +162,7 @@
             <td rowspan="4" width="50%">
                 Registered Name and Address of Employer:<br>
                 {{ $row->employer_name ?? '' }}<br>
-                {{ $row->employer_address ?? '' }}
+                {!! $employerAddress !!}
             </td>
             <td width="20%">Employer Code</td>
             <td width="30%">{{ $row->employer_code ?? '' }}</td>

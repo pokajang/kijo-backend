@@ -9,6 +9,7 @@ use App\Services\Invoices\InvoiceQuoteLookupService;
 use App\Services\Invoices\InvoiceService;
 use App\Services\Invoices\InvoiceWordService;
 use App\Services\Invoices\Jd14Service;
+use App\Services\Invoices\Jd14WordService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -157,5 +158,10 @@ class InvoiceController extends Controller
     public function jd14Pdf(Request $request, int $id = 0)
     {
         return $this->jd14Service()->jd14Pdf($request, $id);
+    }
+
+    public function jd14Word(Request $request, int $id = 0)
+    {
+        return app(Jd14WordService::class)->downloadJd14($request, $id);
     }
 }

@@ -9,6 +9,7 @@ use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
+use ZipArchive;
 
 class Jd14ProjectTypeValidationTest extends TestCase
 {
@@ -165,6 +166,76 @@ class Jd14ProjectTypeValidationTest extends TestCase
             ->assertJsonPath('status', 'error')
             ->assertJsonValidationErrors(['project_id'])
             ->assertJsonPath('message', 'JD14 forms can only be generated for Training projects.');
+    }
+
+    public function test_jd14_pdf_uses_the_blade_renderer_and_remains_a_single_page_form(): void
+    {
+        $id = DB::table('invoices_jd14form')->insertGetId($this->jd14Row([
+            'approval_no' => 'JD14-PDF-001',
+            'employer_address' => "1 Training Road\nTaman Safety",
+        ]));
+
+        $response = $this->actingSession()->get("/jd14-forms/{$id}/pdf");
+
+        $response
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertHeader('Content-Disposition', 'inline; filename="JD14-JD14-PDF-001.pdf"');
+
+        $pdf = $response->getContent();
+
+        $this->assertStringStartsWith('%PDF-', $pdf);
+        $this->assertSame(1, preg_match_all('/\\/Type\\s*\\/Page(?!s)/', $pdf));
+        $this->assertStringNotContainsString('HrdJd14', $pdf);
+    }
+
+    public function test_jd14_word_download_contains_the_form_content_and_embedded_assets(): void
+    {
+        $id = DB::table('invoices_jd14form')->insertGetId($this->jd14Row([
+            'approval_no' => 'JD14-WORD-001',
+            'employer_address' => "1 Training Road\nTaman Safety",
+        ]));
+
+        $response = $this->actingSession()->get("/jd14-forms/{$id}/word");
+
+        $response
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        self::assertStringContainsString(
+            'filename="JD14-JD14-WORD-001.docx"',
+            (string) $response->headers->get('Content-Disposition'),
+        );
+
+        $path = tempnam(sys_get_temp_dir(), 'jd14-word-');
+        self::assertNotFalse($path);
+        file_put_contents($path, $response->getContent());
+        $archive = new ZipArchive;
+        self::assertTrue($archive->open($path) === true);
+        $text = html_entity_decode(strip_tags((string) $archive->getFromName('word/document.xml')));
+        foreach (['PSMB/SBL-KHAS /JD/14', "PART 1 - EMPLOYER'S PARTICULAR", 'PART 2 - CLAIM FOR COURSE FEE', 'PART 3 - JOINT DECLARATION', 'Training Client Sdn Bhd', 'Taman Safety', 'MUHAMMAD AMIN ROZAK'] as $expected) {
+            self::assertStringContainsString($expected, $text);
+        }
+        self::assertStringContainsString('w:gridSpan w:val="8"', (string) $archive->getFromName('word/document.xml'));
+        self::assertStringNotContainsString('<w:noWrap', (string) $archive->getFromName('word/document.xml'));
+        $footer = html_entity_decode(strip_tags((string) $archive->getFromName('word/footer1.xml')));
+        self::assertStringContainsString('REMINDER:', $footer);
+        $media = array_filter(range(0, $archive->numFiles - 1), static fn (int $index): bool => str_starts_with((string) $archive->getNameIndex($index), 'word/media/'));
+        self::assertGreaterThanOrEqual(2, count($media));
+        $archive->close();
+        unlink($path);
+    }
+
+    public function test_jd14_word_download_rejects_invalid_and_missing_records(): void
+    {
+        $this->actingSession()
+            ->get('/jd14-forms/0/word')
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Invalid or missing ID');
+
+        $this->actingSession()
+            ->get('/jd14-forms/999/word')
+            ->assertStatus(404)
+            ->assertJsonPath('message', 'Record not found');
     }
 
     private function validPayload(array $overrides = []): array

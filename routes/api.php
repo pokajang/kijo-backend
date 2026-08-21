@@ -803,4 +803,5 @@ Route::middleware('auth.session')->group(function () {
     Route::delete('jd14-forms/{id}', [InvoiceController::class, 'destroyJd14']);
     Route::get('jd14-forms/by-project', [InvoiceController::class, 'jd14ByProject']);
     Route::get('jd14-forms/{id}/pdf', [InvoiceController::class, 'jd14Pdf']);
+    Route::get('jd14-forms/{id}/word', [InvoiceController::class, 'jd14Word']);
 });

@@ -3,12 +3,13 @@
 namespace App\Services\Invoices;
 
 use App\Services\AuditLogService;
+use App\Services\Pdf\PdfRenderer;
 use App\Support\AppFilePaths;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-class Jd14Service
+class Jd14Service extends PdfRenderer
 {
     private const TRAINING_PROJECT_TYPE = 'Training';
 
@@ -249,235 +250,22 @@ class Jd14Service
         }
 
         try {
-            // JD14 must keep the legacy TCPDF form layout, not the shared CRM PDF template.
-            require_once AppFilePaths::tcpdfTemplatePath('HrdJd14.php');
+            $html = view('pdf.jd14', [
+                'row' => $row,
+                'todayDate' => now()->format('d F Y'),
+                'employerAddress' => nl2br(e((string) ($row->employer_address ?? '')), false),
+                'signDataUri' => $this->localImageDataUri(AppFilePaths::tcpdfTemplatePath('assets/sign.png')),
+                'stampDataUri' => $this->localImageDataUri(AppFilePaths::tcpdfTemplatePath('assets/stamp.png')),
+            ])->render();
 
-            $safe = static fn ($value): string => htmlspecialchars((string) ($value ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-            $safeMultiline = static fn ($value): string => nl2br($safe($value), false);
-
-            $employerName      = $safe($row->employer_name ?? '');
-            $employerAddress   = $safeMultiline($row->employer_address ?? '');
-            $approvalNo        = $safe($row->approval_no ?? '');
-            $employerCode      = $safe($row->employer_code ?? '');
-            $groupApproved     = $safe($row->group_approved ?? '');
-            $groupClaimed      = $safe($row->group_claimed ?? '');
-            $courseTitle       = $safe($row->course_title ?? '');
-            $trainingVenue     = $safe($row->training_venue ?? '');
-            $commencedDate     = $safe($row->commenced_date ?? '');
-            $endDate           = $safe($row->end_date ?? '');
-            $noOfPax           = $safe($row->no_of_pax ?? '');
-            $totalFeeApproved  = $safe($row->total_fee_approved ?? '');
-            $totalFeeClaimed   = $safe($row->total_fee_claimed ?? '');
-            $todayDate         = now()->format('d F Y');
-
-            $pdf = new \HrdJd14();
-            $pdf->SetTitle('JD14 Declaration Form');
-            $pdf->AddPage();
-            $pdf->addJD14Header();
-
-            $pdf->SetFont('helvetica', 'B', 11);
-            $pdf->Cell(0, 8, "PART 1 - EMPLOYER'S PARTICULAR", 0, 1, 'C');
-
-            $pdf->SetFont('helvetica', 'R', 9);
-
-            $html = <<<EOD
-<style>
-  table { font-size: 10pt; }
-</style>
-
-<table border="0.5" cellpadding="4" cellspacing="0" width="100%">
-  <tr>
-    <td rowspan="4" width="50%"><span></span>
-      Registered Name and Address of Employer:<br />
-      {$employerName}<br />
-      {$employerAddress}
-    </td>
-    <td width="20%">Employer Code</td>
-    <td width="30%">{$employerCode}</td>
-  </tr>
-  <tr>
-    <td>Approval No</td>
-    <td>{$approvalNo}</td>
-  </tr>
-  <tr>
-    <td>Group Approved</td>
-    <td>{$groupApproved}</td>
-  </tr>
-  <tr>
-    <td>Group Claimed</td>
-    <td>{$groupClaimed}</td>
-  </tr>
-  <tr>
-    <td width="20%">Course Title</td>
-    <td width="80%" colspan="3">{$courseTitle}</td>
-  </tr>
-  <tr>
-    <td>Training Dates</td>
-    <td colspan="3">Commenced: {$commencedDate}&nbsp;&nbsp;&nbsp;&nbsp;Ended: {$endDate}</td>
-  </tr>
-  <tr>
-    <td>Training Venue</td>
-    <td colspan="3">{$trainingVenue}</td>
-  </tr>
-</table>
-EOD;
-
-            $pdf->writeHTML($html, true, false, false, false, '');
-
-            $signaturePath = AppFilePaths::tcpdfTemplatePath('assets/sign.png');
-            if (is_file($signaturePath)) {
-                $pdf->Image($signaturePath, 46.5, 184, 28, 0, 'PNG');
-            }
-
-            $stampPath = AppFilePaths::tcpdfTemplatePath('assets/stamp.png');
-            if (is_file($stampPath)) {
-                $pdf->Image($stampPath, 149, 190, 40, 0, 'PNG');
-            }
-
-            $pdf->SetFont('helvetica', 'B', 11);
-            $pdf->Cell(0, 8, "PART 2 - CLAIM FOR COURSE FEE", 0, 1, 'C');
-
-            $pdf->SetFont('helvetica', '', 11);
-
-            $html = <<<EOD
-<table border="0.5" cellpadding="4" cellspacing="0" width="100%">
-  <tr>
-    <td width="33%" align="center"><strong>Number of Trainee(s)*</strong></td>
-    <td width="33%" align="center"><strong>Total Fee Approved (RM)</strong></td>
-    <td width="34%" align="center"><strong>Total Fee Claimed (RM)</strong></td>
-  </tr>
-  <tr>
-    <td height="20" align="center"><strong>{$noOfPax}</strong></td>
-    <td align="center"><strong>{$totalFeeApproved}</strong></td>
-    <td align="center"><strong>{$totalFeeClaimed}</strong></td>
-  </tr>
-</table>
-EOD;
-
-            $pdf->writeHTML($html, true, false, false, false, '');
-
-            $pdf->SetFont('helvetica', 'B', 11);
-            $pdf->Cell(0, 8, "PART 3 - JOINT DECLARATION OF THE TRAINING PROVIDER AND THE EMPLOYER", 0, 1, 'C');
-
-            $pdf->SetFont('helvetica', 'R', 9);
-
-            $html = <<<EOD
-<style>
-  table.part3 { font-size: 10pt; border: 0.5px solid #000; border-collapse: collapse; }
-  table.part3 td { border: none; padding: 6px 4px; vertical-align: top; }
-  .label { font-weight: bold; width: 25%; }
-  .colon { width: 3%; text-align: center; }
-  .value { width: 72%; }
-</style>
-
-<table class="part3" width="100%" cellpadding="4" cellspacing="0">
-  <tr>
-    <td colspan="2">
-      (a) I certify that all information declared above is true and correct and the training program claimed above has been conducted with all terms and condition under this scheme has been complied. I also declared that apart from this claim, there is no other claim has been made for these expenses. All relevant documents pertaining to this claim are with us and can be inspected by the Secretariat of the Pembangunan Sumber Manusia Berhad. <strong>(Training Provider)</strong>
-    </td>
-  </tr>
-
-  <tr>
-    <td width="40%">
-      <table width="100%">
-        <tr>
-        <td width="35%" class="label">SIGNATURE</td>
-        <td class="colon">: </td>
-        <td class="value" height="45"><br /><br /></td>
-        </tr>
-
-        <tr>
-          <td width="35%" class="label">NAME</td>
-          <td class="colon">: </td>
-          <td class="value">MUHAMMAD AMIN ROZAK</td>
-        </tr>
-        <tr>
-          <td width="35%" class="label">MYKAD NO</td>
-          <td class="colon">: </td>
-          <td class="value">760628-03-5981</td>
-        </tr>
-      </table>
-    </td>
-
-    <td width="60%">
-      <table width="100%">
-        <tr>
-          <td class="label">DESIGNATION</td>
-          <td class="colon">: </td>
-          <td class="value">MANAGING DIRECTOR</td>
-        </tr>
-        <tr>
-          <td class="label">COMPANY STAMP</td>
-          <td class="colon">: </td>
-          <td class="value" height="55"><br /></td>
-        </tr>
-        <tr>
-          <td class="label">DATE</td>
-          <td class="colon">: </td>
-            <td class="value">{$todayDate}</td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2">
-      (b)  I certify that the training had been completed and agreed with the fees charged above.  I am responsible to the claimed above and certify all information provided here is true and correct. <strong>(Employer)</strong>
-    </td>
-  </tr>
-
-  <tr>
-    <td width="40%">
-      <table width="100%">
-        <tr>
-          <td width="35%" class="label">SIGNATURE</td>
-          <td class="colon">: </td>
-          <td class="value" height="45"><br /><br /></td>
-        </tr>
-        <tr>
-          <td width="35%" class="label">NAME</td>
-          <td class="colon">: </td>
-          <td class="value"></td>
-        </tr>
-        <tr>
-          <td width="35%" class="label">MYKAD NO</td>
-          <td class="colon">: </td>
-          <td class="value"></td>
-        </tr>
-      </table>
-    </td>
-
-    <td width="60%">
-      <table width="100%">
-        <tr>
-          <td class="label">DESIGNATION</td>
-          <td class="colon">: </td>
-          <td class="value"></td>
-        </tr>
-        <tr>
-          <td class="label">COMPANY STAMP</td>
-          <td class="colon">: </td>
-        <td height="40" class="value" style="color:rgb(182, 182, 182); font-size: 8pt"><span></span>
-        (Shall only be certified by either<br /> Managing Director/General Manager/<br />Financial Controller/Finance<br /> Director of Employer)<br />
-        </td>
-        </tr>
-        <tr>
-          <td class="label">DATE</td>
-          <td class="colon">: </td>
-          <td class="value"></td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-</table>
-EOD;
-
-            $pdf->writeHTML($html, true, false, false, false, '');
+            $pdf = $this->makeDompdf();
+            $pdf->loadHtml($html);
+            $pdf->setPaper('A4', 'portrait');
+            $pdf->render();
 
             $this->auditLog->log($request, "Generated JD14 PDF for approval number {$row->approval_no}");
 
-            $pdfBytes = $pdf->Output("JD14-{$row->approval_no}.pdf", 'S');
-
-            return response($pdfBytes, 200, [
+            return response($pdf->output(), 200, [
                 'Content-Type'        => 'application/pdf',
                 'Content-Disposition' => "inline; filename=\"JD14-{$row->approval_no}.pdf\"",
             ]);
@@ -485,6 +273,17 @@ EOD;
             report($e);
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
+    }
+
+    private function localImageDataUri(string $path): ?string
+    {
+        if (! is_file($path) || ! is_readable($path)) {
+            return null;
+        }
+
+        $contents = file_get_contents($path);
+
+        return $contents === false ? null : 'data:image/png;base64,'.base64_encode($contents);
     }
 
     private function validateTrainingProject(int $projectId): ?JsonResponse
