@@ -56,6 +56,25 @@ class ServiceQuoteDocumentDataTest extends TestCase
         self::assertSame('QIH26-1', $data['quoteRefNo']);
         self::assertStringContainsString('Noise Risk Assessment', $data['details'][0]['value']);
         self::assertStringContainsString('Kajang Plant', $data['details'][0]['value']);
+
+        $this->createIhProposalTemplate();
+        DB::table('quotes_ih')->where('id', 1)->update(['attach_proposal' => true, 'service_id' => 1]);
+        DB::table('proposal_template_ih')->insert([
+            'id' => 1,
+            'service_title' => 'Noise Risk Proposal',
+            'introduction' => '<p>Introduction content.</p>',
+            'objectives' => '<p>Safety objective.</p>',
+            'work_scope' => '<p>Work scope.</p>',
+            'schedule' => '<p>Proposed schedule.</p>',
+            'reference' => '<p>Reference documents.</p>',
+            'other_fields' => '<p>Additional notes.</p>',
+        ]);
+        $dataWithProposal = app(ServiceQuoteDocumentData::class)->find('ih', 1);
+        $proposalTitles = array_map(fn ($proposal): string => (string) ($proposal['title'] ?? ''), $dataWithProposal['proposalSections']);
+        self::assertSame(['Introduction', 'Objectives', 'Work Scope', 'Schedule', 'References'], $proposalTitles);
+        self::assertCount(1, $dataWithProposal['proposalAdditionalSections']);
+        self::assertSame('Additional Information', $dataWithProposal['proposalAdditionalSections'][0]['title']);
+        self::assertStringContainsString('Additional notes', $dataWithProposal['proposalAdditionalSections'][0]['content']);
     }
 
     private function common(string $reference): array
@@ -71,6 +90,21 @@ class ServiceQuoteDocumentDataTest extends TestCase
             $table->string('position')->nullable();
             $table->string('crm_position')->nullable();
             $table->string('department')->nullable();
+        });
+    }
+
+    private function createIhProposalTemplate(): void
+    {
+        Schema::dropIfExists('proposal_template_ih');
+        Schema::create('proposal_template_ih', function (Blueprint $table): void {
+            $table->unsignedBigInteger('id')->primary();
+            $table->string('service_title')->nullable();
+            $table->text('introduction')->nullable();
+            $table->text('objectives')->nullable();
+            $table->text('work_scope')->nullable();
+            $table->text('schedule')->nullable();
+            $table->text('reference')->nullable();
+            $table->text('other_fields')->nullable();
         });
     }
 }

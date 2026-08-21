@@ -7,6 +7,7 @@ use App\Services\Word\WordRenderer;
 use App\Services\Word\WordText;
 use App\Support\AppFilePaths;
 use App\Support\EquipmentQuotationLayout as Layout;
+use App\Support\PdfText;
 use Illuminate\Http\Request;
 use PhpOffice\PhpWord\ComplexType\TblWidth as ComplexTableWidth;
 use PhpOffice\PhpWord\Element\Section;
@@ -274,24 +275,48 @@ class EquipmentQuoteRecordWordService extends WordRenderer
         }
 
         foreach ($data['items'] as $index => $item) {
-            $table->addRow();
-            $table->addCell($widths[0])->addText((string) ($index + 1), null, ['alignment' => Jc::CENTER]);
-            $descriptionCell = $table->addCell($widths[1], ['noWrap' => false]);
-            $descriptionCell->addText(
-                WordText::clean($item['title']),
-                ['bold' => true],
-                ['spaceAfter' => 0, 'lineHeight' => 1.0],
-            );
-            if (trim((string) ($item['description'] ?? '')) !== '') {
-                $this->addCellLabelledLines($descriptionCell, 'Description: ', $item['description']);
+            $segments = PdfText::itemCellSegments(trim((string) ($item['description'] ?? '')), (string) ($item['item_remarks'] ?? ''));
+            foreach ($segments as $segmentIndex => $segment) {
+                $isPrimarySegment = $segmentIndex === 0;
+                $table->addRow();
+                $table->addCell($widths[0], ['noWrap' => false])->addText(
+                    $isPrimarySegment ? (string) ($index + 1) : '',
+                    null,
+                    ['alignment' => Jc::CENTER, 'spaceAfter' => 0],
+                );
+                $descriptionCell = $table->addCell($widths[1], ['noWrap' => false]);
+                if ($isPrimarySegment) {
+                    $descriptionCell->addText(
+                        WordText::clean($item['title']),
+                        ['bold' => true],
+                        ['spaceAfter' => 0, 'lineHeight' => 1.0],
+                    );
+                }
+                if (trim((string) $segment['description']) !== '') {
+                    $this->addCellLabelledLines(
+                        $descriptionCell,
+                        $segment['show_description_label'] ? 'Description: ' : '',
+                        $segment['description'],
+                    );
+                }
+                if (trim((string) $segment['remarks']) !== '') {
+                    $this->addCellLabelledLines(
+                        $descriptionCell,
+                        $segment['show_remarks_label'] ? 'Remarks: ' : '',
+                        $segment['remarks'],
+                    );
+                }
+                $tableParagraph = ['spaceAfter' => 0, 'lineHeight' => 1.0];
+                if ($isPrimarySegment) {
+                    $table->addCell($widths[2], ['noWrap' => true])->addText((string) (int) $item['quantity'], null, [...$tableParagraph, 'alignment' => Jc::CENTER]);
+                    $table->addCell($widths[3], ['noWrap' => true])->addText(number_format((float) $item['marked_up_price'], 2), null, [...$tableParagraph, 'alignment' => Jc::RIGHT]);
+                    $table->addCell($widths[4], ['noWrap' => true])->addText(number_format((float) $item['line_total'], 2), null, [...$tableParagraph, 'alignment' => Jc::RIGHT]);
+                    continue;
+                }
+                $table->addCell($widths[2])->addText('', $tableParagraph);
+                $table->addCell($widths[3])->addText('', $tableParagraph);
+                $table->addCell($widths[4])->addText('', $tableParagraph);
             }
-            if (trim((string) ($item['item_remarks'] ?? '')) !== '') {
-                $this->addCellLabelledLines($descriptionCell, 'Remarks: ', $item['item_remarks']);
-            }
-            $tableParagraph = ['spaceAfter' => 0, 'lineHeight' => 1.0];
-            $table->addCell($widths[2])->addText((string) (int) $item['quantity'], null, [...$tableParagraph, 'alignment' => Jc::CENTER]);
-            $table->addCell($widths[3])->addText(number_format((float) $item['marked_up_price'], 2), null, [...$tableParagraph, 'alignment' => Jc::RIGHT]);
-            $table->addCell($widths[4])->addText(number_format((float) $item['line_total'], 2), null, [...$tableParagraph, 'alignment' => Jc::RIGHT]);
         }
 
         if ($data['quotationRemarks'] !== '') {

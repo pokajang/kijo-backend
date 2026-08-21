@@ -5,6 +5,9 @@ namespace App\Services\Word;
 use App\Support\AppFilePaths;
 use App\Support\EquipmentQuotationLayout as Layout;
 use Illuminate\Http\Request;
+use DOMDocument;
+use DOMElement;
+use DOMNode;
 use PhpOffice\PhpWord\ComplexType\TblWidth as ComplexTableWidth;
 use PhpOffice\PhpWord\Element\Section;
 use PhpOffice\PhpWord\PhpWord;
@@ -103,10 +106,7 @@ final class QuotationWordDocumentBuilder
         ]);
         $document->addNumberingStyle('quotationProposalNumber', [
             'type' => 'multilevel',
-            'levels' => [[
-                'format' => 'decimal', 'text' => '%1.', 'left' => $this->mm(5),
-                'hanging' => $this->mm(2.5), 'tabPos' => $this->mm(5), 'suffix' => 'space',
-            ]],
+            'levels' => $this->proposalListLevels('decimal', '%1.'),
         ]);
         $document->addNumberingStyle('quotationProposalBullet', [
             'type' => 'multilevel',
@@ -114,6 +114,10 @@ final class QuotationWordDocumentBuilder
                 'format' => 'bullet', 'text' => '•', 'left' => $this->mm(5),
                 'hanging' => $this->mm(2.5), 'tabPos' => $this->mm(5), 'suffix' => 'space',
             ]],
+        ]);
+        $document->addNumberingStyle('quotationProposalBulletNative', [
+            'type' => 'multilevel',
+            'levels' => $this->proposalListLevels('bullet', "\u{2022}"),
         ]);
     }
 
@@ -198,8 +202,8 @@ final class QuotationWordDocumentBuilder
                 continue;
             }
             $table->addRow(null, ['cantSplit' => true]);
-            $table->addCell($labelWidth)->addText(WordText::clean($row['label']), ['bold' => true], ['spaceAfter' => 0]);
-            $table->addCell($valueWidth)->addText(WordText::clean($row['value']), $row['bold'] ?? false ? ['bold' => true] : null, ['spaceAfter' => 0]);
+            $this->addMultilineText($table->addCell($labelWidth), $row['label'], ['bold' => true]);
+            $this->addMultilineText($table->addCell($valueWidth), $row['value'], ($row['bold'] ?? false) ? ['bold' => true] : null);
         }
     }
 
@@ -272,30 +276,356 @@ final class QuotationWordDocumentBuilder
 
     private function addProposal(Section $section, array $data): void
     {
-        if (empty($data['proposalSections'])) {
+        if (empty($data['proposalSections']) && empty($data['proposalCompanyServices']) && empty($data['proposalAdditionalSections']) && empty($data['proposalAgenda']) && empty($data['proposalTentativeTerms'])) {
             return;
         }
         $section->addPageBreak();
-        $section->addText($data['proposalTitle'], ['bold' => true, 'size' => 13, 'color' => '006400'], ['alignment' => Jc::CENTER, 'spaceAfter' => $this->mm(5)]);
-        foreach ($data['proposalSections'] as $proposal) {
-            $section->addText($proposal['title'], ['bold' => true, 'size' => 11, 'color' => '006400'], ['keepNext' => true, 'spaceAfter' => $this->mm(1.5)]);
-            foreach ($this->proposalBlocks($proposal['content']) as $block) {
-                if ($block['list'] !== null) {
-                    $section->addListItem($block['text'], 0, null, $block['list'], ['spaceAfter' => $this->mm(1)]);
-                } else {
-                    $section->addText($block['text']);
-                }
+        $service = (string) ($data['service'] ?? '');
+        $this->addProposalTitleBanner($section, $data, $service);
+        if (! empty($data['proposalCompanyServices'])) {
+            $this->addProposalCompanyServices($section, (array) $data['proposalCompanyServices']);
+        }
+        $hasProposalContent = ! empty($data['proposalCompanyServices']);
+        foreach ($data['proposalSections'] ?? [] as $proposal) {
+            $this->addProposalSection($section, $proposal, $service, $hasProposalContent);
+            $hasProposalContent = true;
+        }
+        if (! empty($data['proposalAdditionalSections'])) {
+            $section->addPageBreak();
+            $hasProposalContent = false;
+            foreach ($data['proposalAdditionalSections'] as $proposal) {
+                $this->addProposalSection($section, $proposal, $service, $hasProposalContent);
+                $hasProposalContent = true;
             }
         }
+
+        if ($service !== 'training') {
+            return;
+        }
         foreach ($data['proposalAgenda'] ?? [] as $day => $rows) {
-            $section->addText('Day '.$day, ['bold' => true, 'size' => 11], ['keepNext' => true]);
+            if ($day === array_key_first($data['proposalAgenda'])) {
+                $section->addText($data['language'] === 'ms-MY' ? 'Tentatif Program' : 'Program Tentative', ['bold' => true, 'size' => 11, 'color' => '006400'], ['keepNext' => true, 'spaceBefore' => $this->mm(1), 'spaceAfter' => $this->mm(1.8)]);
+            }
+            if (count($data['proposalAgenda']) > 1) {
+                $section->addText(($data['language'] === 'ms-MY' ? 'Hari ' : 'Day ').$day, ['bold' => true, 'size' => 11], ['keepNext' => true, 'spaceAfter' => $this->mm(1.5)]);
+            }
             $table = $section->addTable('quotationDetails');
             [$time, $topic] = $this->widths([25, 75]);
             foreach ($rows as $row) {
                 $table->addRow(null, ['cantSplit' => true]);
                 $table->addCell($time)->addText($row['time'], null, ['spaceAfter' => 0]);
-                $table->addCell($topic)->addText($this->plainRichText($row['topic']), null, ['spaceAfter' => 0]);
+                $this->addMultilineText($table->addCell($topic), $this->plainRichText($row['topic']));
             }
+        }
+        if (! empty($data['proposalTentativeTerms'])) {
+            $section->addText($data['proposalTentativeTermsTitle'], ['bold' => true, 'size' => 10.5], ['keepNext' => true, 'spaceBefore' => $this->mm(2), 'spaceAfter' => $this->mm(2)]);
+            foreach ($data['proposalTentativeTerms'] as $term) {
+                $section->addListItem(WordText::clean($term), 0, null, 'quotationProposalNumber', ['spaceAfter' => $this->mm(.8), 'lineHeight' => 1.35]);
+            }
+        }
+    }
+
+    private function addProposalTitleBanner(Section $section, array $data, string $service): void
+    {
+        if ($service === 'training') {
+            $this->addTrainingProposalTitle($section, $data);
+            return;
+        }
+        $title = trim((string) ($data['proposalTitle'] ?? ''));
+        if ($title === '') {
+            return;
+        }
+
+        $table = $section->addTable([
+            'width' => 5000,
+            'unit' => TblWidth::PERCENT,
+            'layout' => TableStyle::LAYOUT_FIXED,
+            'borderSize' => 5,
+            'borderColor' => $service === 'manpower' ? 'C8FFC8' : 'C8F0C8',
+            'cellMarginTop' => $this->mm(3),
+            'cellMarginBottom' => $this->mm(3),
+            'cellMarginLeft' => $this->mm(4),
+            'cellMarginRight' => $this->mm(4),
+        ]);
+        $table->addRow(null, ['cantSplit' => true]);
+        $table->addCell($this->printableWidth(), ['bgColor' => 'F0FFF0'])->addText($title, ['bold' => true, 'size' => 13, 'color' => '003C00'], ['alignment' => Jc::CENTER, 'spaceAfter' => 0, 'lineHeight' => 1.2]);
+        $section->addText('', null, ['spaceAfter' => $service === 'manpower' ? $this->mm(6) : $this->mm(5)]);
+    }
+
+    private function addProposalSection(
+        Section $section,
+        array $proposal,
+        string $service,
+        bool $hasPreviousContent,
+    ): void
+    {
+        if (! isset($proposal['title'], $proposal['content'])) {
+            return;
+        }
+        $title = trim((string) $proposal['title']);
+        $content = (string) $proposal['content'];
+        if ($title === '' && trim(strip_tags(html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8'))) === '') {
+            return;
+        }
+        if ($title !== '') {
+            $section->addText($title, ['bold' => true, 'size' => 11, 'color' => $this->proposalSectionColor($service)], [
+                'keepNext' => true,
+                'spaceBefore' => $hasPreviousContent ? $this->proposalSectionSpacing($service) : 0,
+                'spaceAfter' => $this->proposalSectionTitleSpacing($service),
+            ]);
+        }
+        $this->addProposalContent($section, $content, $service);
+    }
+
+    private function addProposalContent(Section $section, string $html, string $service): void
+    {
+        if (trim(strip_tags(html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8'))) === '') {
+            return;
+        }
+        $normalized = $this->normalizeProposalHtml($html);
+        $dom = new DOMDocument;
+        libxml_use_internal_errors(true);
+        $loaded = $dom->loadHTML('<?xml encoding="utf-8" ?><body>'.$normalized.'</body>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD | LIBXML_NOERROR | LIBXML_NOWARNING);
+        libxml_clear_errors();
+        if (! $loaded) {
+            $this->addMultilineText($section, $this->plainRichText($html));
+            return;
+        }
+        $body = $dom->getElementsByTagName('body')->item(0);
+        if ($body === null) {
+            $this->addMultilineText($section, $this->plainRichText($html));
+            return;
+        }
+        foreach ($body->childNodes as $node) {
+            $this->renderProposalNode($section, $node, $service);
+        }
+    }
+
+    private function addProposalCompanyServices(Section $section, array $payload): void
+    {
+        $section->addText($payload['title'] ?? 'About AMIOSH', ['bold' => true, 'size' => 10.5, 'color' => '003C00'], ['spaceAfter' => $this->mm(1)]);
+        $section->addText($payload['description'] ?? '', null, ['spaceAfter' => $this->mm(.5)]);
+        if (($payload['heading'] ?? '') !== '') {
+            $section->addText($payload['heading'], ['bold' => true, 'size' => 9.5], ['spaceAfter' => $this->mm(.5)]);
+        }
+        foreach ($payload['items'] ?? [] as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $title = trim((string) ($item['title'] ?? ''));
+            $description = trim((string) ($item['description'] ?? ''));
+            if ($title === '') {
+                continue;
+            }
+            $run = $section->addTextRun(['spaceAfter' => 0]);
+            if ($description === '') {
+                $run->addText(WordText::clean($title), ['bold' => true]);
+            } else {
+                $run->addText(WordText::clean($title).': ', ['bold' => true]);
+                $run->addText(WordText::clean($description));
+            }
+            $section->addTextBreak();
+        }
+        if (($payload['ctaText'] ?? '') !== '') {
+            $section->addText(WordText::clean($payload['ctaText']).' '.WordText::clean($payload['ctaLabel'] ?? $payload['ctaUrl'] ?? ''), ['italic' => true, 'size' => 9.5], ['spaceAfter' => $this->mm(4)]);
+        }
+    }
+
+    private function renderProposalNode(Section $section, DOMNode $node, string $service, int $level = 0): void
+    {
+        if ($node->nodeType === XML_TEXT_NODE) {
+            $text = $this->plainRichText((string) $node->textContent);
+            if ($text !== '') {
+                $this->addMultilineText($section, $text);
+            }
+            return;
+        }
+        if (! $node instanceof DOMElement) {
+            return;
+        }
+        $tag = strtolower($node->nodeName);
+        if (in_array($tag, ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'], true)) {
+            $text = $this->plainRichText($node->textContent);
+            if ($text !== '') {
+                $section->addText(WordText::clean($text), ['bold' => true, 'size' => 11], ['spaceAfter' => $this->mm(1)]);
+            }
+            return;
+        }
+        if ($tag === 'p' || $tag === 'div') {
+            $text = $this->plainRichText($node->textContent);
+            if ($text !== '') {
+                $this->addMultilineText($section, $text);
+            }
+            return;
+        }
+        if ($tag === 'ul' || $tag === 'ol') {
+            $this->addProposalList($section, $node, $tag === 'ol', $level);
+            return;
+        }
+        if ($tag === 'table') {
+            $this->addProposalTable($section, $node);
+            return;
+        }
+        if ($tag === 'li') {
+            $text = $this->plainRichText($node->textContent);
+            if ($text !== '') {
+                $this->addMultilineText($section, $text);
+            }
+            return;
+        }
+        foreach ($node->childNodes as $child) {
+            $this->renderProposalNode($section, $child, $service, $level);
+        }
+    }
+
+    private function addProposalList(Section $section, DOMNode $node, bool $ordered, int $level = 0): void
+    {
+        $listStyle = $ordered ? 'quotationProposalNumber' : 'quotationProposalBulletNative';
+        foreach ($node->childNodes as $child) {
+            if (! $child instanceof DOMElement || strtolower($child->nodeName) !== 'li') {
+                continue;
+            }
+            $text = $this->plainNodeText($child);
+            $text = $this->plainRichText($text);
+            if ($text !== '') {
+                $section->addListItem(WordText::clean($text), $level, null, $listStyle, ['spaceAfter' => $this->mm(1.2), 'lineHeight' => 1.2]);
+            }
+            foreach ($child->childNodes as $subNode) {
+                if ($subNode instanceof DOMElement && in_array(strtolower($subNode->nodeName), ['ol', 'ul'], true)) {
+                    $this->addProposalList($section, $subNode, strtolower($subNode->nodeName) === 'ol', $level + 1);
+                }
+            }
+        }
+    }
+
+    private function addProposalTable(Section $section, DOMElement $table): void
+    {
+        $rows = [];
+        foreach ($table->getElementsByTagName('tr') as $tr) {
+            $cells = [];
+            foreach ($tr->getElementsByTagName('td') as $td) {
+                $cells[] = $this->plainNodeText($td);
+            }
+            if ($cells === []) {
+                foreach ($tr->getElementsByTagName('th') as $th) {
+                    $cells[] = $this->plainNodeText($th);
+                }
+            }
+            if ($cells !== []) {
+                $rows[] = $cells;
+            }
+        }
+        if ($rows === []) {
+            return;
+        }
+        $colCount = max(array_map('count', $rows));
+        $widths = array_fill(0, $colCount, intdiv(100, $colCount));
+        $widths = $this->widths($widths);
+        $tableStyle = [
+            'borderColor' => Layout::COLOR_TABLE_BORDER,
+            'borderSize' => 4,
+            'cellMargin' => $this->mm(0.8),
+            'unit' => TblWidth::PERCENT,
+            'width' => $this->printableWidth(),
+            'layout' => TableStyle::LAYOUT_FIXED,
+        ];
+        $tableElement = $section->addTable($tableStyle);
+        foreach ($rows as $row) {
+            $tableElement->addRow();
+            foreach ($widths as $index => $widthPercent) {
+                $cellText = $this->plainRichText((string) ($row[$index] ?? ''));
+                $tableElement->addCell($widthPercent)->addText($cellText, null, ['spaceAfter' => 0]);
+            }
+        }
+    }
+
+    /** @return list<array{format: string, text: string, left: int, hanging: int, tabPos: int, suffix: string}> */
+    private function proposalListLevels(string $format, string $text): array
+    {
+        return array_map(
+            fn (float $left): array => [
+                'format' => $format,
+                'text' => $text,
+                'left' => $this->mm($left),
+                'hanging' => $this->mm(3.175),
+                'tabPos' => $this->mm($left),
+                'suffix' => 'space',
+            ],
+            [6.35, 12.7, 19.05],
+        );
+    }
+
+    private function proposalSectionColor(string $service): string
+    {
+        return $service === 'manpower' ? '003C00' : '006400';
+    }
+
+    private function proposalSectionSpacing(string $service): int
+    {
+        return match ($service) {
+            'manpower' => $this->mm(4),
+            'ih' => $this->mm(3.2),
+            default => $this->mm(3.2),
+        };
+    }
+
+    private function proposalSectionTitleSpacing(string $service): int
+    {
+        return $service === 'manpower' ? $this->mm(1) : $this->mm(1.5);
+    }
+
+    private function normalizeProposalHtml(string $html): string
+    {
+        return str_replace("\xC2\xA0", ' ', $html);
+    }
+
+    private function addTrainingProposalTitle(Section $section, array $data): void
+    {
+        $title = trim((string) $data['proposalTitle']);
+        $brochure = $data['language'] === 'ms-MY' ? 'Brosur Latihan' : 'Training Brochure';
+        if (! str_ends_with(mb_strtolower($title), mb_strtolower($brochure))) {
+            $title = trim($title.' '.$brochure);
+        }
+        $table = $section->addTable([
+            'width' => 5000,
+            'unit' => TblWidth::PERCENT,
+            'layout' => TableStyle::LAYOUT_FIXED,
+            'borderSize' => 5,
+            'borderColor' => 'C8F0C8',
+            'cellMarginTop' => $this->mm(3),
+            'cellMarginBottom' => $this->mm(3),
+            'cellMarginLeft' => $this->mm(4),
+            'cellMarginRight' => $this->mm(4),
+        ]);
+        $table->addRow(null, ['cantSplit' => true]);
+        $table->addCell($this->printableWidth(), ['bgColor' => 'F0FFF0'])->addText($title, ['bold' => true, 'size' => 13, 'color' => '003C00'], ['alignment' => Jc::CENTER, 'spaceAfter' => 0, 'lineHeight' => 1.2]);
+        $section->addText('', null, ['spaceAfter' => $this->mm(5)]);
+    }
+
+    private function plainNodeText(DOMNode $node): string
+    {
+        if ($node->nodeType === XML_TEXT_NODE) {
+            return (string) $node->textContent;
+        }
+        if (! $node instanceof DOMElement) {
+            return '';
+        }
+        if (strtolower($node->nodeName) === 'ul' || strtolower($node->nodeName) === 'ol') {
+            return '';
+        }
+        $parts = [];
+        foreach ($node->childNodes as $child) {
+            $parts[] = $this->plainNodeText($child);
+        }
+
+        return implode('', $parts);
+    }
+
+    private function addMultilineText(mixed $container, mixed $value, ?array $fontStyle = null): void
+    {
+        $lines = WordText::lines($value);
+        foreach ($lines as $line) {
+            $container->addText($line, $fontStyle, ['spaceAfter' => 0, 'lineHeight' => 1.2]);
         }
     }
 
@@ -306,38 +636,6 @@ final class QuotationWordDocumentBuilder
         $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
         return trim(preg_replace('/[ \t]+/', ' ', str_replace("\xc2\xa0", ' ', $text)) ?? $text);
-    }
-
-    /** @return list<array{text: string, list: ?string}> */
-    private function proposalBlocks(string $html): array
-    {
-        $marked = preg_replace_callback('/<(ol|ul)\b[^>]*>(.*?)<\/\1>/is', function (array $match): string {
-            $style = strtolower($match[1]) === 'ol' ? 'quotationProposalNumber' : 'quotationProposalBullet';
-
-            return preg_replace_callback('/<li\b[^>]*>(.*?)<\/li>/is', function (array $item) use ($style): string {
-                return "\n[[{$style}]]".$this->plainRichText($item[1])."\n";
-            }, $match[2]) ?? $match[2];
-        }, $html) ?? $html;
-        $marked = preg_replace('/<\s*br\s*\/?\s*>/i', "\n", $marked) ?? $marked;
-        $marked = preg_replace('/<\/(p|div|h[1-6]|tr)>/i', "\n", $marked) ?? $marked;
-        $text = html_entity_decode(strip_tags($marked), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $blocks = [];
-        foreach (WordText::lines($text) as $line) {
-            $line = trim(preg_replace('/[ \t]+/', ' ', str_replace("\xc2\xa0", ' ', $line)) ?? $line);
-            if ($line === '') {
-                continue;
-            }
-            $list = null;
-            if (preg_match('/^\[\[(quotationProposal(?:Number|Bullet))\]\](.*)$/u', $line, $match)) {
-                $list = $match[1];
-                $line = trim($match[2]);
-            }
-            if ($line !== '') {
-                $blocks[] = ['text' => WordText::clean($line), 'list' => $list];
-            }
-        }
-
-        return $blocks;
     }
 
     /** @return list<int> */

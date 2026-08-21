@@ -6,6 +6,7 @@ use App\Services\AuditLogService;
 use App\Services\QuoteRecords\EquipmentQuoteDocumentData;
 use App\Services\QuoteRecords\EquipmentQuoteRecordWordService;
 use App\Services\Word\WordText;
+use App\Support\PdfText;
 use App\Support\EquipmentQuotationLayout;
 use App\Support\EquipmentQuotationTerms;
 use Illuminate\Http\Request;
@@ -180,6 +181,95 @@ class EquipmentQuoteWordDocumentTest extends TestCase
                     unlink($roundTripPath);
                 }
             }
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    }
+
+    public function test_long_item_text_is_split_across_item_rows_without_repeating_item_number(): void
+    {
+        $service = new EquipmentQuoteRecordWordService(
+            Mockery::mock(AuditLogService::class),
+            Mockery::mock(EquipmentQuoteDocumentData::class),
+        );
+        $data = $this->documentData();
+        $data['items'] = [[
+            'title' => 'Portable Gas Detector',
+            'description' => str_repeat('Portable Gas Detector specifications with operational notes, safety advisories, and maintenance guidance. ', 45),
+            'item_remarks' => str_repeat('Ensure calibration, battery replacement intervals, and pressure test records are attached before handover. ', 30),
+            'quantity' => 1,
+            'marked_up_price' => 500,
+            'line_total' => 500,
+        ]];
+        $data['lineItemsTotal'] = 500.0;
+        $data['deliveryCharge'] = 0.0;
+        $data['miscCharge'] = 0.0;
+        $data['discountAmount'] = 0.0;
+        $data['subTotalNet'] = 500.0;
+        $data['sstAmount'] = 0.0;
+        $data['grandTotal'] = 500.0;
+
+        $segments = PdfText::itemCellSegments($data['items'][0]['description'], $data['items'][0]['item_remarks']);
+        $this->assertGreaterThan(1, count($segments), 'The seeded item content should produce multiple segments.');
+
+        $path = $this->saveDocument($service->buildDocument($data, $this->request('/word')));
+        try {
+            $zip = new ZipArchive;
+            $this->assertTrue($zip->open($path));
+            $document = $zip->getFromName('word/document.xml');
+            $zip->close();
+            $this->assertIsString($document);
+
+            $dom = new \DOMDocument;
+            $this->assertTrue(@$dom->loadXML($document), 'Invalid Word document xml.');
+            $xpath = new \DOMXPath($dom);
+            $xpath->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
+
+            $itemTable = null;
+            foreach ($xpath->query('//w:tbl') as $table) {
+                if (! $table instanceof \DOMElement) {
+                    continue;
+                }
+                $headerText = [];
+                foreach ($xpath->query('.//w:tr[1]//w:t', $table) as $headerCell) {
+                    if ($headerCell instanceof \DOMElement) {
+                        $headerText[] = trim($headerCell->textContent);
+                    }
+                }
+                if (in_array('Item Description', $headerText, true) && in_array('Qty', $headerText, true) && in_array('Unit Price (RM)', $headerText, true)) {
+                    $itemTable = $table;
+                    break;
+                }
+            }
+            $this->assertNotNull($itemTable);
+
+            $numberRows = 0;
+            $continuationRows = 0;
+            $bodyRows = $xpath->query('.//w:tr[position() > 1]', $itemTable);
+            foreach ($bodyRows as $row) {
+                if (! $row instanceof \DOMElement) {
+                    continue;
+                }
+                $firstCellValue = '';
+                $firstCellNodes = $xpath->query('.//w:tc[1]//w:t', $row);
+                if ($firstCellNodes->length > 0) {
+                    $firstCellValue = trim((string) $firstCellNodes->item(0)->textContent);
+                }
+                if ($firstCellValue === '1') {
+                    $numberRows++;
+                }
+                if ($firstCellValue === '') {
+                    $continuationRows++;
+                }
+            }
+
+            $this->assertSame(1, $numberRows);
+            $this->assertSame(count($segments) - 1, $continuationRows);
+            $this->assertStringContainsString('Portable Gas Detector', $document);
+            $this->assertStringContainsString('Description:', $document);
+            $this->assertStringContainsString('Remarks:', $document);
         } finally {
             if (is_file($path)) {
                 unlink($path);

@@ -31,6 +31,7 @@ class CommercialWordDocumentTest extends TestCase
         }
         self::assertStringContainsString('AMIOSH RESOURCES SDN BHD', html_entity_decode(strip_tags($header)));
         self::assertStringContainsString('NUMPAGES', $footer);
+        self::assertStringContainsString('<w:ind w:left="360" w:hanging="180"/>', (string) $zip->getFromName('word/numbering.xml'));
         self::assertStringNotContainsString('<html', strtolower($xml));
         $zip->close();
         unlink($path);
@@ -45,6 +46,19 @@ class CommercialWordDocumentTest extends TestCase
             'delivery order' => [['kind' => 'delivery-order', 'documentType' => 'DELIVERY ORDER', 'language' => 'en', 'reference' => 'DO-1', 'date' => '13 Aug 2026', 'recipient' => ['Client'], 'sender' => ['AMIOSH'], 'intro' => 'Review delivery.', 'projectLabel' => 'For Project', 'project' => 'Project One', 'itemLabel' => 'Item Description', 'items' => [['1', ['Safety Shoes'], '2 pair']], 'remarks' => 'Deliver together.', 'returnText' => 'Return a signed copy.', 'acceptanceHeading' => 'Customer Acceptance', 'acceptanceText' => 'Goods received.', 'acceptanceLeft' => ['Name', 'Position', 'Signature'], 'acceptanceRight' => ['Company Stamp', 'Date'], 'computerGeneratedText' => 'Computer generated.'], ['DO-1', 'Project One', 'Deliver together.', 'Return a signed copy.', 'Customer Acceptance', 'Signature']],
             'invoice' => [[...$base, 'kind' => 'invoice', 'documentType' => 'TAX INVOICE', 'reference' => 'INV-1', 'date' => '13 Aug 2026', 'intro' => 'Review invoice.', 'service' => 'Equipment - Supply', 'preparedByLabel' => 'Prepared by', 'preparedBy' => ['Aza', 'Consultant'], 'signaturePath' => null, 'stampPath' => null, 'noSignatureText' => '[No signature or stamp on file]', 'paymentLines' => ['CIMB BANK BERHAD'], 'termsHeading' => 'Terms and Conditions', 'terms' => ['Payment is due within 30 days.']], ['INV-1', 'Equipment - Supply', 'CIMB BANK BERHAD', 'No signature or stamp on file', 'Terms and Conditions', 'Payment is due within 30 days.']],
             'receipt' => [[...$base, 'kind' => 'receipt', 'documentType' => 'OFFICIAL RECEIPT', 'reference' => 'RCPT-1', 'invoiceReference' => 'INV-1', 'date' => '13 Aug 2026', 'service' => 'Equipment - Supply'], ['RCPT-1', 'INV-1', 'Thank you for your payment']],
+            'letter of award' => [[
+                'kind' => 'letter-of-award', 'documentType' => 'LETTER OF AWARD', 'reference' => 'LOA-1', 'date' => '13 Aug 2026',
+                'recipient' => ['Vendor Sdn Bhd', 'Kajang'], 'contactName' => 'Vendor Contact',
+                'awardDetails' => [
+                    ['label' => 'Vendor Name', 'value' => 'Vendor Sdn Bhd'],
+                    ['label' => 'Service Description', 'value' => "Safety training\nSite support"],
+                    ['label' => 'Award Amount', 'value' => 'RM 2,000.00', 'bold' => true],
+                ],
+                'termSections' => [
+                    ['heading' => 'A. Compliance Commitment', 'paragraphs' => ['Maintain safe practices.']],
+                    ['heading' => 'D. General Commitments', 'items' => ['Use required PPE.']],
+                ],
+            ], ['LOA-1', 'Vendor Sdn Bhd', 'Safety training', 'Vendor Acknowledgement', 'Terms and Conditions', 'Use required PPE.']],
         ];
     }
 }

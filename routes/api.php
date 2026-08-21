@@ -633,6 +633,7 @@ Route::middleware('auth.session')->group(function () {
         return $c->removeVendor($request);
     });
     Route::get('projects/{id}/loa', [ProjectController::class, 'generateLoa']);
+    Route::get('projects/{id}/loa/word', [ProjectController::class, 'generateLoaWord']);
     Route::get('projects/{id}/finance', [ProjectController::class, 'financeData']);
     Route::post('projects/{id}/expenses', [ProjectController::class, 'addExpense']);
     Route::delete('projects/{id}/expenses/{expenseId}', function (Request $request, ProjectController $c, int $id, int $expenseId) {

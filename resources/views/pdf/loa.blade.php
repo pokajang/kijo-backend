@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Letter of Award — {{ $refNo }}</title>
+    <title>Letter of Award - {{ $refNo }}</title>
     <style>
         @page {
             margin: 10mm 20mm 10mm 20mm;
@@ -223,8 +223,8 @@
         AMIOSH's prior written consent.
     </p>
     <p style="font-size: 9.5pt;">
-        You are forbidden from displaying any personal or third-party branding—logos, uniforms, business
-        cards, or identification—during service delivery. Only AMIOSH branding is allowed; any breach is
+        You are forbidden from displaying any personal or third-party branding, including logos, uniforms, business
+        cards, or identification, during service delivery. Only AMIOSH branding is allowed; any breach is
         a material violation and may lead to immediate termination and legal action.
     </p>
 </div>
@@ -232,8 +232,8 @@
 <div class="tc-section">
     <div class="tc-section-title">C. E-Invoice Compliance</div>
     <p style="font-size: 9.5pt;">
-        Upon contract award, you must promptly provide all supporting documentation—such as invoices and
-        proof of service—for tax reporting and regulatory compliance. This cooperation ensures AMIOSH meets
+        Upon contract award, you must promptly provide all supporting documentation, such as invoices and
+        proof of service, for tax reporting and regulatory compliance. This cooperation ensures AMIOSH meets
         its legal obligations and maintains our professional relationship.
     </p>
 </div>

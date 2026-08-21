@@ -157,6 +157,13 @@ class ProjectController extends Controller
         return $this->projectService()->generateLoa($request);
     }
 
+    public function generateLoaWord(Request $request, int $id): mixed
+    {
+        $request = $this->withRouteProjectId($request, $id);
+
+        return $this->projectService()->generateLoaWord($request);
+    }
+
     public function addExpense(AddExpenseRequest $request): JsonResponse
     {
         return $this->projectService()->addExpense($request);

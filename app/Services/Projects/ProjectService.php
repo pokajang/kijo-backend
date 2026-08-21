@@ -31,6 +31,11 @@ class ProjectService
         return app(ProjectLoaService::class);
     }
 
+    private function projectLoaWordService(): ProjectLoaWordService
+    {
+        return app(ProjectLoaWordService::class);
+    }
+
     private function projectFinanceService(): ProjectFinanceService
     {
         return app(ProjectFinanceService::class);
@@ -165,6 +170,11 @@ class ProjectService
     public function generateLoa(Request $request): mixed
     {
         return $this->projectLoaService()->generateLoa($request);
+    }
+
+    public function generateLoaWord(Request $request): mixed
+    {
+        return $this->projectLoaWordService()->generate($request);
     }
 
     public function addExpense(AddExpenseRequest $request): JsonResponse

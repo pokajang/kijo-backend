@@ -107,9 +107,9 @@ final class ServiceQuoteDocumentData
             $this->row($this->rate($quote->sst_percent ?? 0).'% '.$this->label($language, 'sst_charge_rm', 'SST Charge (RM)'), number_format($sst, 2), $sst > 0),
             $this->row($this->label($language, 'grand_total_rm', 'Grand Total (RM)'), number_format((float) ($quote->grand_total ?? 0), 2), true, true),
         ];
-        [$title, $sections] = $this->ihProposal($quote);
+        [$title, $sections, $additionalSections] = $this->ihProposal($quote, $language);
 
-        return $this->common($quote, $language, 'ih', $details, [], [], $title, $sections);
+        return $this->common($quote, $language, 'ih', $details, [], [], $title, $sections, [], $additionalSections);
     }
 
     private function manpower(int $id): ?array
@@ -177,7 +177,7 @@ final class ServiceQuoteDocumentData
         return $data;
     }
 
-    private function common(object $quote, string $language, string $service, array $details, array $items, array $totals, string $proposalTitle = '', array $proposalSections = [], array $agenda = []): array
+    private function common(object $quote, string $language, string $service, array $details, array $items, array $totals, string $proposalTitle = '', array $proposalSections = [], array $agenda = [], array $additionalProposalSections = []): array
     {
         $created = (string) ($quote->created_at ?? '');
         $updated = (string) ($quote->updated_at ?? '');
@@ -218,7 +218,36 @@ final class ServiceQuoteDocumentData
             'acceptanceText' => $this->label($language, 'acceptance_text', 'I/We hereby accept the terms and conditions stated in this quotation and confirm our intention to proceed.'),
             'terms' => array_map(fn ($entry): array => ['title' => $entry[0], 'items' => PdfLegalTerms::get($language, $entry[1])], $termKeys),
             'proposalTitle' => $proposalTitle, 'proposalSections' => $proposalSections, 'proposalAgenda' => $agenda,
+            'proposalTentativeTermsTitle' => $service === 'training'
+                ? ($language === 'ms-MY' ? 'Terma dan Syarat Tentatif' : 'Tentative Terms and Conditions')
+                : '',
+            'proposalTentativeTerms' => $service === 'training' ? $this->trainingTentativeTerms($language) : [],
+            'proposalCompanyServices' => $this->proposalCompanyServices($language, $service),
+            'proposalAdditionalSections' => $additionalProposalSections,
+            'service' => $service,
             'serviceSummary' => '',
+        ];
+    }
+
+    /** @return list<string> */
+    private function trainingTentativeTerms(string $language): array
+    {
+        if ($language === 'ms-MY') {
+            return [
+                'Program tentatif ini bertujuan sebagai panduan umum sahaja dan tidak mewakili agenda tetap atau muktamad.',
+                'Pelarasan jadual boleh dibuat di tapak berdasarkan keadaan semasa seperti cuaca (bagi program luar), respons dan tahap interaksi peserta, atau kekangan logistik.',
+                'Semasa sesi latihan sebenar, turutan dan masa modul atau sesi boleh dilaraskan sewajarnya bagi memastikan penyampaian dan keberkesanan pembelajaran yang optimum.',
+                'Waktu rehat dan tempoh sesi boleh diubah bagi menampung kelewatan yang tidak dijangka atau menyesuaikan dinamik kumpulan latihan.',
+                'Bagi program yang boleh dituntut melalui HRD Corp, jumlah jam latihan hendaklah mematuhi geran yang diluluskan.',
+            ];
+        }
+
+        return [
+            'This tentative program is intended solely as a general guide and does not represent a fixed or final agenda.',
+            'Adjustments to the schedule may be made on-site based on real-time conditions such as weather (for outdoor programs), participant response and interaction levels, or logistical constraints.',
+            'During actual training session, the sequence and timing of modules or sessions may be adjusted accordingly to ensure optimal delivery and learning effectiveness.',
+            'Break times and session durations may be modified to accommodate unforeseen delays or to suit the dynamics of the training group.',
+            'For HRD Corp claimable programs, the total training hours shall comply with the approved grant.',
         ];
     }
 
@@ -242,17 +271,29 @@ final class ServiceQuoteDocumentData
         return [ProposalTitleFormatter::formatProposalTitle((string) ($p->training_title ?? ''), null, '', 'training-word'), $sections, $agenda];
     }
 
-    private function ihProposal(object $quote): array
+    private function ihProposal(object $quote, string $language): array
     {
         if (! $this->truthy($quote->attach_proposal ?? null) || (int) ($quote->service_id ?? 0) < 1) {
-            return ['', []];
+            return ['', [], []];
         }
         $p = DB::table('proposal_template_ih')->where('id', $quote->service_id)->first();
         if (! $p) {
-            return ['', []];
+            return ['', [], []];
         }
 
-        return [ProposalTitleFormatter::formatProposalTitle((string) ($p->service_title ?? ''), 'Service Proposal', 'Service Proposal', 'ih-word'), $this->sections($p, ['Introduction' => 'introduction', 'Objectives' => 'objectives', 'Work Scope' => 'work_scope', 'Schedule' => 'schedule', 'References' => 'reference', 'Additional Information' => 'other_fields'])];
+        $additionalSections = [];
+        if (trim(strip_tags(html_entity_decode((string) ($p->other_fields ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8'))) !== '') {
+            $additionalSections[] = [
+                'title' => $language === 'ms-MY' ? 'Maklumat Tambahan' : 'Additional Information',
+                'content' => (string) ($p->other_fields ?? ''),
+            ];
+        }
+
+        return [
+            ProposalTitleFormatter::formatProposalTitle((string) ($p->service_title ?? ''), 'Service Proposal', 'Service Proposal', 'ih-word'),
+            $this->sections($p, ['Introduction' => 'introduction', 'Objectives' => 'objectives', 'Work Scope' => 'work_scope', 'Schedule' => 'schedule', 'References' => 'reference']),
+            $additionalSections,
+        ];
     }
 
     private function manpowerProposal(object $quote): array
@@ -309,6 +350,29 @@ final class ServiceQuoteDocumentData
         return [
             ProposalTitleFormatter::formatProposalTitle($title, 'Service Proposal', 'Service Proposal', 'special-word-upload'),
             [['title' => 'Attached Proposal', 'content' => $content]],
+        ];
+    }
+
+    private function proposalCompanyServices(string $language, string $service): array
+    {
+        if (! in_array($service, ['training', 'ih', 'manpower'], true)) {
+            return [];
+        }
+
+        return [
+            'title' => $this->label($language, 'proposal_company_services_title', 'About AMIOSH'),
+            'description' => $this->label($language, 'proposal_company_services_body', 'Established in 2010, AMIOSH is a provider of occupational safety, health, and environmental services in Malaysia.'),
+            'heading' => $this->label($language, 'proposal_company_services_heading', 'Our Integrated Services'),
+            'items' => [
+                ['title' => $this->label($language, 'proposal_osh_consultancy', 'OSH Consultancy'), 'description' => $this->label($language, 'proposal_osh_consultancy_list', 'Compliance audits, risk advisory and OSH professional outsourcing')],
+                ['title' => $this->label($language, 'proposal_osh_training', 'OSH Training'), 'description' => $this->label($language, 'proposal_osh_training_list', 'HIRARC, working at heights, confined spaces and fire safety')],
+                ['title' => $this->label($language, 'proposal_iso_consultancy', 'ISO Consultancy'), 'description' => $this->label($language, 'proposal_iso_consultancy_list', 'ISO 9001, 14001, 45001 and other management systems')],
+                ['title' => $this->label($language, 'proposal_occupational_health', 'Occupational Health'), 'description' => $this->label($language, 'proposal_occupational_health_list', 'CHRA, noise, ergonomics, IAQ and exposure monitoring')],
+                ['title' => $this->label($language, 'proposal_infrastructure', 'Infrastructure'), 'description' => $this->label($language, 'proposal_infrastructure_list', 'Civil works, building maintenance, roads and landscaping')],
+            ],
+            'ctaText' => $this->label($language, 'proposal_company_services_cta', 'Learn more about AMIOSH services at'),
+            'ctaUrl' => 'https://amiosh.com',
+            'ctaLabel' => 'amiosh.com',
         ];
     }
 

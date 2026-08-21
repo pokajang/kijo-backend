@@ -44,6 +44,7 @@ final class CommercialWordDocumentBuilder
             'delivery-order' => $this->addDeliveryOrder($section, $data),
             'invoice' => $this->addInvoice($section, $data),
             'receipt' => $this->addReceipt($section, $data),
+            'letter-of-award' => $this->addLetterOfAward($section, $data),
             default => throw new \InvalidArgumentException('Unsupported commercial document type.'),
         };
 
@@ -67,9 +68,9 @@ final class CommercialWordDocumentBuilder
             'levels' => [[
                 'format' => 'decimal',
                 'text' => '%1.',
-                'left' => $this->mm(Layout::WORD_TERMS_TEXT_INDENT_MM),
-                'hanging' => $this->mm(Layout::WORD_TERMS_TEXT_INDENT_MM),
-                'tabPos' => $this->mm(Layout::WORD_TERMS_TEXT_INDENT_MM),
+                'left' => $this->mm(6.35),
+                'hanging' => $this->mm(3.175),
+                'tabPos' => $this->mm(6.35),
                 'suffix' => 'space',
             ]],
         ]);
@@ -164,6 +165,39 @@ final class CommercialWordDocumentBuilder
         $section->addText('“An ounce of prevention is worth a pound of cure.”', ['bold' => true], ['alignment' => Jc::CENTER, 'spaceBefore' => $this->mm(4)]);
     }
 
+    private function addLetterOfAward(Section $section, array $data): void
+    {
+        $section->addText("Our Ref: {$data['reference']}    Date: {$data['date']}");
+        $this->addAddressBlock($section, 'Attention To', $data['recipient']);
+        $section->addText('Dear '.$data['contactName'].',');
+        $section->addText('We are pleased to inform you that AMIOSH RESOURCES SDN BHD hereby awards the contract for the following services under the terms outlined below.');
+
+        $table = $section->addTable('commercialTable');
+        foreach ($data['awardDetails'] as $detail) {
+            $table->addRow(null, ['cantSplit' => true]);
+            $table->addCell($this->percent(30))->addText($detail['label'], ['bold' => true], ['spaceAfter' => 0]);
+            $this->addMultilineCell($table->addCell($this->percent(70)), $detail['value'], $detail['bold'] ?? false);
+        }
+
+        $section->addText('Please review the terms and conditions on the following page and return us a signed copy of this contract.', null, ['spaceBefore' => $this->mm(4)]);
+        $this->addSignOff($section, 'With best wishes', ['Muhammad Amin Bin Rozak', 'Managing Director', 'AMIOSH RESOURCES SDN BHD']);
+        $section->addText('Vendor Acknowledgement', ['bold' => true, 'size' => 10.5], ['spaceBefore' => $this->mm(5), 'spaceAfter' => $this->mm(2)]);
+        $section->addText('I hereby acknowledge and accept the terms and conditions set forth in this Letter of Award and shall deliver the services indicated with full responsibility and professionalism.');
+        $this->addAcceptanceTable($section, ['Signature', 'Name'], ['NRIC Number', 'Date']);
+
+        $section->addPageBreak();
+        $section->addText('Terms and Conditions', ['bold' => true, 'size' => 11], ['spaceAfter' => $this->mm(3)]);
+        foreach ($data['termSections'] as $index => $term) {
+            $section->addText($term['heading'], ['bold' => true], ['keepNext' => true, 'spaceBefore' => $index === 0 ? 0 : $this->mm(4), 'spaceAfter' => $this->mm(2)]);
+            foreach ($term['paragraphs'] ?? [] as $paragraph) {
+                $section->addText(WordText::clean($paragraph), null, ['spaceAfter' => $this->mm(2)]);
+            }
+            foreach ($term['items'] ?? [] as $item) {
+                $section->addListItem(WordText::clean($item), 0, null, 'commercialTerms', ['spaceAfter' => $this->mm(1.5), 'lineHeight' => 1.2]);
+            }
+        }
+    }
+
     private function addItemsTable(Section $section, array $items, array $headers, array $percentages): void
     {
         $table = $section->addTable('commercialTable');
@@ -218,6 +252,14 @@ final class CommercialWordDocumentBuilder
         $cell->addText($label.':', ['bold' => true], ['spaceAfter' => 0]);
         foreach ($lines as $line) {
             $cell->addText(WordText::clean($line), null, ['spaceAfter' => 0]);
+        }
+    }
+
+    private function addMultilineCell(Cell $cell, string $value, bool $bold = false): void
+    {
+        $lines = preg_split('/\R/u', WordText::clean($value)) ?: [];
+        foreach ($lines ?: ['-'] as $line) {
+            $cell->addText($line, $bold ? ['bold' => true] : null, ['spaceAfter' => 0, 'lineHeight' => 1.2]);
         }
     }
 
